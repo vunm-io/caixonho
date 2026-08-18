@@ -71,6 +71,11 @@ M0 is split so the expensive half runs on machines other than the developer's:
 - **M0a — builds and links (CI):** `cargo clippy -D warnings`, `cargo test`,
   and a release build of the spike must pass on `windows-latest` and
   `macos-latest`. CI uploads the binaries as artifacts.
+
+  **✅ Passed 2026-08-18, first attempt** ([run #1](https://github.com/vunm-io/caithung/actions/runs/32116753236)):
+  rustfmt 13s; windows-latest clippy+tests+release build green in 19m;
+  macos-latest green in 17m; both spike artifacts uploaded. Uncached run —
+  later runs will be faster via rust-cache.
 - **M0b — opens and is smooth (real hardware):** run the artifact on Windows 11
   and macOS and record the table below. Must also be attempted on one "dirty"
   Windows machine (VM or RDP, i.e. weak/no Vulkan) — the *required* outcome
