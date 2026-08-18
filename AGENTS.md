@@ -44,6 +44,10 @@ targets — Windows is the primary daily driver and must never be the lagging po
   trailers `AI-Assisted-By:` / `AI-Reviewed-By:` are allowed when material.
 - Branches: `<type>/thung-NNNN-short-description`; merge to `main`.
 - ADR for every irreversible choice, in `docs/adr/NNNN-title.md`.
+- Change management from M1 onward: **OpenSpec** (`openspec/`, `/opsx:*`
+  commands, spec-driven schema) — explore → propose → specify → apply → archive.
+  Change directory names are lowercase (`thung-0002-...`). The CLI is installed
+  automatically in web sessions by `.claude/hooks/session-start.sh`.
 - Verify external facts (crate versions, AWS behavior) against current sources
   before shipping an identifier — the UI stack moves fast; do not trust this
   file or the brief over `cargo` and upstream docs, and say so when they drift.
