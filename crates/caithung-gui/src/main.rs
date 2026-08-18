@@ -17,11 +17,12 @@
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, AppContext, Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled,
-    Window, WindowOptions, div, px,
+    App, AppContext, Bounds, Context, Entity, InteractiveElement, IntoElement, ParentElement,
+    Render, ScrollWheelEvent, SharedString, Styled, Window, WindowBounds, WindowOptions, div, px,
+    size,
 };
 use gpui_component::{
-    ActiveTheme, Root, h_flex,
+    ActiveTheme, Root, TitleBar, h_flex,
     table::{Column, DataTable, TableDelegate, TableState},
     v_flex,
 };
@@ -139,10 +140,25 @@ impl TableDelegate for SpikeDelegate {
     }
 }
 
+/// Wheel-acceleration tuning. A single unhurried notch scrolls exactly like
+/// the native table (plus `WHEEL_BASE_BOOST`); notches arriving faster than
+/// `WHEEL_ACCEL_WINDOW` build a streak that multiplies the scroll distance,
+/// so a hard flick travels far while precision scrolling stays precise.
+/// Touchpads (`ScrollDelta::precise()`) are left entirely to the OS momentum.
+const WHEEL_ACCEL_WINDOW: Duration = Duration::from_millis(120);
+/// Extra fraction of the native delta always added (0.4 → 1.4× base speed).
+const WHEEL_BASE_BOOST: f32 = 0.4;
+/// Extra fraction added per streak step.
+const WHEEL_ACCEL_STEP: f32 = 0.35;
+/// Streak cap: with the values above, a sustained flick tops out ≈ 6× native.
+const WHEEL_MAX_STREAK: f32 = 14.0;
+
 struct SpikeApp {
     table: Entity<TableState<SpikeDelegate>>,
     started: Instant,
     first_paint: Option<Duration>,
+    last_wheel: Option<Instant>,
+    wheel_streak: f32,
 }
 
 impl SpikeApp {
@@ -203,6 +219,8 @@ impl SpikeApp {
             table,
             started,
             first_paint: None,
+            last_wheel: None,
+            wheel_streak: 0.0,
         }
     }
 }
@@ -223,42 +241,89 @@ impl Render for SpikeApp {
             .size_full()
             .bg(cx.theme().background)
             .child(
-                h_flex()
-                    .w_full()
-                    .px_3()
-                    .py_2()
-                    .justify_between()
-                    .child(
-                        div()
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .child("caithung — M0 spike"),
-                    )
-                    .child(div().text_color(cx.theme().muted_foreground).child(status)),
+                // Draws the draggable title bar with native-feeling window
+                // controls; pairs with `TitleBar::window_options()` in main().
+                TitleBar::new().child(
+                    h_flex()
+                        .w_full()
+                        .pr_2()
+                        .justify_between()
+                        .child(
+                            div()
+                                .font_weight(gpui::FontWeight::BOLD)
+                                .child("caithung — M0 spike"),
+                        )
+                        .child(div().text_color(cx.theme().muted_foreground).child(status)),
+                ),
             )
             .child(
+                // `relative()` so the FPS HUD pins to this container's top
+                // right, below the title bar, instead of covering it.
                 div()
+                    .relative()
                     .min_h_0()
                     .flex_1()
                     .px_3()
                     .pb_3()
-                    .child(DataTable::new(&self.table)),
+                    .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, window, cx| {
+                        if event.delta.precise() {
+                            return; // Touchpad: the OS already applies momentum.
+                        }
+                        let now = Instant::now();
+                        let rapid = this
+                            .last_wheel
+                            .is_some_and(|t| now - t < WHEEL_ACCEL_WINDOW);
+                        this.last_wheel = Some(now);
+                        this.wheel_streak = if rapid {
+                            (this.wheel_streak + 1.0).min(WHEEL_MAX_STREAK)
+                        } else {
+                            0.0
+                        };
+                        let boost = WHEEL_BASE_BOOST + this.wheel_streak * WHEEL_ACCEL_STEP;
+                        let delta = event.delta.pixel_delta(window.line_height());
+                        let handle = this
+                            .table
+                            .read(cx)
+                            .vertical_scroll_handle
+                            .0
+                            .borrow()
+                            .base_handle
+                            .clone();
+                        let mut offset = handle.offset();
+                        offset.y += delta.y * boost;
+                        handle.set_offset(offset);
+                        cx.notify();
+                    }))
+                    .child(DataTable::new(&self.table))
+                    .child(fps_monitor(window, cx)),
             )
-            .child(fps_monitor(window, cx))
     }
 }
 
 fn main() {
     let started = Instant::now();
-    gpui_platform::application().run(move |cx| {
-        gpui_component::init(cx);
+    gpui_platform::application()
+        .with_assets(gpui_component_assets::Assets)
+        .run(move |cx| {
+            gpui_component::init(cx);
 
-        cx.spawn(async move |cx| {
-            cx.open_window(WindowOptions::default(), |window, cx| {
-                let view = cx.new(|cx| SpikeApp::new(started, window, cx));
-                cx.new(|cx| Root::new(view, window, cx))
+            cx.spawn(async move |cx| {
+                let options = cx.update(|cx| WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                        None,
+                        size(px(1280.), px(800.)),
+                        cx,
+                    ))),
+                    ..TitleBar::window_options()
+                });
+
+                cx.open_window(options, |window, cx| {
+                    window.set_window_title("caithung — M0 spike");
+                    let view = cx.new(|cx| SpikeApp::new(started, window, cx));
+                    cx.new(|cx| Root::new(view, window, cx))
+                })
+                .expect("failed to open window");
             })
-            .expect("failed to open window");
-        })
-        .detach();
-    });
+            .detach();
+        });
 }
