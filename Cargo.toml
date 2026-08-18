@@ -34,6 +34,13 @@ thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "macros"] }
 flume = "0.11"
 
+# AWS stack — THUNG-0002. Versions verified against crates.io on 2026-08-19;
+# Cargo.lock freezes the exact graph, bumps are deliberate.
+aws-config = { version = "1.10.1", features = ["sso"] }
+aws-sdk-s3 = "1.142.0"
+rustls-platform-verifier = "0.7.0"
+async-trait = "0.1.92"
+
 # gpui is unusable without optimization, even in dev builds (mirrors upstream).
 [profile.dev.package.gpui]
 opt-level = 3

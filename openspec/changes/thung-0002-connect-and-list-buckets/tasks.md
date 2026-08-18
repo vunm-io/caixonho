@@ -4,23 +4,23 @@
 
 ## 1. Core scaffolding
 
-- [ ] 1.1 [dispatch: main] Add `aws-config` (with the `sso` feature), `aws-sdk-s3`,
+- [x] 1.1 [dispatch: main] Add `aws-config` (with the `sso` feature), `aws-sdk-s3`,
       `rustls-platform-verifier`, `tokio` and `async-trait` to the workspace,
       pinned, and wire them into `caixonho-core`
-- [ ] 1.2 [dispatch: main] Add the crate's error type (`caixonho_core::Error`) with one variant
+- [x] 1.2 [dispatch: main] Add the crate's error type (`caixonho_core::Error`) with one variant
       per cause named in `specs/connections/spec.md`: no credentials, expired
       session, TLS trust, network, access denied (carrying the required IAM
       action), missing configuration, unexpected
-- [ ] 1.3 [dispatch: main] Add domain types `Profile`, `ConnectionId`, `Bucket` (name, creation
+- [x] 1.3 [dispatch: main] Add domain types `Profile`, `ConnectionId`, `Bucket` (name, creation
       date, `Region::Known | Unknown`) — no `aws-sdk-s3` type in any public
       signature
 
 ## 2. S3 port and its test double
 
-- [ ] 2.1 [dispatch: main] Define the async `ObjectStore` trait with `list_buckets`
-- [ ] 2.2 [dispatch: main] Write the hand-rolled test double: canned success, empty account, and
+- [x] 2.1 [dispatch: main] Define the async `ObjectStore` trait with `list_buckets`
+- [x] 2.2 [dispatch: main] Write the hand-rolled test double: canned success, empty account, and
       one constructor per error variant
-- [ ] 2.3 [dispatch: main] Write the failing tests first for bucket mapping and for the
+- [x] 2.3 [dispatch: main] Write the failing tests first for bucket mapping and for the
       empty-account case (`bucket-listing` spec, scenarios 1 and 3)
 
 ## 3. Credential resolution

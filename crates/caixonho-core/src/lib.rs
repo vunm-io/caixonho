@@ -23,3 +23,10 @@
 //!   core may not.
 
 pub mod capability;
+pub mod error;
+pub mod store;
+pub mod types;
+
+pub use error::{Error, Result};
+pub use store::ObjectStore;
+pub use types::{Bucket, ConnectionId, Profile, Region};
