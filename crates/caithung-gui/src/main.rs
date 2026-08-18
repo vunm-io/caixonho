@@ -1,3 +1,10 @@
+// A GUI app must not spawn a console window on Windows. Debug builds keep one
+// so `println!` and panic output stay visible while developing.
+#![cfg_attr(
+    all(target_os = "windows", not(debug_assertions)),
+    windows_subsystem = "windows"
+)]
+
 //! # M0 spike — prove the UI stack before any product code.
 //!
 //! What this binary must demonstrate (see `docs/adr/0001-ui-framework.md`):
@@ -17,8 +24,8 @@
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, AppContext, Bounds, Context, Entity, InteractiveElement, IntoElement, ParentElement,
-    Render, ScrollWheelEvent, SharedString, Styled, Window, WindowBounds, WindowOptions, div, px,
+    App, AppContext, Bounds, Context, Entity, IntoElement, ParentElement, Pixels, Render,
+    ScrollWheelEvent, SharedString, Styled, Window, WindowBounds, WindowOptions, canvas, div, px,
     size,
 };
 use gpui_component::{
@@ -140,18 +147,23 @@ impl TableDelegate for SpikeDelegate {
     }
 }
 
-/// Wheel-acceleration tuning. A single unhurried notch scrolls exactly like
-/// the native table (plus `WHEEL_BASE_BOOST`); notches arriving faster than
-/// `WHEEL_ACCEL_WINDOW` build a streak that multiplies the scroll distance,
-/// so a hard flick travels far while precision scrolling stays precise.
-/// Touchpads (`ScrollDelta::precise()`) are left entirely to the OS momentum.
-const WHEEL_ACCEL_WINDOW: Duration = Duration::from_millis(120);
-/// Extra fraction of the native delta always added (0.4 → 1.4× base speed).
-const WHEEL_BASE_BOOST: f32 = 0.4;
-/// Extra fraction added per streak step.
-const WHEEL_ACCEL_STEP: f32 = 0.35;
-/// Streak cap: with the values above, a sustained flick tops out ≈ 6× native.
-const WHEEL_MAX_STREAK: f32 = 14.0;
+/// Wheel-acceleration tuning.
+///
+/// The handler takes the wheel event over entirely (capture phase +
+/// `stop_propagation`), so these are absolute multipliers on the native
+/// per-notch distance rather than additions to it. A lone notch moves
+/// `WHEEL_BASE_MULTIPLIER`; notches arriving within `WHEEL_ACCEL_WINDOW` of
+/// each other build a streak worth `WHEEL_ACCEL_STEP` apiece, capped at
+/// `WHEEL_MAX_MULTIPLIER`. Pausing resets the streak, so precision scrolling
+/// stays precise. Touchpads (`ScrollDelta::precise()`) are left alone: the OS
+/// already applies momentum there, and stacking ours on top is unusable.
+const WHEEL_ACCEL_WINDOW: Duration = Duration::from_millis(140);
+/// Speed of a single unhurried notch, relative to native.
+const WHEEL_BASE_MULTIPLIER: f32 = 1.6;
+/// Added to the multiplier per consecutive fast notch.
+const WHEEL_ACCEL_STEP: f32 = 0.5;
+/// Ceiling for a sustained flick.
+const WHEEL_MAX_MULTIPLIER: f32 = 8.0;
 
 struct SpikeApp {
     table: Entity<TableState<SpikeDelegate>>,
@@ -225,6 +237,74 @@ impl SpikeApp {
     }
 }
 
+impl SpikeApp {
+    /// An invisible overlay that takes mouse-wheel events over from the table
+    /// and re-applies them with acceleration.
+    ///
+    /// It has to run in the **capture** phase: the table scrolls through
+    /// gpui's `uniform_list`, whose own wheel listener runs in the bubble
+    /// phase, and anything we add afterwards is overwritten when the list
+    /// paints. Capturing first — and stopping propagation — makes this the
+    /// only code that moves the table, so the multiplier is exact instead of
+    /// being layered onto a scroll that already happened.
+    ///
+    /// A `canvas` is used purely as a hook into the paint phase, where
+    /// `Window::on_mouse_event` can be registered; it draws nothing and
+    /// inserts no hitbox, so it never blocks clicks on rows.
+    fn wheel_accelerator(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let table = self.table.clone();
+        let this = cx.entity();
+
+        canvas(
+            |_, _, _| (),
+            move |bounds: Bounds<Pixels>, _, window: &mut Window, _| {
+                let line_height = window.line_height();
+                window.on_mouse_event(
+                    move |event: &ScrollWheelEvent, phase, window: &mut Window, cx| {
+                        if !phase.capture() || !bounds.contains(&event.position) {
+                            return;
+                        }
+                        // Touchpads and horizontal scrolling keep native behaviour.
+                        let delta = event.delta.pixel_delta(line_height);
+                        if event.delta.precise() || delta.y.abs() <= delta.x.abs() {
+                            return;
+                        }
+
+                        let multiplier = this.update(cx, |this, _| {
+                            let now = Instant::now();
+                            let rapid = this
+                                .last_wheel
+                                .is_some_and(|prev| now - prev < WHEEL_ACCEL_WINDOW);
+                            this.last_wheel = Some(now);
+                            this.wheel_streak = if rapid { this.wheel_streak + 1.0 } else { 0.0 };
+                            (WHEEL_BASE_MULTIPLIER + this.wheel_streak * WHEEL_ACCEL_STEP)
+                                .min(WHEEL_MAX_MULTIPLIER)
+                        });
+
+                        let handle = table
+                            .read(cx)
+                            .vertical_scroll_handle
+                            .0
+                            .borrow()
+                            .base_handle
+                            .clone();
+                        let max = handle.max_offset().y;
+                        let mut offset = handle.offset();
+                        // Offsets run from 0 (top) to -max (bottom).
+                        offset.y = (offset.y + delta.y * multiplier).clamp(-max, px(0.));
+                        handle.set_offset(offset);
+
+                        cx.stop_propagation();
+                        window.refresh();
+                    },
+                );
+            },
+        )
+        .absolute()
+        .size_full()
+    }
+}
+
 impl Render for SpikeApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.first_paint.is_none() {
@@ -265,36 +345,8 @@ impl Render for SpikeApp {
                     .flex_1()
                     .px_3()
                     .pb_3()
-                    .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, window, cx| {
-                        if event.delta.precise() {
-                            return; // Touchpad: the OS already applies momentum.
-                        }
-                        let now = Instant::now();
-                        let rapid = this
-                            .last_wheel
-                            .is_some_and(|t| now - t < WHEEL_ACCEL_WINDOW);
-                        this.last_wheel = Some(now);
-                        this.wheel_streak = if rapid {
-                            (this.wheel_streak + 1.0).min(WHEEL_MAX_STREAK)
-                        } else {
-                            0.0
-                        };
-                        let boost = WHEEL_BASE_BOOST + this.wheel_streak * WHEEL_ACCEL_STEP;
-                        let delta = event.delta.pixel_delta(window.line_height());
-                        let handle = this
-                            .table
-                            .read(cx)
-                            .vertical_scroll_handle
-                            .0
-                            .borrow()
-                            .base_handle
-                            .clone();
-                        let mut offset = handle.offset();
-                        offset.y += delta.y * boost;
-                        handle.set_offset(offset);
-                        cx.notify();
-                    }))
                     .child(DataTable::new(&self.table))
+                    .child(self.wheel_accelerator(cx))
                     .child(fps_monitor(window, cx)),
             )
     }
