@@ -1,7 +1,7 @@
-//! # caithung-core
+//! # caixonho-core
 //!
-//! The engine behind caithung, a fast, native, cross-platform S3 client.
-//! From Vietnamese *"cái thùng"* — the bucket.
+//! The engine behind caixonho, a fast, native, cross-platform S3 client.
+//! From Vietnamese *"cái xô nhỏ"* — the little pail.
 //!
 //! This crate owns **all** product logic: credential and profile resolution,
 //! the SSO device flow, client construction, listing and pagination, the

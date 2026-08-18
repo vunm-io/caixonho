@@ -1,4 +1,4 @@
-# caithung — project brief
+# caixonho — project brief
 
 The living spec. Started from the 2026-08-18 kickoff brief, updated as decisions
 land; irreversible decisions get an ADR in `docs/adr/` and are only summarized here.
@@ -23,9 +23,11 @@ at M4, not before.
 
 ### Name
 
-**caithung**, from Vietnamese *"cái thùng"* — "the bucket". Verified unique on
-crates.io and effectively unique as a search token. Crates: `caithung-core`,
-`caithung-gui`, `caithung-cli`; binary `caithung`.
+**caixonho**, from Vietnamese *"cái xô nhỏ"* — "the little pail". Renamed from
+the launch name *caithung* ("cái thùng" — the bucket) on 2026-08-18, before any
+announcement or crates.io publication. Verified unique on crates.io, GitHub and
+as a web search token (2026-08-18). Crates: `caixonho-core`, `caixonho-gui`,
+`caixonho-cli`; binary `caixonho`.
 
 ## 2. Non-goals (say no early, revisit later)
 
@@ -42,7 +44,7 @@ crates.io and effectively unique as a search token. Crates: `caithung-core`,
 |---|---|
 | v1 | **Windows 11** and **macOS (Apple Silicon + Intel)** — first-class, shipped together |
 | v2 | Linux (Ubuntu first), then a `.deb`/AppImage/Flatpak decision |
-| v3 | **CLI** (`caithung ...`) sharing the same core crate |
+| v3 | **CLI** (`caixonho ...`) sharing the same core crate |
 | v4 (maybe) | TUI for servers |
 
 Windows is the primary daily driver and **must never be the lagging port**. Note
@@ -114,7 +116,7 @@ distinct (dimmed + lock badge), and clicking them explains why.
 - No API enumerates effective permissions ⇒ capability is **observed, not
   declared**: per-scope `Capability { list, read, write, delete }`, each
   `Unknown | Allowed | Denied`, defaulting to `Unknown` (seeded in
-  `caithung-core::capability`). UI additionally shows a `Probing` state so
+  `caixonho-core::capability`). UI additionally shows a `Probing` state so
   rows don't flicker between unknown and denied.
 - Cheap non-destructive probes: `HeadBucket`, `ListObjectsV2 max-keys=1`,
   ranged `GetObject` (`bytes=0-0`) on a known key.
@@ -124,7 +126,7 @@ distinct (dimmed + lock badge), and clicking them explains why.
   scroll), run under their own small concurrency budget, and never block render.
   200 buckets in an account must not mean 200 startup requests.
 - **Dimming granularity is bucket/prefix only.** Per-object permissions cannot be
-  known without per-object probes, so caithung does not pretend: objects are not
+  known without per-object probes, so caixonho does not pretend: objects are not
   dimmed; a failing object operation produces the rich error instead. (ADR when
   the model lands.)
 - **The critical UX rule:** never render "denied" when the truth is an expired
@@ -239,18 +241,18 @@ identifiers:
 ## 6. Architecture
 
 ```
-caithung/                    # cargo workspace
+caixonho/                    # cargo workspace
 ├── crates/
-│   ├── caithung-core/       # NO UI. async. all product logic; trait-based S3
+│   ├── caixonho-core/       # NO UI. async. all product logic; trait-based S3
 │   │                        # port, testable without AWS.
-│   ├── caithung-gui/        # GPUI app: views, theming, keymap, state. Thin.
-│   └── caithung-cli/        # later (v3), same core
+│   ├── caixonho-gui/        # GPUI app: views, theming, keymap, state. Thin.
+│   └── caixonho-cli/        # later (v3), same core
 └── docs/
     ├── PROJECT_BRIEF.md     # this file
     └── adr/                 # one ADR per irreversible decision
 ```
 
-Rules: `caithung-gui` never depends on `aws-sdk-s3` (core re-exports domain
+Rules: `caixonho-gui` never depends on `aws-sdk-s3` (core re-exports domain
 types); every long operation is cancellable and streams progress; concurrency
 limits, retry policy and part sizes are core configuration, not UI constants.
 
@@ -299,7 +301,7 @@ limits, retry policy and part sizes are core configuration, not UI constants.
 
 | Date | Decision | Where |
 |---|---|---|
-| 2026-08-18 | Name: **caithung** | this file §1 |
+| 2026-08-18 | Name: **caixonho** | this file §1 |
 | 2026-08-18 | UI stack: **GPUI + gpui-component from git, pinned ("stack B")** | ADR-0001 |
 | 2026-08-18 | License: **dual MIT OR Apache-2.0** (matches upstream Apache-2.0; widest reuse) | LICENSE-* |
 | 2026-08-18 | **Public repo from day zero**; announcement decoupled (M4). Decisive factor: free unmetered CI on public repos vs 2000 min/mo with 2×/10× Windows/macOS multipliers on private | this file §1 |

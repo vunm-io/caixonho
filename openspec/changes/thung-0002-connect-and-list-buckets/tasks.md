@@ -2,8 +2,8 @@
 
 - [ ] 1.1 Add `aws-config` (with the `sso` feature), `aws-sdk-s3`,
       `rustls-platform-verifier`, `tokio` and `async-trait` to the workspace,
-      pinned, and wire them into `caithung-core`
-- [ ] 1.2 Add the crate's error type (`caithung_core::Error`) with one variant
+      pinned, and wire them into `caixonho-core`
+- [ ] 1.2 Add the crate's error type (`caixonho_core::Error`) with one variant
       per cause named in `specs/connections/spec.md`: no credentials, expired
       session, TLS trust, network, access denied (carrying the required IAM
       action), missing configuration, unexpected

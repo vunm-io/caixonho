@@ -1,7 +1,7 @@
 ## Why
 
 M0 proved the UI stack can render 100k rows at 60fps, but every row it shows is
-synthetic. caithung cannot yet talk to S3 at all. This change opens the
+synthetic. caixonho cannot yet talk to S3 at all. This change opens the
 narrowest end-to-end path — real credentials → a real AWS call → a domain type →
 the existing table — so the architecture in `docs/PROJECT_BRIEF.md` §6 is proven
 by working code rather than by intention, and every later M1 slice (prefix
@@ -15,7 +15,7 @@ under a feature.
 
 ## What Changes
 
-- **A connection model in `caithung-core`.** A connection resolves credentials
+- **A connection model in `caixonho-core`.** A connection resolves credentials
   for one named profile (or the default chain) and produces a ready S3 client.
   Resolution covers what the AWS SDK already understands: named profiles from
   `~/.aws/config` and `~/.aws/credentials`, static keys, `role_arn` +
@@ -65,9 +65,9 @@ None — this is the first behavioural change in the project.
 
 ## Impact
 
-- **Crates**: `caithung-core` gains its first real modules (connection,
+- **Crates**: `caixonho-core` gains its first real modules (connection,
   credentials, S3 port, errors, bucket listing) and its first async surface;
-  `caithung-gui` loses the synthetic feed and gains a profile picker plus error
+  `caixonho-gui` loses the synthetic feed and gains a profile picker plus error
   states.
 - **Dependencies** (all pre-authorised by the project brief §5.2–5.3):
   `aws-config` with the `sso` feature, `aws-sdk-s3`, `rustls-platform-verifier`,

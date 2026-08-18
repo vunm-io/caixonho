@@ -6,7 +6,7 @@
 
 ## Context
 
-caithung needs a GPU-rendered, low-latency, cross-platform (Windows 11 + macOS)
+caixonho needs a GPU-rendered, low-latency, cross-platform (Windows 11 + macOS)
 UI with a virtualized table as its centerpiece. GPUI (Zed's framework) was
 chosen for the target feel; the practical question is *which distribution* of
 GPUI to build on. Facts verified against crates.io and upstream sources on
@@ -61,7 +61,7 @@ Two viable stacks:
    "recent" stable (1.94) fails with E0658 — a floating `channel = "stable"`
    would make builds depend on how fresh each machine's rustup happens to be.
 
-Insurance policy: the crate split keeps 100% of S3 logic in `caithung-core`
+Insurance policy: the crate split keeps 100% of S3 logic in `caixonho-core`
 with no UI dependency, so a framework exit costs the GUI crate only.
 
 ## Gates (M0)
@@ -72,7 +72,7 @@ M0 is split so the expensive half runs on machines other than the developer's:
   and a release build of the spike must pass on `windows-latest` and
   `macos-latest`. CI uploads the binaries as artifacts.
 
-  **✅ Passed 2026-08-18, first attempt** ([run #1](https://github.com/vunm-io/caithung/actions/runs/32116753236)):
+  **✅ Passed 2026-08-18, first attempt** ([run #1](https://github.com/vunm-io/caixonho/actions/runs/32116753236)):
   rustfmt 13s; windows-latest clippy+tests+release build green in 19m;
   macos-latest green in 17m; both spike artifacts uploaded. Uncached run —
   later runs will be faster via rust-cache.

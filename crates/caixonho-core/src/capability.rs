@@ -1,7 +1,7 @@
 //! The observed-capability model.
 //!
 //! S3 has no API that enumerates a caller's effective permissions, so
-//! caithung never *declares* what the user can do — it records what has been
+//! caixonho never *declares* what the user can do — it records what has been
 //! *observed*, one operation at a time, and is honest about everything else.
 //!
 //! This module is the seed of that model. It will grow probing, caching and
@@ -25,7 +25,7 @@ pub enum Observation {
     Denied,
 }
 
-/// The set of capabilities caithung tracks per scope.
+/// The set of capabilities caixonho tracks per scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Capability {
     pub list: Observation,

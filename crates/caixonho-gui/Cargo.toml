@@ -1,6 +1,6 @@
 [package]
-name = "caithung-gui"
-description = "caithung desktop app (GPUI). Currently the M0 spike."
+name = "caixonho-gui"
+description = "caixonho desktop app (GPUI). Currently the M0 spike."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -35,12 +35,12 @@ jobs:
       - name: Tests
         run: cargo test --workspace
       - name: Build spike (release)
-        run: cargo build --release -p caithung-gui
+        run: cargo build --release -p caixonho-gui
       - name: Upload spike binary (M0b hand-off)
         uses: actions/upload-artifact@v4
         with:
-          name: caithung-spike-${{ matrix.os }}
+          name: caixonho-spike-${{ matrix.os }}
           path: |
-            target/release/caithung-gui
-            target/release/caithung-gui.exe
+            target/release/caixonho-gui
+            target/release/caixonho-gui.exe
           if-no-files-found: error

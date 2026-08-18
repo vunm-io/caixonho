@@ -1,6 +1,6 @@
 [package]
-name = "caithung-core"
-description = "Core engine of caithung: auth, listing, capability model, transfers. No UI."
+name = "caixonho-core"
+description = "Core engine of caixonho: auth, listing, capability model, transfers. No UI."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

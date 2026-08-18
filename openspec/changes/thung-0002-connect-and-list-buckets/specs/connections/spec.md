@@ -1,6 +1,6 @@
 ## Purpose
 
-Turning a user's chosen AWS profile into credentials caithung can call S3 with,
+Turning a user's chosen AWS profile into credentials caixonho can call S3 with,
 and — when that fails — saying precisely which of the several indistinguishable
 causes actually occurred, so the user fixes the right thing.
 

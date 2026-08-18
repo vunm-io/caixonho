@@ -823,14 +823,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "caithung-core"
+name = "caixonho-core"
 version = "0.0.0"
 dependencies = [
  "thiserror 2.0.20",
 ]
 
 [[package]]
-name = "caithung-gui"
+name = "caixonho-gui"
 version = "0.0.0"
 dependencies = [
  "anyhow",

@@ -1,7 +1,7 @@
 ## Context
 
-See `proposal.md` — Why. The relevant existing state: `caithung-core` holds only
-the capability seed and has no async surface; `caithung-gui` is the M0 spike,
+See `proposal.md` — Why. The relevant existing state: `caixonho-core` holds only
+the capability seed and has no async surface; `caixonho-gui` is the M0 spike,
 whose tokio→channel→GPUI-executor bridge (`main.rs`) is the one part meant to
 survive. Project constraints that bind this design are in
 `docs/PROJECT_BRIEF.md` §5.2–5.3 and §6, and the UI stack is pinned by ADR-0001.
@@ -26,8 +26,8 @@ survive. Project constraints that bind this design are in
 
 ### The S3 port is a trait in core, with one AWS adapter
 
-`trait ObjectStore` (async, object-safe) exposes only what caithung needs —
-starting with `list_buckets`. `caithung-core` depends on the trait; the
+`trait ObjectStore` (async, object-safe) exposes only what caixonho needs —
+starting with `list_buckets`. `caixonho-core` depends on the trait; the
 `aws-sdk-s3` adapter implements it and is the only module that names an SDK
 type.
 
@@ -43,7 +43,7 @@ way to simulate a TLS-trust failure or an expired SSO token.
 
 ### Errors are classified once, at the adapter boundary
 
-The adapter converts every SDK failure into `caithung_core::Error` immediately;
+The adapter converts every SDK failure into `caixonho_core::Error` immediately;
 nothing above it sees `SdkError`. Classification order is fixed and tested:
 TLS-trust → network → expired/invalid session → access denied → missing
 configuration → unexpected. The order matters because the underlying strings

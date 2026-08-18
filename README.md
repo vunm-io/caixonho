@@ -1,6 +1,6 @@
-# caithung
+# caixonho
 
-> From Vietnamese **"cái thùng"** — *the bucket*.
+> From Vietnamese **"cái xô nhỏ"** — *the little pail* (that hauls big buckets).
 
 A fast, native, cross-platform S3 client. GPU-rendered with [GPUI](https://gpui.rs)
 (the framework behind Zed), written in Rust, built to feel instant: cold start under
@@ -13,7 +13,7 @@ follow along; the full requirements live in [`docs/PROJECT_BRIEF.md`](docs/PROJE
 ## Why another S3 client
 
 The existing GUI clients are some combination of feature-poor, slow, ugly,
-Windows-only, or paid. caithung aims to be *a file-explorer-grade S3 client that is
+Windows-only, or paid. caixonho aims to be *a file-explorer-grade S3 client that is
 honest about permissions and fast on huge buckets*:
 
 - **Honest about permissions.** Buckets and prefixes your credentials cannot touch
@@ -39,7 +39,7 @@ honest about permissions and fast on huge buckets*:
 Requires stable Rust (see `rust-toolchain.toml`).
 
 ```sh
-cargo run -p caithung-gui   # currently: the M0 spike (100k-row virtualized table)
+cargo run -p caixonho-gui   # currently: the M0 spike (100k-row virtualized table)
 ```
 
 ## License

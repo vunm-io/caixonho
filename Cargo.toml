@@ -1,16 +1,16 @@
 [workspace]
 resolver = "2"
-members = ["crates/caithung-core", "crates/caithung-gui"]
+members = ["crates/caixonho-core", "crates/caixonho-gui"]
 
 [workspace.package]
 version = "0.0.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/vunm-io/caithung"
+repository = "https://github.com/vunm-io/caixonho"
 authors = ["Vu Nguyen <vunm.dev@gmail.com>"]
 
 [workspace.dependencies]
-caithung-core = { path = "crates/caithung-core" }
+caixonho-core = { path = "crates/caixonho-core" }
 
 # UI stack — ADR-0001 (Stack B: git-pinned, tracking upstream development).
 #

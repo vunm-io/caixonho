@@ -19,7 +19,7 @@
 //!
 //! Everything in this file is spike code: it may be rewritten or deleted
 //! without ceremony once M0 is decided. The bridge pattern is the one part
-//! expected to survive, in `caithung-core`, in a hardened form.
+//! expected to survive, in `caixonho-core`, in a hardened form.
 
 use std::time::{Duration, Instant};
 
@@ -368,7 +368,7 @@ impl Render for SpikeApp {
                         .child(
                             div()
                                 .font_weight(gpui::FontWeight::BOLD)
-                                .child("caithung — M0 spike"),
+                                .child("caixonho — M0 spike"),
                         )
                         .child(div().text_color(cx.theme().muted_foreground).child(status)),
                 ),
@@ -407,7 +407,7 @@ fn main() {
                 });
 
                 cx.open_window(options, |window, cx| {
-                    window.set_window_title("caithung — M0 spike");
+                    window.set_window_title("caixonho — M0 spike");
                     let view = cx.new(|cx| SpikeApp::new(started, window, cx));
                     cx.new(|cx| Root::new(view, window, cx))
                 })
