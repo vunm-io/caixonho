@@ -1,0 +1,17 @@
+[package]
+name = "caithung-gui"
+description = "caithung desktop app (GPUI). Currently the M0 spike."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+gpui.workspace = true
+gpui_platform.workspace = true
+gpui-component.workspace = true
+gpui-fps.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+flume.workspace = true

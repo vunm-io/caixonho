@@ -1,0 +1,5 @@
+# Follows the Rust toolchain pinned by zed at the revision our UI stack is
+# locked to (see ADR-0001). Bump this together with the stack, never separately.
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]

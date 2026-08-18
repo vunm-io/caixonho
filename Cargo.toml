@@ -1,0 +1,42 @@
+[workspace]
+resolver = "2"
+members = ["crates/caithung-core", "crates/caithung-gui"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/vunm-io/caithung"
+authors = ["Vu Nguyen <vunm.dev@gmail.com>"]
+
+[workspace.dependencies]
+caithung-core = { path = "crates/caithung-core" }
+
+# UI stack — ADR-0001 (Stack B: git-pinned, tracking upstream development).
+#
+# `gpui` and `gpui_platform` deliberately carry NO `rev`: their specs must be
+# byte-identical to gpui-component's own declarations so Cargo unifies them
+# into a single source. The actual zed commit is frozen by Cargo.lock.
+# Bumping any of these is a deliberate, standalone PR — see ADR-0001.
+gpui = { version = "0.2.2", git = "https://github.com/zed-industries/zed" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", features = [
+    "font-kit",
+    "x11",
+    "wayland",
+    "runtime_shaders",
+] }
+gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "7a9ac172e804ce89aebac644a02f09813dc9e793" }
+gpui-fps = { git = "https://github.com/longbridge/gpui-component", rev = "7a9ac172e804ce89aebac644a02f09813dc9e793" }
+
+anyhow = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "macros"] }
+flume = "0.11"
+
+# gpui is unusable without optimization, even in dev builds (mirrors upstream).
+[profile.dev.package.gpui]
+opt-level = 3
+[profile.dev.package.gpui_platform]
+opt-level = 3
+[profile.dev.package.taffy]
+opt-level = 3
