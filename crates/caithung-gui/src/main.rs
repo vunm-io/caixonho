@@ -155,8 +155,7 @@ impl TableDelegate for SpikeDelegate {
 /// `WHEEL_BASE_MULTIPLIER`; notches arriving within `WHEEL_ACCEL_WINDOW` of
 /// each other build a streak worth `WHEEL_ACCEL_STEP` apiece, capped at
 /// `WHEEL_MAX_MULTIPLIER`. Pausing resets the streak, so precision scrolling
-/// stays precise. Touchpads (`ScrollDelta::precise()`) are left alone: the OS
-/// already applies momentum there, and stacking ours on top is unusable.
+/// stays precise.
 const WHEEL_ACCEL_WINDOW: Duration = Duration::from_millis(140);
 /// Speed of a single unhurried notch, relative to native.
 const WHEEL_BASE_MULTIPLIER: f32 = 1.6;
@@ -164,6 +163,34 @@ const WHEEL_BASE_MULTIPLIER: f32 = 1.6;
 const WHEEL_ACCEL_STEP: f32 = 0.5;
 /// Ceiling for a sustained flick.
 const WHEEL_MAX_MULTIPLIER: f32 = 8.0;
+
+/// Trackpad-flick tuning.
+///
+/// Trackpads (`ScrollDelta::precise()`) need different treatment: the OS
+/// already applies momentum, and the time-streak accelerator stacked on top
+/// of it compounds into fly-away scrolling (tried and reverted). Instead each
+/// precise event gets a stateless multiplier from its own velocity. Gentle
+/// scrolling stays under `TRACKPAD_BOOST_THRESHOLD` px/event and is left
+/// entirely on the native path, so precision is untouched; past it a flick
+/// ramps linearly to `TRACKPAD_MAX_MULTIPLIER` over `TRACKPAD_BOOST_SPAN`
+/// px/event. The OS momentum tail runs through the same curve: it starts fast
+/// (boosted, so the coast actually covers ground in a 100k-row table) and
+/// decays back under the threshold (native again, so it settles precisely).
+const TRACKPAD_BOOST_THRESHOLD: f32 = 12.0;
+/// px/event over which the boost ramps from 1x up to the ceiling.
+const TRACKPAD_BOOST_SPAN: f32 = 90.0;
+/// Ceiling for a hard flick and the start of its momentum tail.
+const TRACKPAD_MAX_MULTIPLIER: f32 = 4.0;
+
+/// Stateless velocity→multiplier curve for precise (trackpad) scrolling.
+/// `None` means "leave this event entirely on the native path".
+fn trackpad_multiplier(speed: f32) -> Option<f32> {
+    let ramp = (speed - TRACKPAD_BOOST_THRESHOLD) / TRACKPAD_BOOST_SPAN;
+    if ramp <= 0.0 {
+        return None;
+    }
+    Some(1.0 + ramp.min(1.0) * (TRACKPAD_MAX_MULTIPLIER - 1.0))
+}
 
 struct SpikeApp {
     table: Entity<TableState<SpikeDelegate>>,
@@ -264,22 +291,32 @@ impl SpikeApp {
                         if !phase.capture() || !bounds.contains(&event.position) {
                             return;
                         }
-                        // Touchpads and horizontal scrolling keep native behaviour.
+                        // Horizontal scrolling keeps native behaviour.
                         let delta = event.delta.pixel_delta(line_height);
-                        if event.delta.precise() || delta.y.abs() <= delta.x.abs() {
+                        if delta.y.abs() <= delta.x.abs() {
                             return;
                         }
 
-                        let multiplier = this.update(cx, |this, _| {
-                            let now = Instant::now();
-                            let rapid = this
-                                .last_wheel
-                                .is_some_and(|prev| now - prev < WHEEL_ACCEL_WINDOW);
-                            this.last_wheel = Some(now);
-                            this.wheel_streak = if rapid { this.wheel_streak + 1.0 } else { 0.0 };
-                            (WHEEL_BASE_MULTIPLIER + this.wheel_streak * WHEEL_ACCEL_STEP)
-                                .min(WHEEL_MAX_MULTIPLIER)
-                        });
+                        let multiplier = if event.delta.precise() {
+                            // Trackpad: stateless velocity curve. Under the
+                            // threshold the event stays on the native path.
+                            match trackpad_multiplier(f32::from(delta.y.abs())) {
+                                Some(multiplier) => multiplier,
+                                None => return,
+                            }
+                        } else {
+                            this.update(cx, |this, _| {
+                                let now = Instant::now();
+                                let rapid = this
+                                    .last_wheel
+                                    .is_some_and(|prev| now - prev < WHEEL_ACCEL_WINDOW);
+                                this.last_wheel = Some(now);
+                                this.wheel_streak =
+                                    if rapid { this.wheel_streak + 1.0 } else { 0.0 };
+                                (WHEEL_BASE_MULTIPLIER + this.wheel_streak * WHEEL_ACCEL_STEP)
+                                    .min(WHEEL_MAX_MULTIPLIER)
+                            })
+                        };
 
                         let handle = table
                             .read(cx)
@@ -378,4 +415,26 @@ fn main() {
             })
             .detach();
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gentle_trackpad_scrolling_stays_native() {
+        assert_eq!(trackpad_multiplier(6.0), None);
+        assert_eq!(trackpad_multiplier(TRACKPAD_BOOST_THRESHOLD), None);
+    }
+
+    #[test]
+    fn flick_ramps_linearly_then_caps() {
+        let mid = trackpad_multiplier(TRACKPAD_BOOST_THRESHOLD + TRACKPAD_BOOST_SPAN / 2.0)
+            .expect("above threshold must boost");
+        assert!((mid - (1.0 + (TRACKPAD_MAX_MULTIPLIER - 1.0) / 2.0)).abs() < 1e-4);
+
+        let capped = trackpad_multiplier(TRACKPAD_BOOST_THRESHOLD + TRACKPAD_BOOST_SPAN * 3.0)
+            .expect("above threshold must boost");
+        assert_eq!(capped, TRACKPAD_MAX_MULTIPLIER);
+    }
 }
