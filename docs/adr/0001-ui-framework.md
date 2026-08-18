@@ -83,10 +83,10 @@ M0 is split so the expensive half runs on machines other than the developer's:
 
 | Measurement | Windows 11 | macOS | Bar |
 |---|---|---|---|
-| First paint (shown in-app) | **346 ms** ✅ | _TBD_ | < 500 ms |
-| FPS while flick-scrolling 100k rows (in-app HUD) | **61 fps, 5.4 ms frame, 0.0% drop** ✅ (idle drops to ~25 fps — demand-driven rendering, frame time stays ~7 ms) | _TBD_ | ≈ 60 fps, no hitches |
-| RSS with all 100k rows loaded | **156–158 MB** ✅ | _TBD_ | no runaway growth |
-| Async feed fills while scrolling | **100,000 / 100,000 reached, UI responsive** ✅ | _TBD_ | no stalls, counter reaches 100k |
+| First paint (shown in-app) | **346 ms** ✅ | **330 ms** ✅ | < 500 ms |
+| FPS while flick-scrolling 100k rows (in-app HUD) | **61 fps, 5.4 ms frame, 0.0% drop** ✅ (idle drops to ~25 fps — demand-driven rendering, frame time stays ~7 ms) | **95–105 fps, 3.0–3.3 ms frame, 0.0% drop** ✅ (120 Hz ProMotion display; idle drops to 0 fps — fully demand-driven) | ≈ 60 fps, no hitches |
+| RSS with all 100k rows loaded | **156–158 MB** ✅ | **121–122 MB** ✅ | no runaway growth |
+| Async feed fills while scrolling | **100,000 / 100,000 reached, UI responsive** ✅ | **100,000 / 100,000 reached, UI responsive** ✅ | no stalls, counter reaches 100k |
 | Behavior without Vulkan (Win VM/RDP) | _TBD_ | n/a | graceful error, no silent crash |
 
 Windows 11 evidence: owner's screenshots, 2026-08-18, spike from CI run #1
@@ -94,6 +94,14 @@ artifacts. One launch defect found and fixed the same day: the default window
 bounds could place the native title bar off-screen (looked like a missing
 header until maximized). Fixed by adopting `TitleBar` + centered window
 bounds; the FPS HUD also no longer overlaps the status line.
+
+macOS evidence: HUD readings captured 2026-08-18 while driving the spike with
+synthetic wheel-scroll bursts, on an Apple M5 Pro (48 GB RAM, macOS 26.5.2,
+built-in 3024×1964 ProMotion display). Local release build with the pinned
+1.97.1 toolchain. RSS cross-checked with `ps` (122 MB) and matched the in-app
+HUD (120–121 MB). The higher FPS ceiling vs Windows reflects the 120 Hz
+display, not a platform delta; frame times are comparable (3.0–3.3 ms vs
+3.3–5.4 ms).
 
 **Failure rule:** if Windows cannot be made to work within one focused day of
 effort, stop and record the result here — do not silently continue and do not
