@@ -24,6 +24,7 @@ use aws_runtime::env_config::file::{EnvConfigFileKind, EnvConfigFiles};
 use aws_sdk_s3::config::{Credentials, Region as SdkRegion};
 
 use crate::credentials::{self, SecretStore, StoredCredential};
+use crate::diagnostics::{self, SourceKind};
 use crate::error::{Error, Result};
 use crate::profiles::ConfigPaths;
 use crate::tls::HttpStack;
@@ -59,6 +60,20 @@ impl ConnectionSource {
         match self {
             Self::Profile(profile) => profile,
             Self::Stored(credential) => credential.name(),
+        }
+    }
+
+    /// Which kind of place this connection's credentials come from.
+    ///
+    /// Nothing below this point behaves differently for the two — that is the
+    /// point of the type. It is recorded because someone reading a log needs
+    /// it: a signature that will not verify means something different for a
+    /// profile the AWS CLI also uses than for a key typed into this
+    /// application, and the two are fixed in different places.
+    pub(crate) fn kind(&self) -> SourceKind {
+        match self {
+            Self::Profile(_) => SourceKind::Profile,
+            Self::Stored(_) => SourceKind::Stored,
         }
     }
 }
@@ -152,10 +167,22 @@ pub(crate) async fn open(
     http: &HttpStack,
     secrets: &dyn SecretStore,
 ) -> Result<Connection> {
-    match source {
+    let opened = match source {
         ConnectionSource::Profile(profile) => open_profile(id, profile, paths, http).await,
         ConnectionSource::Stored(credential) => open_stored(id, credential, http, secrets).await,
+    };
+
+    // One place, after both paths, so the log cannot come to disagree with
+    // itself about what a connection is. The name and the region are ordinary
+    // configuration; what resolved them is not recorded because nothing here
+    // has it, which is exactly the property that keeps a secret out.
+    match &opened {
+        Ok(connection) => {
+            diagnostics::connection_opened(id, source.name(), source.kind(), connection.region())
+        }
+        Err(error) => diagnostics::connection_refused(id, source.name(), source.kind(), error),
     }
+    opened
 }
 
 /// Open a connection for a profile in the AWS shared configuration.

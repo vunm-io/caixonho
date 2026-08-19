@@ -18,3 +18,5 @@ aws-smithy-http-client.workspace = true
 aws-smithy-runtime-api.workspace = true
 keyring.workspace = true
 directories.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

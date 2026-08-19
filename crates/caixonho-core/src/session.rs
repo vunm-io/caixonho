@@ -16,6 +16,7 @@ use crate::capability::{Capability, CapabilityStore, CredentialsId, Observation,
 use crate::connection::{self, Connection, ConnectionSource};
 use crate::connections::{self, ConfigDirectory, ConnectionFile};
 use crate::credentials::{CredentialSecret, Keyring, SecretStore, StoredCredential};
+use crate::diagnostics;
 use crate::error::Result;
 use crate::outcome::{Outcome, TaggedOutcome};
 use crate::probe::{ProbeScheduler, ProbeSink, ProbeTarget};
@@ -288,9 +289,18 @@ impl Session {
         let source = source.into();
         let session = self.clone();
         self.runtime.spawn(async move {
+            // Recorded here rather than inside the listing, because this is
+            // where the outcome the user will be shown is settled — and a log
+            // that disagrees with the screen is worse than none.
             let outcome = match session.list_buckets(id, &source).await {
-                Ok(buckets) => Outcome::Loaded(buckets),
-                Err(error) => Outcome::Failed(error),
+                Ok(buckets) => {
+                    diagnostics::listing_settled(id, source.name(), Ok(buckets.len()));
+                    Outcome::Loaded(buckets)
+                }
+                Err(error) => {
+                    diagnostics::listing_settled(id, source.name(), Err(&error));
+                    Outcome::Failed(error)
+                }
             };
             deliver(TaggedOutcome::new(id, outcome));
         });
@@ -333,10 +343,12 @@ impl Session {
         let secrets = Arc::clone(&self.secrets);
         let file = Arc::clone(&self.connections);
         self.runtime.spawn(async move {
-            deliver(
-                connections::remember(file.as_ref(), secrets.as_ref(), &credential, &secret)
-                    .map(|()| credential),
-            );
+            let saved =
+                connections::remember(file.as_ref(), secrets.as_ref(), &credential, &secret);
+            // By name, and by name alone. `secret` is in scope here and there
+            // is no function in `diagnostics` it would fit into.
+            diagnostics::credential_saved(credential.name(), saved.as_ref().map(|&()| ()));
+            deliver(saved.map(|()| credential));
         });
     }
 
@@ -353,7 +365,9 @@ impl Session {
         let secrets = Arc::clone(&self.secrets);
         let file = Arc::clone(&self.connections);
         self.runtime.spawn(async move {
-            deliver(connections::forget(file.as_ref(), secrets.as_ref(), &name));
+            let forgotten = connections::forget(file.as_ref(), secrets.as_ref(), &name);
+            diagnostics::credential_forgotten(&name, forgotten.as_ref().map(|&()| ()));
+            deliver(forgotten);
         });
     }
 

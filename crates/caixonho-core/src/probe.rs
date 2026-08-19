@@ -31,6 +31,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use tokio::runtime::Handle;
 
 use crate::capability::{CapabilityStore, CredentialsId, Observation, Scope, observation_for};
+use crate::diagnostics;
 use crate::store::ObjectStore;
 use crate::types::{Bucket, Region};
 
@@ -255,6 +256,10 @@ impl ProbeScheduler {
         // nobody is using any more.
         self.capabilities()
             .observe_list(&self.credentials, scope.clone(), observation);
+        // What the probe was evidence of, not what it answered: the answer is
+        // the classifier's business and is already recorded wherever it
+        // failed. This is the decision.
+        diagnostics::probe_settled(&scope, observation);
         // After recording, so a row never reads "no evidence yet" in the gap
         // between its probe returning and its result landing.
         self.schedule().in_flight.remove(&scope);

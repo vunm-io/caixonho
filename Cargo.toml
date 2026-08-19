@@ -53,6 +53,20 @@ async-trait = "0.1.92"
 # itself.
 keyring = "4.1.6"
 
+# Diagnostics — XONHO-0012. `tracing` 0.1.44 is already in the graph because
+# the AWS SDK emits through it; naming it here makes it a direct dependency so
+# core can emit through the same machinery, which is what lets one subscriber
+# pick up the SDK's own diagnostics without a line of glue.
+#
+# `tracing-subscriber` 0.3.23 (MIT) is already in `Cargo.lock` by way of the UI
+# stack, with exactly the default features — so this adds no crate the lock did
+# not already hold. Read out of the vendored `tracing-subscriber-0.3.23`
+# manifest rather than recalled; crates.io is not reachable from this session,
+# which is also why no file-appender crate is named here (see
+# `diagnostics::RollingLog`).
+tracing = "0.1.44"
+tracing-subscriber = "0.3.23"
+
 # The platform's own configuration location — XONHO-0004. Verified on
 # crates.io on 2026-08-19 (MIT OR Apache-2.0). Used for exactly one thing: the
 # directory the connections file lives in. Hand-rolling that from `HOME` and

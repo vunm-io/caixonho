@@ -22,7 +22,9 @@
 //! - **Secrets reach the OS credential store and nothing else.** Never a
 //!   configuration file, never a log, never an error message — and never
 //!   `~/.aws/credentials`, which belongs to every other AWS tool on the
-//!   machine. See `credentials`.
+//!   machine. Structurally, not by discipline: see `credentials` for the type
+//!   that cannot print itself, and `diagnostics` for the recording vocabulary
+//!   no secret fits into.
 //! - **TDD.** This crate is built test-first; the UI may be exploratory, the
 //!   core may not.
 
@@ -32,6 +34,7 @@ pub(crate) mod classify;
 pub mod connection;
 pub(crate) mod connections;
 pub mod credentials;
+pub mod diagnostics;
 pub mod error;
 pub mod outcome;
 pub mod probe;
@@ -45,6 +48,7 @@ pub use adapter::{LIST_BUCKET_ACTION, S3ObjectStore};
 pub use capability::{Capability, CapabilityStore, CredentialsId, Observation, Scope};
 pub use connection::{Connection, ConnectionSource};
 pub use credentials::{CredentialSecret, StoredCredential};
+pub use diagnostics::{Diagnostics, LOG_LEVEL_ENV, LogProblem};
 pub use error::{ConnectionsProblem, CredentialStoreProblem, Error, Result, SessionProblem};
 pub use outcome::{ActiveOutcome, Outcome, TaggedOutcome};
 pub use probe::{IN_FLIGHT_BUDGET, ProbeTarget};
