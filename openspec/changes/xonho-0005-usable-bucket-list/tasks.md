@@ -1,23 +1,37 @@
 ## 1. Confirm the region assumption
 
-- [ ] 1.1 [dispatch: main] With the credential store unlocked, call `ListBuckets`
+- [x] 1.1 [dispatch: main] With the credential store unlocked, call `ListBuckets`
       twice against the development account — once with no parameters, once with
       an explicit page size — and record whether `BucketRegion` appears only in
       the second. This decides section 2.
-- [ ] 1.2 [dispatch: main] If regions do not come back on the listing, switch
+      - Dispatched: main (2026-08-19) — confirmed; verified: two live calls on
+        the development account. No parameters returned `Name`, `CreationDate`
+        and `BucketArn` only; `--max-buckets 100` returned those plus
+        `BucketRegion` (`ap-southeast-1`) for all three buckets. The documented
+        rule — a region is reported when the request carries at least one valid
+        parameter — holds on this account.
+- [x] 1.2 [dispatch: main] If regions do not come back on the listing, switch
       section 2 to per-bucket location lookups and note the reason here. The
       specs are unaffected either way.
+      - Not needed: 1.1 confirmed the listing carries regions, so section 2
+        stands as planned and the per-bucket fallback is unused.
 
 ## 2. Regions on the listing (core)
 
-- [ ] 2.1 [dispatch: claude-subagent] Test first: the S3 double returns buckets
+- [x] 2.1 [dispatch: claude-subagent] Test first: the S3 double returns buckets
       with and without a region; assert the domain bucket carries the reported
       region, and carries unknown — never the connection's region — when the
       service reported none.
-- [ ] 2.2 [dispatch: claude-subagent] Send an explicit page size on the listing
+- [x] 2.2 [dispatch: claude-subagent] Send an explicit page size on the listing
       request so the service reports regions, keeping the existing pagination.
-- [ ] 2.3 [dispatch: claude-subagent] Map the reported region onto the domain
+- [x] 2.3 [dispatch: claude-subagent] Map the reported region onto the domain
       bucket type; keep `aws-sdk-s3` types out of the GUI's reach.
+      - Dispatched: claude-subagent (2026-08-19) — section 2 complete; verified:
+        `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D
+        warnings` and `cargo test --workspace` re-run in the main session, all
+        exit 0. 2.3 turned out to be already satisfied — `map_bucket` read the
+        reported region correctly all along, but the parameterless request meant
+        it never had one to read, so 2.2 was the whole defect.
 
 ## 3. The list probe (core)
 
@@ -37,13 +51,19 @@
 
 ## 4. The capability store (core)
 
-- [ ] 4.1 [dispatch: claude-subagent] Test first: observations are keyed by
+- [x] 4.1 [dispatch: claude-subagent] Test first: observations are keyed by
       credentials and scope; a switch of credentials discards them; a successful
       real operation records allowed without a probe.
-- [ ] 4.2 [dispatch: claude-subagent] Implement the store over the existing
+- [x] 4.2 [dispatch: claude-subagent] Implement the store over the existing
       `Observation` model, leaving the three-valued type unchanged.
-- [ ] 4.3 [dispatch: claude-subagent] Wire profile switching and
+- [x] 4.3 [dispatch: claude-subagent] Wire profile switching and
       re-authentication to discard the store's contents.
+      - Dispatched: claude-subagent (2026-08-19) — section 4 complete; verified:
+        same three commands, all exit 0, 59 core tests. The discard hangs off
+        `Session::open`, which is the only route to a fresh listing today and
+        covers both switch and re-authentication. Noted for sections 6-7: a
+        plain "refresh the list" control must not go through `Session::open`, or
+        it will throw away the capability cache along with it.
 
 ## 5. The probe scheduler (core)
 
