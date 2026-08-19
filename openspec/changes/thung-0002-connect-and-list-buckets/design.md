@@ -54,6 +54,15 @@ refactor could silently break, so its ordering is asserted by tests.
 and the domain vocabulary. Classifying later means passing SDK types upward,
 which the crate boundary forbids.
 
+*Sharpened by running it (2026-08-19):* S3 answers a bogus access key with
+`InvalidAccessKeyId` and **HTTP 403** — the same status a policy denial
+carries. Classifying a bare 403 as access denied therefore told the user to go
+edit IAM policy over a mistyped key, which the spec forbids ("only when the
+service actually denied the request on authorization grounds"). Status alone
+now decides nothing: a denial needs a denial *code*, and refused credentials
+are their own cause, `SessionRejected`, carrying whether they expired or were
+rejected as invalid — the spec's "expired or invalid session".
+
 ### A single tokio runtime owned by the app, handed to core
 
 The GUI creates one multi-thread runtime at startup and passes a `Handle` into

@@ -1357,11 +1357,11 @@ name = "caixonho-gui"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "caixonho-core",
  "flume 0.11.1",
  "gpui",
  "gpui-component",
  "gpui-component-assets",
- "gpui-fps",
  "gpui_platform",
  "tokio",
 ]
@@ -3145,19 +3145,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "gpui-fps"
-version = "0.1.0"
-source = "git+https://github.com/longbridge/gpui-component?rev=7a9ac172e804ce89aebac644a02f09813dc9e793#7a9ac172e804ce89aebac644a02f09813dc9e793"
-dependencies = [
- "gpui",
- "instant",
- "objc2-core-foundation",
- "objc2-io-kit",
- "sysinfo 0.37.2",
- "windows 0.58.0",
 ]
 
 [[package]]
@@ -5217,16 +5204,6 @@ dependencies = [
  "block2 0.6.2",
  "libc",
  "objc2 0.6.4",
- "objc2-core-foundation",
-]
-
-[[package]]
-name = "objc2-io-kit"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33fafba39597d6dc1fb709123dfa8289d39406734be322956a69f0931c73bb15"
-dependencies = [
- "libc",
  "objc2-core-foundation",
 ]
 
@@ -7532,20 +7509,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sysinfo"
-version = "0.37.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "16607d5caffd1c07ce073528f9ed972d88db15dd44023fa57142963be3feb11f"
-dependencies = [
- "libc",
- "memchr",
- "ntapi",
- "objc2-core-foundation",
- "objc2-io-kit",
- "windows 0.61.3",
-]
-
-[[package]]
 name = "system-configuration"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9771,7 +9734,7 @@ dependencies = [
  "rand 0.8.7",
  "screencapturekit",
  "screencapturekit-sys",
- "sysinfo 0.31.4",
+ "sysinfo",
  "tao-core-video-sys",
  "windows 0.61.3",
  "windows-capture",

@@ -33,7 +33,7 @@
 use aws_sdk_s3::config::http::HttpResponse;
 use aws_sdk_s3::error::{ProvideErrorMetadata, SdkError};
 
-use crate::error::Error;
+use crate::error::{Error, SessionProblem};
 
 /// What the SDK was doing when it failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,6 +125,19 @@ const EXPIRED_MARKERS: &[&str] = &[
     "token has expired",
     "session has expired",
     "expired credentials",
+];
+
+/// Codes that mean credentials were presented and refused as invalid.
+///
+/// Verified against the live service on 2026-08-19: S3 answers a bogus access
+/// key with `InvalidAccessKeyId` and **HTTP 403** — the same status a policy
+/// denial carries, which is why status alone must never decide this.
+const INVALID_CREDENTIAL_CODES: &[&str] = &[
+    "invalidaccesskeyid",
+    "signaturedoesnotmatch",
+    "invalidclienttokenid",
+    "unrecognizedclientexception",
+    "invalidtoken",
 ];
 
 /// Codes that mean the service refused on authorization grounds.
@@ -259,16 +272,28 @@ pub(crate) fn classify(failure: &SdkFailure, call: &CallContext<'_>) -> Error {
         };
     }
 
-    // 3. Expired before denied: AWS answers 403 to both.
-    if failure.code_is(EXPIRED_CODES) || failure.chain_has(EXPIRED_MARKERS) {
-        return Error::ExpiredSession {
+    // 3. Credentials the service refused, before any denial check: AWS
+    //    answers 403 to an expired token, an invalid key and a policy denial
+    //    alike, so status cannot be the thing that decides.
+    let problem = if failure.code_is(EXPIRED_CODES) || failure.chain_has(EXPIRED_MARKERS) {
+        Some(SessionProblem::Expired)
+    } else if failure.code_is(INVALID_CREDENTIAL_CODES) {
+        Some(SessionProblem::Invalid)
+    } else {
+        None
+    };
+    if let Some(problem) = problem {
+        return Error::SessionRejected {
             profile: call.profile.to_owned(),
             sso_session: call.sso_session.map(ToOwned::to_owned),
+            problem,
         };
     }
 
-    // 4. A real authorization refusal, and only that.
-    if failure.code_is(DENIED_CODES) || failure.status == Some(403) {
+    // 4. A real authorization refusal, and only that. The code has to say so:
+    //    a bare 403 is not evidence of an authorization decision, and
+    //    guessing one sends the user to edit IAM policy over a wrong key.
+    if failure.code_is(DENIED_CODES) {
         return Error::AccessDenied {
             iam_action: call.iam_action,
         };
@@ -359,6 +384,33 @@ mod tests {
     }
 
     #[test]
+    fn an_invalid_key_is_a_credential_problem_not_a_policy_denial() {
+        // The live service's actual answer to a bogus key (verified
+        // 2026-08-19): same 403 a denial carries.
+        let failure = SdkFailure::new(FailureKind::Service)
+            .with_code("InvalidAccessKeyId")
+            .with_status(403)
+            .with_text("the aws access key id you provided does not exist in our records");
+
+        match classify(&failure, &call()) {
+            Error::SessionRejected { problem, .. } => {
+                assert_eq!(problem, SessionProblem::Invalid);
+            }
+            other => panic!("expected SessionRejected/Invalid, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_bare_403_without_a_denial_code_is_not_called_a_denial() {
+        let failure = SdkFailure::new(FailureKind::Service).with_status(403);
+
+        assert!(
+            !matches!(classify(&failure, &call()), Error::AccessDenied { .. }),
+            "a status alone must not be read as an authorization decision"
+        );
+    }
+
+    #[test]
     fn an_expired_session_is_never_reported_as_access_denied() {
         // AWS answers 403 to an expired token and to a policy denial alike.
         let failure = SdkFailure::new(FailureKind::Service)
@@ -367,14 +419,16 @@ mod tests {
             .with_text("the security token included in the request is expired");
 
         match classify(&failure, &call()) {
-            Error::ExpiredSession {
+            Error::SessionRejected {
                 profile,
                 sso_session,
+                problem,
             } => {
                 assert_eq!(profile, "work");
                 assert_eq!(sso_session.as_deref(), Some("corp"));
+                assert_eq!(problem, SessionProblem::Expired);
             }
-            other => panic!("expected ExpiredSession, got {other:?}"),
+            other => panic!("expected SessionRejected, got {other:?}"),
         }
     }
 

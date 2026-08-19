@@ -64,27 +64,27 @@
 
 ## 6. Runtime and bridge
 
-- [ ] 6.1 [dispatch: main] Create one multi-thread tokio runtime at app startup and pass its
+- [x] 6.1 [dispatch: main] Create one multi-thread tokio runtime at app startup and pass its
       `Handle` into core; remove the runtime the M0 spike creates inline
-- [ ] 6.2 [dispatch: main] Model request outcomes as `Loading` / `Loaded` / `Failed`, each
+- [x] 6.2 [dispatch: main] Model request outcomes as `Loading` / `Loaded` / `Failed`, each
       tagged with the `ConnectionId` it belongs to
-- [ ] 6.3 [dispatch: main] Drop outcomes whose `ConnectionId` is no longer the active one, so a
+- [x] 6.3 [dispatch: main] Drop outcomes whose `ConnectionId` is no longer the active one, so a
       late response from a previous profile can never render as the new one's
 
 ## 7. GUI
 
-- [ ] 7.1 [dispatch: main] Delete the synthetic feed and its generators; keep the virtualized
+- [x] 7.1 [dispatch: main] Delete the synthetic feed and its generators; keep the virtualized
       table and the channel bridge
-- [ ] 7.2 [dispatch: main] Add the profile picker, populated from task 3.1, showing which profile
+- [x] 7.2 [dispatch: main] Add the profile picker, populated from task 3.1, showing which profile
       is active
-- [ ] 7.3 [dispatch: main] Render the bucket list (name, creation date, region or "unknown")
+- [x] 7.3 [dispatch: main] Render the bucket list (name, creation date, region or "unknown")
       through the existing table
-- [ ] 7.4 [dispatch: main] Render each error kind as its own message with the matching action:
+- [x] 7.4 [dispatch: main] Render each error kind as its own message with the matching action:
       retry for network, re-login for expired session, trust guidance for TLS,
       required IAM action for access denied
-- [ ] 7.5 [dispatch: main] Show the in-flight state, and keep the window responsive while a
+- [x] 7.5 [dispatch: main] Show the in-flight state, and keep the window responsive while a
       listing is running
-- [ ] 7.6 [dispatch: main] Clear the previous profile's results on switch
+- [x] 7.6 [dispatch: main] Clear the previous profile's results on switch
 
 ## 8. Verification and close-out
 

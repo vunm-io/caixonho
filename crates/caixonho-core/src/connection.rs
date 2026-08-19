@@ -79,17 +79,24 @@ pub async fn open(
         .profile_name(profile)
         .http_client(http.client());
 
-    // `EnvConfigFiles::build` panics on an empty file set, so only override the
-    // SDK's own defaults when we actually have a path to give it.
+    // Only files that exist may enter the set. Naming an absent file does not
+    // merely add nothing: the SDK fails to load the whole set, so a perfectly
+    // good `config` stops resolving too — which is what happens on every
+    // machine that has `~/.aws/config` and no `~/.aws/credentials`, the normal
+    // shape of an SSO-only setup.
+    //
+    // `EnvConfigFiles::build` also panics on an empty set, so the loader keeps
+    // its own defaults when nothing is left to give it.
     let mut files = EnvConfigFiles::builder();
     let mut any_file = false;
-    if let Some(config) = paths.config.as_ref() {
-        files = files.with_file(EnvConfigFileKind::Config, config.clone());
-        any_file = true;
-    }
-    if let Some(credentials) = paths.credentials.as_ref() {
-        files = files.with_file(EnvConfigFileKind::Credentials, credentials.clone());
-        any_file = true;
+    for (kind, path) in [
+        (EnvConfigFileKind::Config, paths.config.as_ref()),
+        (EnvConfigFileKind::Credentials, paths.credentials.as_ref()),
+    ] {
+        if let Some(path) = path.filter(|path| path.is_file()) {
+            files = files.with_file(kind, path.clone());
+            any_file = true;
+        }
     }
     if any_file {
         loader = loader.profile_files(files.build());
@@ -184,6 +191,30 @@ mod tests {
             require_region("work", Some("   ")),
             Err(Error::MissingConfiguration { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn a_named_but_absent_credentials_file_does_not_hide_the_config() {
+        // Regression: the app reported "no region is configured" for a
+        // default profile that declared one, because `ConfigPaths` names
+        // `~/.aws/credentials` whether or not it exists and one absent file
+        // makes the SDK drop the entire set — the normal shape of an
+        // SSO-only machine.
+        let fixture = Fixture::new("default-region");
+        let config = fixture.write("config", "[default]\nregion = ap-southeast-1\n");
+        let paths = ConfigPaths {
+            config: Some(config),
+            // The real app always names a credentials path, whether or not
+            // the file exists — this is what it looked like in the failure.
+            credentials: Some(fixture.dir.join("credentials-that-do-not-exist")),
+        };
+        let http = HttpStack::with_ca_bundle(None).expect("client builds");
+
+        let connection = open(ConnectionId(1), "default", &paths, &http)
+            .await
+            .expect("the default profile declares a region");
+
+        assert!(!connection.region().is_empty());
     }
 
     #[tokio::test]

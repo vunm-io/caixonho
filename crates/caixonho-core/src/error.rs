@@ -11,6 +11,15 @@
 //!   hosts and classifier-authored detail strings — never keys, tokens or raw
 //!   wire payloads. A test in the classifier module enforces this.
 
+/// Why credentials were refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionProblem {
+    /// They were valid once and their lifetime ran out.
+    Expired,
+    /// The service does not recognise them, or the signature did not match.
+    Invalid,
+}
+
 /// Why a connection or a call failed.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -21,16 +30,19 @@ pub enum Error {
         profile: String,
     },
 
-    /// A cached session or SSO token exists but has expired or is invalid.
-    /// Distinct from [`Error::AccessDenied`]: the fix is signing in again,
-    /// not changing IAM policy.
-    #[error("session for profile `{profile}` has expired — sign in again{}", sso_session.as_deref().map(|s| format!(" (SSO session `{s}`)")).unwrap_or_default())]
-    ExpiredSession {
-        /// The profile whose session expired.
+    /// Credentials were presented and the service refused them. Distinct
+    /// from [`Error::AccessDenied`] on purpose: the fix is new credentials,
+    /// not a new IAM policy, and confusing the two sends people to edit
+    /// policy documents over a mistyped access key.
+    #[error("credentials for profile `{profile}` {}{}", match problem { SessionProblem::Expired => "have expired — sign in again", SessionProblem::Invalid => "were rejected as invalid — check the access key, or sign in again" }, sso_session.as_deref().map(|s| format!(" (SSO session `{s}`)")).unwrap_or_default())]
+    SessionRejected {
+        /// The profile whose credentials were refused.
         profile: String,
         /// The `sso_session` name from the shared config, when the profile
         /// has one — the thing `aws sso login --sso-session <name>` needs.
         sso_session: Option<String>,
+        /// Why they were refused.
+        problem: SessionProblem,
     },
 
     /// The presented certificate chain is not trusted. Classified before the

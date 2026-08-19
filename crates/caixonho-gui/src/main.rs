@@ -5,116 +5,58 @@
     windows_subsystem = "windows"
 )]
 
-//! # M0 spike — prove the UI stack before any product code.
+//! caixonho — a fast, native S3 client.
 //!
-//! What this binary must demonstrate (see `docs/adr/0001-ui-framework.md`):
-//!
-//! 1. A GPUI window opens on Windows 11 and macOS from this one source tree.
-//! 2. A **virtualized** table scrolls smoothly through 100,000 rows.
-//! 3. Rows arrive **asynchronously from a tokio runtime** — the same
-//!    tokio-on-background-threads → channel → GPUI-executor bridge the real
-//!    app will use for S3 calls. Nothing network-shaped runs on the render
-//!    thread.
-//! 4. An FPS overlay and a first-paint timer put numbers on "smooth".
-//!
-//! Everything in this file is spike code: it may be rewritten or deleted
-//! without ceremony once M0 is decided. The bridge pattern is the one part
-//! expected to survive, in `caixonho-core`, in a hardened form.
+//! This crate is a thin frontend: it owns the window, the runtime and the
+//! rendering, and nothing else. Every decision about credentials, calls and
+//! failure causes lives in `caixonho-core`, which this crate reaches only
+//! through domain types — no `aws-sdk-s3` type appears here.
 
-use std::time::{Duration, Instant};
+mod scroll;
 
+use caixonho_core::{
+    ActiveOutcome, Bucket, ConfigPaths, ConnectionId, Error, HttpStack, Outcome, Profile, Region,
+    Session, SessionProblem, TaggedOutcome,
+};
 use gpui::{
-    App, AppContext, Bounds, Context, Entity, IntoElement, ParentElement, Pixels, Render,
-    ScrollWheelEvent, SharedString, Styled, Window, WindowBounds, WindowOptions, canvas, div, px,
-    size,
+    App, AppContext, Bounds, Context, Entity, IntoElement, ParentElement, Render, SharedString,
+    Styled, Window, WindowBounds, WindowOptions, div, px, size,
 };
 use gpui_component::{
-    ActiveTheme, Root, TitleBar, h_flex,
+    ActiveTheme, Root, TitleBar,
+    button::{Button, ButtonVariants},
+    h_flex,
     table::{Column, DataTable, TableDelegate, TableState},
     v_flex,
 };
-use gpui_fps::fps_monitor;
 
-/// Total rows the feed produces: the M0 bar from the project brief.
-const TOTAL_ROWS: usize = 100_000;
-/// Rows per simulated "page", roughly a `ListObjectsV2` page (max 1000) ×5,
-/// so the table visibly fills in batches instead of popping in at once.
-const BATCH_SIZE: usize = 5_000;
-/// Simulated network latency between pages.
-const BATCH_DELAY: Duration = Duration::from_millis(60);
+use scroll::ScrollAccel;
 
-/// One synthetic S3 object. Shapes match the real listing columns so the
-/// spike's rendering cost is honest about the product's.
-struct ObjectRow {
-    key: SharedString,
-    size: u64,
-    last_modified: SharedString,
-    storage_class: &'static str,
-    etag: SharedString,
-}
+/// Displayed instead of a region the service never stated. A first-class
+/// value, not a placeholder: the alternative is showing the connection's own
+/// region, which would be a guess that reads as fact.
+const UNKNOWN_REGION: &str = "unknown";
 
-/// Deterministic pseudo-data — no RNG dependency, reproducible timings.
-fn synth_row(ix: usize) -> ObjectRow {
-    // A cheap integer mix so sizes/dates don't look striped.
-    let h = (ix as u64)
-        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
-        .rotate_left(17);
-    let dirs = ["logs", "backups", "images", "exports", "raw", "builds"];
-    let exts = ["parquet", "json", "csv", "png", "tar.gz", "log"];
-    let classes = [
-        "STANDARD",
-        "STANDARD_IA",
-        "GLACIER_IR",
-        "INTELLIGENT_TIERING",
-    ];
-    let dir = dirs[(h % 6) as usize];
-    let ext = exts[((h >> 8) % 6) as usize];
-    ObjectRow {
-        key: format!("{dir}/2026/{:02}/object-{ix:06}.{ext}", (h >> 16) % 12 + 1).into(),
-        size: h % 4_000_000_000,
-        last_modified: format!(
-            "2026-{:02}-{:02} {:02}:{:02}",
-            (h >> 16) % 12 + 1,
-            (h >> 24) % 28 + 1,
-            (h >> 32) % 24,
-            (h >> 40) % 60
-        )
-        .into(),
-        storage_class: classes[((h >> 48) % 4) as usize],
-        etag: format!("\"{:016x}\"", h).into(),
-    }
-}
-
-fn human_size(bytes: u64) -> String {
-    match bytes {
-        b if b >= 1 << 30 => format!("{:.1} GiB", b as f64 / (1u64 << 30) as f64),
-        b if b >= 1 << 20 => format!("{:.1} MiB", b as f64 / (1u64 << 20) as f64),
-        b if b >= 1 << 10 => format!("{:.1} KiB", b as f64 / (1u64 << 10) as f64),
-        b => format!("{b} B"),
-    }
-}
-
-struct SpikeDelegate {
+/// The bucket table.
+struct BucketsDelegate {
     columns: Vec<Column>,
-    rows: Vec<ObjectRow>,
+    rows: Vec<Bucket>,
 }
 
-impl SpikeDelegate {
+impl BucketsDelegate {
     fn new() -> Self {
         Self {
             columns: vec![
-                Column::new("key", "Key").width(px(420.)),
-                Column::new("size", "Size").width(px(110.)).text_right(),
-                Column::new("modified", "Last modified").width(px(160.)),
-                Column::new("class", "Storage class").width(px(170.)),
-                Column::new("etag", "ETag").width(px(190.)),
+                Column::new("name", "Bucket").width(px(420.)),
+                Column::new("created", "Created").width(px(200.)),
+                Column::new("region", "Region").width(px(180.)),
             ],
-            rows: Vec::with_capacity(TOTAL_ROWS),
+            rows: Vec::new(),
         }
     }
 }
 
-impl TableDelegate for SpikeDelegate {
+impl TableDelegate for BucketsDelegate {
     fn columns_count(&self, _cx: &App) -> usize {
         self.columns.len()
     }
@@ -136,261 +78,337 @@ impl TableDelegate for SpikeDelegate {
     ) -> impl IntoElement {
         let row = &self.rows[row_ix];
         let text: SharedString = match col_ix {
-            0 => row.key.clone(),
-            1 => human_size(row.size).into(),
-            2 => row.last_modified.clone(),
-            3 => row.storage_class.into(),
-            4 => row.etag.clone(),
+            0 => row.name.clone().into(),
+            1 => row.created.clone().unwrap_or_else(|| "—".into()).into(),
+            2 => match &row.region {
+                Region::Known(region) => region.clone().into(),
+                Region::Unknown => UNKNOWN_REGION.into(),
+            },
             _ => "".into(),
         };
         div().child(text)
     }
 }
 
-/// Wheel-acceleration tuning.
-///
-/// The handler takes the wheel event over entirely (capture phase +
-/// `stop_propagation`), so these are absolute multipliers on the native
-/// per-notch distance rather than additions to it. A lone notch moves
-/// `WHEEL_BASE_MULTIPLIER`; notches arriving within `WHEEL_ACCEL_WINDOW` of
-/// each other build a streak worth `WHEEL_ACCEL_STEP` apiece, capped at
-/// `WHEEL_MAX_MULTIPLIER`. Pausing resets the streak, so precision scrolling
-/// stays precise.
-const WHEEL_ACCEL_WINDOW: Duration = Duration::from_millis(140);
-/// Speed of a single unhurried notch, relative to native.
-const WHEEL_BASE_MULTIPLIER: f32 = 1.6;
-/// Added to the multiplier per consecutive fast notch.
-const WHEEL_ACCEL_STEP: f32 = 0.5;
-/// Ceiling for a sustained flick.
-const WHEEL_MAX_MULTIPLIER: f32 = 8.0;
-
-/// Trackpad-flick tuning.
-///
-/// Trackpads (`ScrollDelta::precise()`) need different treatment: the OS
-/// already applies momentum, and the time-streak accelerator stacked on top
-/// of it compounds into fly-away scrolling (tried and reverted). Instead each
-/// precise event gets a stateless multiplier from its own velocity. Gentle
-/// scrolling stays under `TRACKPAD_BOOST_THRESHOLD` px/event and is left
-/// entirely on the native path, so precision is untouched; past it a flick
-/// ramps linearly to `TRACKPAD_MAX_MULTIPLIER` over `TRACKPAD_BOOST_SPAN`
-/// px/event. The OS momentum tail runs through the same curve: it starts fast
-/// (boosted, so the coast actually covers ground in a 100k-row table) and
-/// decays back under the threshold (native again, so it settles precisely).
-const TRACKPAD_BOOST_THRESHOLD: f32 = 12.0;
-/// px/event over which the boost ramps from 1x up to the ceiling.
-const TRACKPAD_BOOST_SPAN: f32 = 90.0;
-/// Ceiling for a hard flick and the start of its momentum tail.
-const TRACKPAD_MAX_MULTIPLIER: f32 = 4.0;
-
-/// Stateless velocity→multiplier curve for precise (trackpad) scrolling.
-/// `None` means "leave this event entirely on the native path".
-fn trackpad_multiplier(speed: f32) -> Option<f32> {
-    let ramp = (speed - TRACKPAD_BOOST_THRESHOLD) / TRACKPAD_BOOST_SPAN;
-    if ramp <= 0.0 {
-        return None;
-    }
-    Some(1.0 + ramp.min(1.0) * (TRACKPAD_MAX_MULTIPLIER - 1.0))
+/// Everything the window shows.
+struct CaixonhoApp {
+    /// The one runtime for this process. Held so it outlives every spawned
+    /// call; core is handed its handle and never builds one of its own.
+    _runtime: tokio::runtime::Runtime,
+    session: Option<Session>,
+    /// Set when trust material or the runtime could not be prepared at all,
+    /// which is a startup failure rather than a connection failure.
+    startup_error: Option<Error>,
+    profiles: Vec<Profile>,
+    active_profile: Option<usize>,
+    outcome: ActiveOutcome,
+    next_connection: u64,
+    table: Entity<TableState<BucketsDelegate>>,
+    accel: Entity<ScrollAccel>,
+    inbox: flume::Sender<TaggedOutcome>,
 }
 
-struct SpikeApp {
-    table: Entity<TableState<SpikeDelegate>>,
-    started: Instant,
-    first_paint: Option<Duration>,
-    last_wheel: Option<Instant>,
-    wheel_streak: f32,
-}
+impl CaixonhoApp {
+    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let table = cx.new(|cx| TableState::new(BucketsDelegate::new(), window, cx));
+        let accel = cx.new(|_| ScrollAccel::default());
 
-impl SpikeApp {
-    fn new(started: Instant, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let table = cx.new(|cx| TableState::new(SpikeDelegate::new(), window, cx));
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_name("caixonho-aws")
+            .build()
+            .expect("failed to start the tokio runtime");
 
-        // Redraw the header (row counter) whenever the table's data changes.
-        cx.observe(&table, |_, _, cx| cx.notify()).detach();
+        let paths = ConfigPaths::from_env();
+        let profiles = caixonho_core::discover(&paths).unwrap_or_default();
 
-        // ---- The tokio ↔ GPUI bridge under test ----------------------------
-        //
-        // Producer: a real tokio multi-thread runtime on its own OS threads,
-        // emitting row batches with simulated network latency — the seat the
-        // AWS SDK will occupy in the real app.
-        //
-        // Consumer: a task on GPUI's executor, awaiting the channel and
-        // applying each batch to the table entity. The render thread never
-        // waits on the producer.
-        let (tx, rx) = flume::unbounded::<Vec<ObjectRow>>();
+        // Trust material is prepared once, at startup: it belongs to the
+        // process, not to a profile, and failing here is not a connection
+        // failure to be shown against whichever profile happens to be first.
+        let (session, startup_error) = match HttpStack::from_env() {
+            Ok(http) => (
+                Some(Session::new(runtime.handle().clone(), http, paths)),
+                None,
+            ),
+            Err(error) => (None, Some(error)),
+        };
 
-        std::thread::Builder::new()
-            .name("tokio-feed".into())
-            .spawn(move || {
-                let rt = tokio::runtime::Runtime::new().expect("failed to start tokio runtime");
-                rt.block_on(async move {
-                    let mut ix = 0;
-                    while ix < TOTAL_ROWS {
-                        tokio::time::sleep(BATCH_DELAY).await;
-                        let batch: Vec<ObjectRow> = (ix..(ix + BATCH_SIZE).min(TOTAL_ROWS))
-                            .map(synth_row)
-                            .collect();
-                        ix += batch.len();
-                        if tx.send_async(batch).await.is_err() {
-                            break; // UI is gone; stop producing.
-                        }
-                    }
-                });
-            })
-            .expect("failed to spawn tokio feed thread");
-
-        let table_for_feed = table.clone();
-        cx.spawn(async move |_this, cx| {
-            // Ends when the producer finishes and the channel drains; on app
-            // shutdown the executor drops this task with the app.
-            while let Ok(batch) = rx.recv_async().await {
-                cx.update(|cx| {
-                    table_for_feed.update(cx, |state, cx| {
-                        state.delegate_mut().rows.extend(batch);
-                        cx.notify();
-                    });
-                });
+        // The bridge: results cross from runtime threads to the UI as
+        // messages, and are applied on GPUI's executor.
+        let (inbox, results) = flume::unbounded::<TaggedOutcome>();
+        cx.spawn(async move |this, cx| {
+            while let Ok(tagged) = results.recv_async().await {
+                let applied = this.update(cx, |app, cx| app.apply(tagged, cx));
+                if applied.is_err() {
+                    break; // The window is gone.
+                }
             }
         })
         .detach();
-        // --------------------------------------------------------------------
 
-        Self {
+        let mut app = Self {
+            _runtime: runtime,
+            session,
+            startup_error,
+            profiles,
+            active_profile: None,
+            outcome: ActiveOutcome::new(ConnectionId(0)),
+            next_connection: 0,
             table,
-            started,
-            first_paint: None,
-            last_wheel: None,
-            wheel_streak: 0.0,
+            accel,
+            inbox,
+        };
+
+        // Open on the default profile when there is one, so the first screen
+        // shows data rather than an instruction.
+        if let Some(index) = app.profiles.iter().position(|profile| profile.is_default) {
+            app.select_profile(index, cx);
+        } else if !app.profiles.is_empty() {
+            app.select_profile(0, cx);
         }
+        app
     }
-}
 
-impl SpikeApp {
-    /// An invisible overlay that takes mouse-wheel events over from the table
-    /// and re-applies them with acceleration.
+    /// Switch to a profile and start listing it.
+    fn select_profile(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(profile) = self.profiles.get(index).map(|profile| profile.name.clone()) else {
+            return;
+        };
+        self.active_profile = Some(index);
+        self.next_connection += 1;
+        let id = ConnectionId(self.next_connection);
+        // Clears the previous profile's rows and error before anything of the
+        // new one's arrives.
+        self.outcome.switch_to(id);
+        self.set_rows(Vec::new(), cx);
+        self.issue(id, profile, cx);
+    }
+
+    /// Try the active profile again on the same connection.
+    fn retry(&mut self, cx: &mut Context<Self>) {
+        let (Some(index), id) = (self.active_profile, self.outcome.active()) else {
+            return;
+        };
+        let Some(profile) = self.profiles.get(index).map(|profile| profile.name.clone()) else {
+            return;
+        };
+        self.outcome.switch_to(id);
+        self.issue(id, profile, cx);
+    }
+
+    /// Ask core for a listing; the answer arrives through the inbox.
+    fn issue(&mut self, id: ConnectionId, profile: String, cx: &mut Context<Self>) {
+        if let Some(session) = self.session.clone() {
+            let inbox = self.inbox.clone();
+            session.spawn_listing(id, profile, move |tagged| {
+                let _ = inbox.send(tagged);
+            });
+        }
+        cx.notify();
+    }
+
+    /// Apply an outcome, unless it belongs to a connection we left behind.
+    fn apply(&mut self, tagged: TaggedOutcome, cx: &mut Context<Self>) {
+        if !self.outcome.accept(tagged) {
+            return; // Stale: a late answer from a profile the user left.
+        }
+        if let Outcome::Loaded(buckets) = self.outcome.state() {
+            let buckets = buckets.clone();
+            self.set_rows(buckets, cx);
+        }
+        cx.notify();
+    }
+
+    fn set_rows(&mut self, rows: Vec<Bucket>, cx: &mut Context<Self>) {
+        self.table.update(cx, |state, cx| {
+            state.delegate_mut().rows = rows;
+            cx.notify();
+        });
+    }
+
+    /// One button per profile, the active one filled in.
+    fn profile_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let active = self.active_profile;
+        h_flex().gap_1().children(
+            self.profiles
+                .iter()
+                .enumerate()
+                .map(|(index, profile)| {
+                    let label = if profile.is_default {
+                        format!("{} (default)", profile.name)
+                    } else {
+                        profile.name.clone()
+                    };
+                    let button = Button::new(("profile", index)).label(label).compact();
+                    let button = if Some(index) == active {
+                        button.primary()
+                    } else {
+                        button.ghost()
+                    };
+                    button.on_click(cx.listener(move |app, _, _, cx| {
+                        app.select_profile(index, cx);
+                    }))
+                })
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    /// What to say about a failure, and what the user can do about it.
     ///
-    /// It has to run in the **capture** phase: the table scrolls through
-    /// gpui's `uniform_list`, whose own wheel listener runs in the bubble
-    /// phase, and anything we add afterwards is overwritten when the list
-    /// paints. Capturing first — and stopping propagation — makes this the
-    /// only code that moves the table, so the multiplier is exact instead of
-    /// being layered onto a scroll that already happened.
-    ///
-    /// A `canvas` is used purely as a hook into the paint phase, where
-    /// `Window::on_mouse_event` can be registered; it draws nothing and
-    /// inserts no hitbox, so it never blocks clicks on rows.
-    fn wheel_accelerator(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let table = self.table.clone();
-        let this = cx.entity();
-
-        canvas(
-            |_, _, _| (),
-            move |bounds: Bounds<Pixels>, _, window: &mut Window, _| {
-                let line_height = window.line_height();
-                window.on_mouse_event(
-                    move |event: &ScrollWheelEvent, phase, window: &mut Window, cx| {
-                        if !phase.capture() || !bounds.contains(&event.position) {
-                            return;
-                        }
-                        // Horizontal scrolling keeps native behaviour.
-                        let delta = event.delta.pixel_delta(line_height);
-                        if delta.y.abs() <= delta.x.abs() {
-                            return;
-                        }
-
-                        let multiplier = if event.delta.precise() {
-                            // Trackpad: stateless velocity curve. Under the
-                            // threshold the event stays on the native path.
-                            match trackpad_multiplier(f32::from(delta.y.abs())) {
-                                Some(multiplier) => multiplier,
-                                None => return,
-                            }
-                        } else {
-                            this.update(cx, |this, _| {
-                                let now = Instant::now();
-                                let rapid = this
-                                    .last_wheel
-                                    .is_some_and(|prev| now - prev < WHEEL_ACCEL_WINDOW);
-                                this.last_wheel = Some(now);
-                                this.wheel_streak =
-                                    if rapid { this.wheel_streak + 1.0 } else { 0.0 };
-                                (WHEEL_BASE_MULTIPLIER + this.wheel_streak * WHEEL_ACCEL_STEP)
-                                    .min(WHEEL_MAX_MULTIPLIER)
-                            })
-                        };
-
-                        let handle = table
-                            .read(cx)
-                            .vertical_scroll_handle
-                            .0
-                            .borrow()
-                            .base_handle
-                            .clone();
-                        let max = handle.max_offset().y;
-                        let mut offset = handle.offset();
-                        // Offsets run from 0 (top) to -max (bottom).
-                        offset.y = (offset.y + delta.y * multiplier).clamp(-max, px(0.));
-                        handle.set_offset(offset);
-
-                        cx.stop_propagation();
-                        window.refresh();
-                    },
-                );
+    /// Each cause gets its own next action, which is the whole reason the
+    /// error type keeps them apart.
+    fn failure_panel(&self, error: &Error, cx: &mut Context<Self>) -> impl IntoElement {
+        let guidance: SharedString = match error {
+            Error::Network { .. } => "The endpoint could not be reached. Check the connection and try again.".into(),
+            Error::SessionRejected { profile, sso_session, problem } => match (problem, sso_session) {
+                (_, Some(session)) => format!("Sign in again: `aws sso login --sso-session {session}`").into(),
+                (SessionProblem::Expired, None) => format!("Sign in again for profile `{profile}`, then retry.").into(),
+                (SessionProblem::Invalid, None) => format!(
+                    "The service does not recognise these credentials. Check the access key and secret for profile `{profile}`."
+                )
+                .into(),
             },
-        )
-        .absolute()
-        .size_full()
+            Error::TlsTrust { endpoint } => format!(
+                "The certificate chain for {endpoint} is not trusted. Add the issuing CA to the \
+                 system trust store, or point AWS_CA_BUNDLE at the bundle your network uses."
+            )
+            .into(),
+            Error::AccessDenied { iam_action } => format!(
+                "This profile is not allowed to list buckets. It needs the `{iam_action}` permission."
+            )
+            .into(),
+            Error::NoCredentials { profile } => {
+                format!("No credentials resolved for `{profile}`. Check the profile's keys, role or SSO session.").into()
+            }
+            Error::MissingConfiguration { .. } => {
+                "Complete the profile's configuration — a region is required — and try again.".into()
+            }
+            Error::Unexpected { .. } => "The call failed for an unrecognised reason.".into(),
+        };
+
+        v_flex()
+            .gap_2()
+            .p_4()
+            .child(
+                div()
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .text_color(cx.theme().danger)
+                    .child(SharedString::from(error.to_string())),
+            )
+            .child(
+                div()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(guidance),
+            )
+            .child(
+                Button::new("retry")
+                    .label("Retry")
+                    .outline()
+                    .on_click(cx.listener(|app, _, _, cx| app.retry(cx))),
+            )
+    }
+
+    /// The body: whatever the active connection's latest outcome deserves.
+    fn body(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(error) = &self.startup_error {
+            return v_flex()
+                .child(self.failure_panel(error, cx))
+                .into_any_element();
+        }
+        if self.profiles.is_empty() {
+            return notice(
+                "No AWS profiles found.",
+                "caixonho reads ~/.aws/config and ~/.aws/credentials (or the files named by \
+                 AWS_CONFIG_FILE and AWS_SHARED_CREDENTIALS_FILE). Add a profile there to begin.",
+                cx,
+            )
+            .into_any_element();
+        }
+
+        match self.outcome.state() {
+            Outcome::Loading => notice("Listing buckets…", "", cx).into_any_element(),
+            Outcome::Failed(error) => {
+                // Cloned so the panel can borrow the app immutably.
+                let rendered = error.to_string();
+                let panel = self.failure_panel_from(rendered, error, cx);
+                panel.into_any_element()
+            }
+            Outcome::Loaded(buckets) if buckets.is_empty() => notice(
+                "This account has no buckets.",
+                "The listing succeeded — there is simply nothing in it yet.",
+                cx,
+            )
+            .into_any_element(),
+            Outcome::Loaded(_) => div()
+                .relative()
+                .size_full()
+                .child(DataTable::new(&self.table))
+                .child(scroll::accelerator(self.table.clone(), self.accel.clone()))
+                .into_any_element(),
+        }
+    }
+
+    /// Borrow-splitting helper: the panel needs `&self` while `self.outcome`
+    /// is already borrowed by the match in [`Self::body`].
+    fn failure_panel_from(
+        &self,
+        _rendered: String,
+        error: &Error,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        self.failure_panel(error, cx)
     }
 }
 
-impl Render for SpikeApp {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.first_paint.is_none() {
-            self.first_paint = Some(self.started.elapsed());
-        }
-        let loaded = self.table.read(cx).delegate().rows.len();
-        let status: SharedString = format!(
-            "{loaded} / {TOTAL_ROWS} rows · first paint {} ms",
-            self.first_paint.unwrap_or_default().as_millis()
-        )
-        .into();
+/// A centred message with an optional explanation under it.
+fn notice(
+    title: impl Into<SharedString>,
+    detail: impl Into<SharedString>,
+    cx: &mut Context<CaixonhoApp>,
+) -> impl IntoElement {
+    let detail = detail.into();
+    let mut notice = v_flex().gap_1().p_4().child(div().child(title.into()));
+    if !detail.is_empty() {
+        notice = notice.child(div().text_color(cx.theme().muted_foreground).child(detail));
+    }
+    notice
+}
+
+impl Render for CaixonhoApp {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Nothing is in flight until a profile is actually selected, so the
+        // status stays empty rather than claiming a listing that never began.
+        let status: SharedString = match (self.active_profile, self.outcome.state()) {
+            (None, _) => "".into(),
+            (Some(_), Outcome::Loading) => "listing…".into(),
+            (Some(_), Outcome::Loaded(buckets)) => format!("{} buckets", buckets.len()).into(),
+            (Some(_), Outcome::Failed(_)) => "failed".into(),
+        };
 
         v_flex()
             .size_full()
             .bg(cx.theme().background)
             .child(
-                // Draws the draggable title bar with native-feeling window
-                // controls; pairs with `TitleBar::window_options()` in main().
                 TitleBar::new().child(
                     h_flex()
                         .w_full()
                         .pr_2()
+                        .gap_3()
                         .justify_between()
                         .child(
-                            div()
-                                .font_weight(gpui::FontWeight::BOLD)
-                                .child("caixonho — M0 spike"),
+                            h_flex()
+                                .gap_3()
+                                .child(div().font_weight(gpui::FontWeight::BOLD).child("caixonho"))
+                                .child(self.profile_picker(cx)),
                         )
                         .child(div().text_color(cx.theme().muted_foreground).child(status)),
                 ),
             )
-            .child(
-                // `relative()` so the FPS HUD pins to this container's top
-                // right, below the title bar, instead of covering it.
-                div()
-                    .relative()
-                    .min_h_0()
-                    .flex_1()
-                    .px_3()
-                    .pb_3()
-                    .child(DataTable::new(&self.table))
-                    .child(self.wheel_accelerator(cx))
-                    .child(fps_monitor(window, cx)),
-            )
+            .child(div().min_h_0().flex_1().px_3().pb_3().child(self.body(cx)))
     }
 }
 
 fn main() {
-    let started = Instant::now();
     gpui_platform::application()
         .with_assets(gpui_component_assets::Assets)
         .run(move |cx| {
@@ -407,34 +425,12 @@ fn main() {
                 });
 
                 cx.open_window(options, |window, cx| {
-                    window.set_window_title("caixonho — M0 spike");
-                    let view = cx.new(|cx| SpikeApp::new(started, window, cx));
+                    window.set_window_title("caixonho");
+                    let view = cx.new(|cx| CaixonhoApp::new(window, cx));
                     cx.new(|cx| Root::new(view, window, cx))
                 })
                 .expect("failed to open window");
             })
             .detach();
         });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn gentle_trackpad_scrolling_stays_native() {
-        assert_eq!(trackpad_multiplier(6.0), None);
-        assert_eq!(trackpad_multiplier(TRACKPAD_BOOST_THRESHOLD), None);
-    }
-
-    #[test]
-    fn flick_ramps_linearly_then_caps() {
-        let mid = trackpad_multiplier(TRACKPAD_BOOST_THRESHOLD + TRACKPAD_BOOST_SPAN / 2.0)
-            .expect("above threshold must boost");
-        assert!((mid - (1.0 + (TRACKPAD_MAX_MULTIPLIER - 1.0) / 2.0)).abs() < 1e-4);
-
-        let capped = trackpad_multiplier(TRACKPAD_BOOST_THRESHOLD + TRACKPAD_BOOST_SPAN * 3.0)
-            .expect("above threshold must boost");
-        assert_eq!(capped, TRACKPAD_MAX_MULTIPLIER);
-    }
 }

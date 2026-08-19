@@ -8,10 +8,10 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+caixonho-core.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
 gpui-component.workspace = true
-gpui-fps.workspace = true
 gpui-component-assets.workspace = true
 anyhow.workspace = true
 tokio.workspace = true

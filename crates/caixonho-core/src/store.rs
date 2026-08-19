@@ -64,9 +64,10 @@ pub(crate) mod double {
 
         /// Fails with an expired session.
         pub(crate) fn expired_session() -> Self {
-            Self::failing(|| Error::ExpiredSession {
+            Self::failing(|| Error::SessionRejected {
                 profile: "double".into(),
                 sso_session: Some("corp".into()),
+                problem: crate::error::SessionProblem::Expired,
             })
         }
 
@@ -175,7 +176,7 @@ mod tests {
         ));
         assert!(matches!(
             StoreDouble::expired_session().list_buckets().await,
-            Err(Error::ExpiredSession { .. })
+            Err(Error::SessionRejected { .. })
         ));
         assert!(matches!(
             StoreDouble::tls_trust().list_buckets().await,
