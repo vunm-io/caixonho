@@ -96,5 +96,20 @@
 - [ ] 8.3 [dispatch: main] Manual live check against a real SSO profile and a static-key profile:
       list buckets, let the session expire (or revoke it) and confirm the
       expired-session path; record what was exercised in the change's notes
+      - Exercised 2026-08-19 on macOS against a real account. **Static-key
+        profile:** credentials resolved and signed a live request. **SSO
+        profile:** resolved from the AWS CLI's cached token with no browser
+        and no external command — the spec's "SSO profile with a valid cached
+        token" scenario, on a machine with `~/.aws/config` and no
+        `~/.aws/credentials`, which is also the regression fixed in this
+        change. **Denial path:** both identities were refused
+        `s3:ListAllMyBuckets` by the service and the app named that exact
+        action; a bogus key on the same path produced the invalid-credentials
+        message instead, so the two 403s stayed apart.
+      - Still open, and not blocked on code: neither identity available for
+        testing holds `s3:ListBucket` or `s3:ListAllMyBuckets`, so a
+        **successful listing has never been observed**, and the
+        **expired-session path** is unexercised. Both need an identity with
+        listing permission.
 - [x] 8.4 [dispatch: main] Update `AGENTS.md` "Current state" to M1 and note the M0 spike's
       retirement
