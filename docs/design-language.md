@@ -33,8 +33,11 @@ token module second.
 
 ## Tokens
 
-Sizes come from the reference, which uses a 2pt-based scale. Radii and colours
-map onto the theme where the theme has them.
+Sizes come from the reference, which uses a 2pt-based scale. The toolkit's
+theme carries a semantic token set — `spacing` (xxs…xxl), `typography`,
+`radius` and `shadow`, where a shadow is a list of `BoxShadow` — so the scale
+below is declared in the theme document rather than kept in code. Only what the
+schema lacks, the icon-tile sizes, lives in the app.
 
 **Spacing** — `4, 6, 8, 10, 12, 14, 16, 18, 24`. Inside a component: 8 between
 an icon and its text, 12 in a row, 2–4 between a title and its subtitle. Around
@@ -63,23 +66,28 @@ matched by eye.
 
 | Role | Value | Palette entry |
 |---|---|---|
-| Accent, light theme | `#7C3AED` | `violet-600` |
-| Accent, dark theme | `#A78BFA` | `violet-400` |
-| Accent deep — gradient terminus, pressed states | `#5B21B6` | `violet-800` |
-| Accent soft — badge and pill backgrounds | the accent at 12–18% opacity | derived |
+| Brand, light theme | `#7C3AED` | `violet-600` |
+| Brand, dark theme | `#A78BFA` | `violet-400` |
+| Brand deep — pressed states, gradient terminus | `#5B21B6` | `violet-800` |
+| Brand soft — badge and pill backgrounds | the brand at 12–18% opacity | derived |
+
+**Mind the toolkit's naming.** In `gpui-component`, following shadcn, `accent`
+is the *subtle hover surface* — a menu row under the pointer, a pressed toggle —
+and stays neutral. The brand colour is `primary`. Putting violet in `accent`
+would tint every hover in the app.
 
 The reference's light accent is `rgb(0.486, 0.227, 0.929)` and its deep accent
 is `rgb(91, 33, 182)`; those are `violet-600` and `violet-800` to the digit.
 
-The accent is loaded as a theme, not written into components:
+The brand colour is loaded as a theme, not written into components:
 `ThemeRegistry::load_themes_from_str` takes a theme document, and the app ships
-one. A component asks the theme for `accent`, never for violet — which is what
+one. A component asks the theme for `primary`, never for violet — which is what
 keeps a second theme, or a light/dark pair, from becoming a search-and-replace.
 
-**One accent, used sparingly.** In the reference it marks the active sidebar
-row, the primary action, and the encrypted badge — nothing else. Semantic
-meaning stays with the semantic tokens the theme already has: `danger` for a
-refused bucket, `warning`, `success`, `info`. An accent that appears on
+**One brand colour, used sparingly.** In the reference it marks the active
+sidebar row, the primary action, and the encrypted badge — nothing else.
+Semantic meaning stays with the tokens the theme already has: `danger` for a
+refused bucket, `warning`, `success`, `info`. A brand colour that appears on
 everything stops meaning anything.
 
 ## Shadow
@@ -96,7 +104,7 @@ a neutral card casts a neutral one.
 | Use | Reference | Starting values here |
 |---|---|---|
 | Chip, small tile | own colour 18%, y 2 | blur 8, y 2, spread 0 |
-| Raised control, primary tile | accent 25%, y 3 | blur 12, y 3, spread 0 |
+| Raised control, primary tile | brand 25%, y 3 | blur 12, y 3, spread 0 |
 | Hero surface | own colour 35%, y 14 | blur 36, y 14, spread 0 |
 
 The blur figures are doubled from the reference's, because SwiftUI's shadow
