@@ -75,27 +75,53 @@
 
 ## 5. The probe scheduler (core)
 
-- [ ] 5.1 [dispatch: claude-subagent] Test first: submitting a viewport probes
+- [x] 5.1 [dispatch: claude-subagent] Test first: submitting a viewport probes
       only unobserved scopes, never the same scope twice concurrently, and never
       exceeds the in-flight cap; a scope already observed produces no request.
-- [ ] 5.2 [dispatch: claude-subagent] Implement the scheduler with a fixed
+- [x] 5.2 [dispatch: claude-subagent] Implement the scheduler with a fixed
       in-flight budget and an in-flight set, exposing the set so the UI can show
       what is being probed.
-- [ ] 5.3 [dispatch: claude-subagent] Assert that a large viewport submission
+- [x] 5.3 [dispatch: claude-subagent] Assert that a large viewport submission
       issues probes for the submitted rows only, and that rendering never waits
       on one.
+      - Dispatched: claude-subagent (2026-08-19) — section 5 complete; verified:
+        `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D
+        warnings` and `cargo test --workspace` re-run in the main session, all
+        exit 0, 100 core tests. Each guard was mutation-checked red on its own
+        test. One test was rewritten after it was found to hang rather than fail
+        under mutation: `spawn_blocking` plus `tokio::time::timeout` never
+        surfaced its panic, because the runtime waits for blocking tasks at
+        shutdown; a plain thread with `recv_timeout` fails in five seconds.
 
 ## 6. Region selector (GUI)
 
-- [ ] 6.1 [dispatch: main] Offer the distinct regions among the listed buckets,
+- [x] 6.1 [dispatch: main] Offer the distinct regions among the listed buckets,
       plus "all regions", and a choice for buckets with no known region.
-- [ ] 6.2 [dispatch: main] Filter the rows already held; issue no request on
+- [x] 6.2 [dispatch: main] Filter the rows already held; issue no request on
       selection.
-- [ ] 6.3 [dispatch: main] Keep the selection sensible across a profile switch:
+- [x] 6.3 [dispatch: main] Keep the selection sensible across a profile switch:
       a region absent from the new account falls back to all regions rather than
       showing an empty table.
+      - Dispatched: main (2026-08-19) — section 6 complete; verified: same three
+        commands, all exit 0, 9 new tests in core. The choice and what it admits
+        live in core so the CLI can narrow the same way; the window holds only
+        which choice is selected. Mutation-checked: sweeping unstated-region
+        buckets into a named region turns
+        `a_bucket_of_unstated_region_is_not_swept_into_a_named_one` red.
 
 ## 7. Capability in the list (GUI)
+
+Two things section 5 left for this section, discovered while building it:
+
+- **Nothing signals that a probe settled.** The scheduler writes into the
+  capability store and updates its in-flight set, but emits no notification, so
+  7.2 either reads the state each frame or the scheduler gains a sink — a
+  `Fn(Scope)` handed to it at construction and called as each probe finishes.
+- **A probe's structured error is dropped** once it has been mapped to an
+  observation. The IAM action a list denial needs is the constant `s3:ListBucket`,
+  so 7.3 can name it without plumbing; showing the *cause* of a failure that was
+  not a denial would need the error carried out of the scheduler.
+
 
 - [ ] 7.1 [dispatch: main] Report the visible rows to the scheduler, debounced,
       as the user scrolls.
