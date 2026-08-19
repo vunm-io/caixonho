@@ -11,6 +11,7 @@ use gpui_component::{
     ActiveTheme, Icon, IconName, IndexPath, Side, TitleBar,
     button::{Button, ButtonVariants},
     h_flex,
+    menu::PopupMenuItem,
     select::{SearchableVec, Select, SelectEvent},
     sidebar::{Sidebar, SidebarFooter, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem},
     status_bar::StatusBar,
@@ -19,9 +20,9 @@ use gpui_component::{
     v_flex,
 };
 
-use crate::components::{empty_state, icon_tile, inline_message, skeleton_rows};
+use crate::components::{empty_state, inline_message, skeleton_rows};
 use crate::scroll::{self, ScrollAccel};
-use crate::theme::{space, tile};
+use crate::theme::space;
 use crate::views::buckets::{BucketsDelegate, RegionSelect, region_label};
 use crate::views::credential_form::CredentialForm;
 
@@ -104,24 +105,6 @@ fn guidance_for(error: &Error) -> SharedString {
     }
 }
 
-/// The remove control, which changes what it says once it has been asked.
-///
-/// Removing a credential cannot be undone, so it takes two deliberate acts
-/// rather than one that could be a mis-click — and the second one is coloured
-/// like what it does.
-fn remove_button(row: usize, confirming: bool) -> Button {
-    let button = Button::new(("remove", row)).label(if confirming {
-        "Really remove"
-    } else {
-        "Remove"
-    });
-    if confirming {
-        button.danger()
-    } else {
-        button.ghost()
-    }
-}
-
 /// Why a connection cannot be used at all, if that is what happened.
 ///
 /// Only a failure to authenticate makes a *connection* unusable. A network
@@ -180,11 +163,10 @@ pub(crate) struct CaixonhoApp {
     stored: Vec<StoredCredential>,
     /// Open while a credential is being entered.
     form: Option<CredentialForm>,
-    /// Open while connections are being managed rather than used.
-    managing: bool,
     /// The connection whose removal has been asked for and not yet confirmed.
-    /// Removing a credential cannot be undone, so it takes two deliberate acts
-    /// rather than one that can be a mis-click.
+    /// Removing a credential cannot be undone, so it takes a second deliberate
+    /// act on a surface of its own — not a button that changes its label under
+    /// the pointer.
     confirming: Option<String>,
     /// Connections that could not authenticate, and the short reason each
     /// gave. A connection that cannot sign in is not a connection, so it is
@@ -321,7 +303,6 @@ impl CaixonhoApp {
             connections_error,
             stored,
             form: None,
-            managing: false,
             confirming: None,
             unavailable: std::collections::HashMap::new(),
             region: RegionChoice::All,
@@ -477,131 +458,49 @@ impl CaixonhoApp {
         .detach();
     }
 
-    /// The connections this application holds, and what can be done to them.
+    /// The name of the connection at `index`, when it is one this application
+    /// holds rather than a profile read from `~/.aws`.
+    fn stored_name(&self, index: usize) -> Option<String> {
+        self.stored
+            .get(index.checked_sub(self.profiles.len())?)
+            .map(|credential| credential.name().to_owned())
+    }
+
+    /// Confirming a removal, on a surface of its own.
     ///
-    /// Only its own: a profile in `~/.aws` is not ours to remove, and offering
-    /// to would be offering to edit a file shared with every other AWS tool on
-    /// the machine.
-    fn manage_connections(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        if self.stored.is_empty() {
-            return empty_state(
-                IconName::Settings,
-                "No saved connections.",
-                "Connections you add here appear in this list. The ones read from ~/.aws are not \
-                 managed by caixonho and are left alone.",
-                cx,
-            );
-        }
-
-        let rows: Vec<_> = self
-            .stored
-            .iter()
-            .map(|credential| {
-                (
-                    credential.name().to_owned(),
-                    credential.region().to_owned(),
-                    credential.access_key_id().to_owned(),
+    /// Not a button that changes its label under the pointer: the second click
+    /// of a two-step control lands in the same place as the first, which is
+    /// exactly how a mis-click becomes a deletion.
+    fn confirm_removal(&mut self, name: String, cx: &mut Context<Self>) -> AnyElement {
+        let for_remove = name.clone();
+        inline_message(
+            IconName::TriangleAlert,
+            format!("Remove {name}?"),
+            "Its secret is deleted from this system's keychain. The bucket and everything in it \
+             are untouched — this removes how caixonho signs in, not what it signs in to.",
+            cx.theme().danger,
+            h_flex()
+                .gap(space::INLINE)
+                .child(
+                    Button::new("confirm-remove")
+                        .label("Remove")
+                        .danger()
+                        .on_click(cx.listener(move |app, _, window, cx| {
+                            app.confirming = None;
+                            app.forget(for_remove.clone(), window, cx);
+                        })),
                 )
-            })
-            .collect();
-
-        v_flex()
-            .gap(space::ROW)
-            .max_w(px(680.))
-            .child(
-                div()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .child("Saved connections"),
-            )
-            .children(
-                rows.into_iter()
-                    .enumerate()
-                    .map(|(row, (name, region, access_key_id))| {
-                        let confirming = self.confirming.as_deref() == Some(name.as_str());
-                        let for_remove = name.clone();
-                        let for_edit = name.clone();
-                        h_flex()
-                            .gap(space::ROW)
-                            .items_center()
-                            .px(space::CARD)
-                            .py(space::ROW)
-                            .rounded(cx.theme().radius_lg)
-                            .bg(cx.theme().popover)
-                            .border_1()
-                            .border_color(if confirming {
-                                cx.theme().danger.opacity(0.4)
-                            } else {
-                                cx.theme().border
-                            })
-                            .child(icon_tile(
-                                IconName::CircleUser,
-                                tile::SM,
-                                cx.theme().primary,
-                                false,
-                            ))
-                            .child(
-                                v_flex()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .gap(space::TIGHT)
-                                    .child(div().child(name.clone()))
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            // The access key id is not a secret. The
-                                            // secret is in the keychain, and is shown
-                                            // neither here nor anywhere else.
-                                            .child(format!("{region} · {access_key_id}")),
-                                    ),
-                            )
-                            .children(confirming.then(|| {
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().danger)
-                                    .child("This cannot be undone.")
-                            }))
-                            .child(
-                                h_flex()
-                                    .gap(space::INLINE)
-                                    .flex_shrink_0()
-                                    .child(
-                                        Button::new(("edit", row))
-                                            .label("Edit")
-                                            .outline()
-                                            .on_click(cx.listener(move |app, _, window, cx| {
-                                                app.edit_connection(&for_edit, window, cx);
-                                            })),
-                                    )
-                                    .child(remove_button(row, confirming).on_click(cx.listener(
-                                        move |app, _, window, cx| {
-                                            if app.confirming.as_deref()
-                                                == Some(for_remove.as_str())
-                                            {
-                                                app.confirming = None;
-                                                app.forget(for_remove.clone(), window, cx);
-                                            } else {
-                                                app.confirming = Some(for_remove.clone());
-                                            }
-                                            cx.notify();
-                                        },
-                                    ))),
-                            )
-                    }),
-            )
-            .child(
-                h_flex().child(
-                    Button::new("done-managing")
-                        .label("Done")
-                        .outline()
+                .child(
+                    Button::new("cancel-remove")
+                        .label("Cancel")
+                        .ghost()
                         .on_click(cx.listener(|app, _, _, cx| {
-                            app.managing = false;
                             app.confirming = None;
                             cx.notify();
                         })),
                 ),
-            )
-            .into_any_element()
+            cx,
+        )
     }
 
     /// Open the form on an existing connection.
@@ -621,7 +520,6 @@ impl CaixonhoApp {
             return;
         };
         self.confirming = None;
-        self.managing = false;
         self.form = Some(CredentialForm::editing(&existing, window, cx));
         cx.notify();
     }
@@ -666,7 +564,18 @@ impl CaixonhoApp {
             let _ = this.update(cx, |app, cx| {
                 match result {
                     Ok(credential) => {
-                        app.stored.push(credential);
+                        // Replace, never append. The store keys a connection by
+                        // its name and rewrites it, so saving over one that
+                        // exists — which is what editing is — must do the same
+                        // here or the same connection appears twice.
+                        match app
+                            .stored
+                            .iter()
+                            .position(|existing| existing.name() == credential.name())
+                        {
+                            Some(position) => app.stored[position] = credential,
+                            None => app.stored.push(credential),
+                        }
                         app.form = None;
                     }
                     Err(error) => {
@@ -786,20 +695,14 @@ impl CaixonhoApp {
                                 })),
                         )
                         // Managing connections is a different activity from
-                        // choosing one, so it lives behind its own control
-                        // rather than as a destructive button beside the row
-                        // it would destroy.
+                        // choosing one, and it acts on a connection — so it
+                        // lives on the connection, in its own context menu,
+                        // rather than in a second list of the same things.
                         .child(
-                            Button::new("manage-connections")
-                                .label("Manage connections")
-                                .icon(IconName::Settings)
-                                .ghost()
-                                .w_full()
-                                .on_click(cx.listener(|app, _, _, cx| {
-                                    app.managing = !app.managing;
-                                    app.confirming = None;
-                                    cx.notify();
-                                })),
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("Right-click a saved connection to edit or remove it."),
                         ),
                 ),
             )
@@ -848,6 +751,36 @@ impl CaixonhoApp {
                         .on_click(cx.listener(move |app, _, window, cx| {
                             app.select_profile(index, window, cx);
                         }));
+                    // Editing and removing act on a connection, so they live on
+                    // the connection rather than in a second list of the same
+                    // things. Only what this application holds: a profile in
+                    // ~/.aws is not ours to edit or remove.
+                    let item = match self.stored_name(index) {
+                        None => item,
+                        Some(name) => {
+                            let entity = cx.entity().downgrade();
+                            item.context_menu(move |menu, _, _| {
+                                let (edit, remove) = (entity.clone(), entity.clone());
+                                let (for_edit, for_remove) = (name.clone(), name.clone());
+                                menu.item(PopupMenuItem::new("Edit…").on_click(
+                                    move |_, window, cx| {
+                                        let _ = edit.update(cx, |app, cx| {
+                                            app.edit_connection(&for_edit, window, cx);
+                                        });
+                                    },
+                                ))
+                                .separator()
+                                .item(
+                                    PopupMenuItem::new("Remove…").on_click(move |_, _, cx| {
+                                        let _ = remove.update(cx, |app, cx| {
+                                            app.confirming = Some(for_remove.clone());
+                                            cx.notify();
+                                        });
+                                    }),
+                                )
+                            })
+                        }
+                    };
                     // Marked, not hidden, and not removed: a connection
                     // that cannot sign in is still a fact about this
                     // machine, and hiding it would leave the user
@@ -899,8 +832,8 @@ impl CaixonhoApp {
                 .child(self.failure_panel(error, cx))
                 .into_any_element();
         }
-        if self.managing {
-            return self.manage_connections(cx);
+        if let Some(name) = self.confirming.clone() {
+            return self.confirm_removal(name, cx);
         }
         if let Some(form) = &self.form {
             let this = cx.entity().downgrade();
