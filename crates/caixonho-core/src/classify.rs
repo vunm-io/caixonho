@@ -487,6 +487,37 @@ mod tests {
     }
 
     #[test]
+    fn throttling_is_never_reported_as_a_denial() {
+        // A busy account answers `SlowDown`, and the throttling codes wear
+        // every status from 400 to 503. None of them is an authorization
+        // decision, and the capability model reads a denial as one — so a
+        // throttled account must not render as a wall of locks
+        // (`capability-awareness`, "Only a denial may be presented as a
+        // denial"). Nothing here needs a rule of its own: the denial branch
+        // asks for a denial code and these are not it. This test is what
+        // keeps that true if the branch is ever loosened.
+        let throttles = [
+            ("SlowDown", 503),
+            ("Throttling", 400),
+            ("ThrottlingException", 400),
+            ("RequestLimitExceeded", 400),
+            ("TooManyRequestsException", 429),
+        ];
+
+        for (code, status) in throttles {
+            let failure = SdkFailure::new(FailureKind::Service)
+                .with_code(code)
+                .with_status(status)
+                .with_text("please reduce your request rate");
+
+            assert!(
+                !matches!(classify(&failure, &call()), Error::AccessDenied { .. }),
+                "`{code}` (HTTP {status}) is a rate limit, not an authorization decision"
+            );
+        }
+    }
+
+    #[test]
     fn an_unattributed_service_error_keeps_the_code_and_status_for_diagnosis() {
         let failure = SdkFailure::new(FailureKind::Service)
             .with_code("SlowDown")

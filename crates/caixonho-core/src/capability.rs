@@ -13,6 +13,8 @@
 
 use std::collections::HashMap;
 
+use crate::error::{Error, Result};
+
 /// What we currently know about one operation on one scope
 /// (a bucket or a prefix), for one set of credentials.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -27,6 +29,33 @@ pub enum Observation {
     /// here — expired tokens, wrong regions, network failures and missing
     /// buckets are different states and must never be folded into this one.
     Denied,
+}
+
+/// What a completed list attempt is evidence of.
+///
+/// The S3 port answers a probe — or a listing the user asked for — with a
+/// structured `Result`; this is where that answer becomes evidence, and it is
+/// the only place in the app where a failure may become a denial.
+///
+/// It is an allowlist rather than a list of exclusions, and deliberately so:
+/// exactly one failure, a service-side authorization refusal, says anything
+/// about permission. An expired session, rejected credentials, a wrong-region
+/// redirect, an unreachable network, a missing bucket, an untrusted chain and
+/// a throttled request are each about something else entirely, so they all map
+/// to [`Observation::Unknown`] — which [`CapabilityStore::observe_list`]
+/// refuses to record, leaving the scope exactly as it was and still worth
+/// probing (`capability-awareness`, "Only a denial may be presented as a
+/// denial"). Adding an error variant therefore cannot accidentally add a way
+/// to accuse the user of being denied.
+///
+/// Each of those causes keeps its own [`Error`] for the caller to report; this
+/// function answers one narrow question, and discards nothing.
+pub fn observation_for<T>(attempt: &Result<T>) -> Observation {
+    match attempt {
+        Ok(_) => Observation::Allowed,
+        Err(Error::AccessDenied { .. }) => Observation::Denied,
+        Err(_) => Observation::Unknown,
+    }
 }
 
 /// The set of capabilities caixonho tracks per scope.
@@ -211,6 +240,125 @@ mod tests {
     //! produced them".
 
     use super::*;
+    use crate::error::{Error, Result, SessionProblem};
+
+    #[test]
+    fn a_completed_list_is_evidence_that_listing_is_allowed() {
+        let probe: Result<()> = Ok(());
+
+        assert_eq!(observation_for(&probe), Observation::Allowed);
+    }
+
+    #[test]
+    fn a_real_listing_is_the_same_evidence_as_a_probe() {
+        // A listing the user asked for settles the scope without any probe
+        // being issued; the model does not distinguish the two, so the
+        // mapping does not either.
+        let listing: Result<Vec<&str>> = Ok(vec!["2026/01/03.log"]);
+
+        assert_eq!(observation_for(&listing), Observation::Allowed);
+    }
+
+    #[test]
+    fn an_authorization_denial_is_evidence_of_a_denial() {
+        let probe: Result<()> = Err(Error::AccessDenied {
+            iam_action: "s3:ListBucket",
+        });
+
+        assert_eq!(observation_for(&probe), Observation::Denied);
+    }
+
+    #[test]
+    fn no_other_failure_is_evidence_about_permission() {
+        // The list is the spec's own: expired sessions, rejected
+        // credentials, unreachable networks, wrong regions, missing buckets
+        // and trust failures each keep their own cause and none of them may
+        // become a denial. Throttling joins them, so a busy account does not
+        // turn into a wall of locks.
+        let failures = [
+            (
+                "an expired session",
+                Error::SessionRejected {
+                    profile: "work".into(),
+                    sso_session: Some("corp".into()),
+                    problem: SessionProblem::Expired,
+                },
+            ),
+            (
+                "rejected credentials",
+                Error::SessionRejected {
+                    profile: "work".into(),
+                    sso_session: None,
+                    problem: SessionProblem::Invalid,
+                },
+            ),
+            (
+                "no credentials at all",
+                Error::NoCredentials {
+                    profile: "work".into(),
+                },
+            ),
+            (
+                "a wrong-region redirect",
+                Error::Unexpected {
+                    detail: "the service reported `PermanentRedirect` (HTTP 301)".into(),
+                },
+            ),
+            (
+                "throttling",
+                Error::Unexpected {
+                    detail: "the service reported `SlowDown` (HTTP 503)".into(),
+                },
+            ),
+            (
+                "an unreachable network",
+                Error::Network {
+                    detail: "the endpoint could not be reached".into(),
+                },
+            ),
+            (
+                "an untrusted certificate chain",
+                Error::TlsTrust {
+                    endpoint: "s3.ap-southeast-1.amazonaws.com".into(),
+                },
+            ),
+            (
+                "incomplete configuration",
+                Error::MissingConfiguration {
+                    profile: Some("work".into()),
+                    detail: "no region is configured".into(),
+                },
+            ),
+        ];
+
+        for (case, error) in failures {
+            let probe: Result<()> = Err(error);
+
+            assert_eq!(
+                observation_for(&probe),
+                Observation::Unknown,
+                "{case} says nothing about permission and must leave the model untouched"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failure_that_is_not_a_denial_cannot_reach_the_store_at_all() {
+        // The two halves together: mapping a non-denial gives `Unknown`, and
+        // the store refuses `Unknown` — so the scope keeps whatever it knew
+        // and stays worth probing again.
+        let mut store = CapabilityStore::new();
+        let credentials = store.credentials_changed("work");
+        let logs = Scope::bucket("logs");
+        let throttled: Result<()> = Err(Error::Unexpected {
+            detail: "the service reported `SlowDown` (HTTP 503)".into(),
+        });
+
+        let recorded = store.observe_list(&credentials, logs.clone(), observation_for(&throttled));
+
+        assert!(!recorded);
+        assert!(store.needs_list_probe(&credentials, &logs));
+    }
 
     #[test]
     fn capability_defaults_to_unknown_everywhere() {
