@@ -150,8 +150,22 @@ Two things section 5 left for this section, discovered while building it:
       `cargo clippy --workspace --all-targets -- -D warnings` and
       `cargo test --workspace` green locally.
       - All three exit 0 on 2026-08-19: 102 core tests, 2 GUI tests.
-- [ ] 8.2 [dispatch: main] CI green on `windows-latest` and `macos-latest`.
+- [x] 8.2 [dispatch: main] CI green on `windows-latest` and `macos-latest`.
+      - Run 32244593808 (2026-08-19) on `7728c52`: rustfmt 12s, macOS 2m8s,
+        Windows 3m30s, all green.
 - [ ] 8.3 [dispatch: main] Live check on the development account: regions
       populated and filterable, probes visible as they resolve, and a bucket the
       credentials cannot enter presented as such with its IAM action named.
       Record what was exercised here.
+      - Partly exercised 2026-08-19, against the service rather than through the
+        window. **Regions:** the listing carries `BucketRegion` for every bucket
+        once the request sends a page size, and carries none without it — the
+        defect this change fixes, confirmed on the account twice. **Probe:** the
+        request the probe makes, `ListObjectsV2` with one key, was run against a
+        real bucket and answered with no keys, so it is as cheap and as harmless
+        as claimed.
+      - **Still open, and it needs the window:** that regions filter as
+        selected, that a row visibly settles from being probed to its answer,
+        and that a bucket the credentials cannot enter reads as such with
+        `s3:ListBucket` named. None of these can be verified from a shell, and
+        nothing should be ticked on the strength of the unit tests alone.
