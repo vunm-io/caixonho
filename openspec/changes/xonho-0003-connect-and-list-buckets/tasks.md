@@ -106,10 +106,22 @@
         `s3:ListAllMyBuckets` by the service and the app named that exact
         action; a bogus key on the same path produced the invalid-credentials
         message instead, so the two 403s stayed apart.
-      - Still open, and not blocked on code: neither identity available for
-        testing holds `s3:ListBucket` or `s3:ListAllMyBuckets`, so a
-        **successful listing has never been observed**, and the
-        **expired-session path** is unexercised. Both need an identity with
-        listing permission.
+      - **Successful listing observed 2026-08-19** against a second account
+        whose identity does hold `s3:ListAllMyBuckets`: three buckets rendered
+        with name and creation date, the in-flight state visible while the
+        call ran, and switching from a failing profile to this one cleared the
+        previous error and replaced its results — the switching scenario with
+        two profiles that behave differently.
+      - Region showed `unknown` for every bucket, and that is correct here:
+        the service returned only `Name`, `CreationDate` and `BucketArn` for
+        this account, no `BucketRegion`, and an S3 bucket ARN carries no
+        region either. Nothing was inferred from the connection's own region.
+      - Credentials reached the SDK through `credential_process`, so the
+        static key stayed in a password manager and never touched
+        `~/.aws/credentials` — worth knowing that this path works, since it is
+        what the planned in-app keychain storage will have to coexist with.
+      - Still open: a genuinely **expired** session. The invalid-credentials
+        branch is verified live (a bogus key produced it), but no expired SSO
+        token has been observed — that needs a token to age out or be cleared.
 - [x] 8.4 [dispatch: main] Update `AGENTS.md` "Current state" to M1 and note the M0 spike's
       retirement
