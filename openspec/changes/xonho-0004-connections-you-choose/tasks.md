@@ -18,26 +18,73 @@
 
 ## 2. A connection is a source
 
-- [ ] 2.1 [dispatch: claude-subagent] Test first: a connection opens from a
+- [x] 2.1 [dispatch: claude-subagent] Test first: a connection opens from a
       named profile or from a stored credential, and everything above the
       connection behaves identically for both.
-- [ ] 2.2 [dispatch: claude-subagent] Introduce the source type in core and
+- [x] 2.2 [dispatch: claude-subagent] Introduce the source type in core and
       thread it through `Session::open`; leave the profile path's behaviour
       unchanged.
 
 ## 3. The credential store
 
-- [ ] 3.1 [dispatch: claude-subagent] Test first, against a double of the
+- [x] 3.1 [dispatch: claude-subagent] Test first, against a double of the
       credential store: saving keeps the secret only in the store; loading
       returns it; forgetting deletes it; a refusing store is reported as its own
       cause and nothing is written elsewhere.
-- [ ] 3.2 [dispatch: claude-subagent] Add `keyring` and implement the store
+      - **Blocks 6.1 until 4.4 lands.** "Its own cause" is a new
+        `Error::CredentialStore { connection, problem }`, and `caixonho-gui`
+        matches `Error` exhaustively in two places — `unavailable_reason`
+        (`app.rs:32`) and `failure_panel`'s guidance (`app.rs:380`). Both need
+        an arm, which is 4.4's own work; core is green on its own
+        (`cargo test -p caixonho-core`: 133 passed). Deliberately not a
+        wildcard arm anywhere: the enum exists so that adding a cause forces
+        every reader to decide what it means.
+      - "Nothing is written elsewhere" is asserted against the very paths the
+        session was handed, not only against the double
+        (`a_saved_credential_never_reaches_the_aws_shared_files`).
+- [x] 3.2 [dispatch: claude-subagent] Add `keyring` and implement the store
       behind a port, so the tests above never touch a real keychain.
-- [ ] 3.3 [dispatch: claude-subagent] Keep name, region and access key id as
+      - `keyring` 4.x is not the 3.x crate with a bigger number: it is a thin
+        shim over `keyring-core`, and its whole API arrives through the
+        default `v1` feature — `Entry::new(service, username)`,
+        `set_password` / `get_password` / `delete_credential`. Read from the
+        vendored source rather than recalled. The default features are the
+        right ones and no feature list is needed: `v1` pulls
+        `apple-native-keyring-store` on macOS and `windows-native-keyring-store`
+        on Windows, both target-gated. (`cargo add` prints
+        `apple-native-keyring-store` as *disabled*, which is wrong for a
+        target-gated optional dependency — the macOS build compiles it.)
+      - What no test here covers: whether the real keychain stores, returns and
+        refuses as expected. That needs a real keychain — 6.3.
+- [x] 3.3 [dispatch: claude-subagent] Keep name, region and access key id as
       ordinary configuration; the secret and session token in the store only.
-- [ ] 3.4 [dispatch: claude-subagent] Assert that no error, log line or
+      - `StoredCredential` (name, region, access key id) and `CredentialSecret`
+        (secret, token) are separate types, and the store only ever sees the
+        second. Asserted both ways in
+        `saving_puts_the_secret_in_the_store_and_the_rest_nowhere`.
+      - **Nothing persists the configuration half yet**, so a stored connection
+        does not survive a restart. The spec permits this — it says the
+        non-secret half *may* be kept as configuration — but "a connection can
+        be forgotten" reads oddly when every connection is forgotten at exit.
+        Whoever closes 4.x either persists it or writes it up as its own
+        change.
+- [x] 3.4 [dispatch: claude-subagent] Assert that no error, log line or
       diagnostic from a stored-credential failure contains the secret — the
       existing redaction test is the place for it.
+      - Two tests, because there are two directions. `classify.rs`'s existing
+        `no_classification_ever_leaks_credential_material` gained the case a
+        mistyped stored credential actually produces — a
+        `SignatureDoesNotMatch` chain quoting what was signed with — and
+        `credentials.rs` gained
+        `no_credential_store_failure_ever_discloses_the_secret` for the leak
+        route out of the keychain.
+      - **Mutation-checked, and the first version of the test was wrong.**
+        With the store's error stringified into the message, the readable-string
+        assertion passed for `keyring::Error::BadEncoding` — the one variant
+        whose documentation says it hands the payload back — because its
+        `Debug` renders the secret as `[119, 74, 97, ...]`. The test now checks
+        both spellings, and both mutations (`{error:?}` and `to_string()`) turn
+        it red.
 
 ## 4. Entering and forgetting
 

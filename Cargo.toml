@@ -45,6 +45,14 @@ aws-smithy-http-client = { version = "1.3.0", features = ["default-client", "rus
 aws-smithy-runtime-api = { version = "1.14.0", features = ["client", "http-1x"] }
 async-trait = "0.1.92"
 
+# OS credential store — XONHO-0004. Verified on crates.io on 2026-08-19
+# (MIT OR Apache-2.0). Default features are exactly what this needs: `v1`
+# selects Keychain Services on macOS and the Credential Manager on Windows,
+# the two v1 targets, and nothing else is enabled. The `cli` feature would
+# drag in every credential store the project knows about; upstream says so
+# itself.
+keyring = "4.1.6"
+
 # gpui is unusable without optimization, even in dev builds (mirrors upstream).
 [profile.dev.package.gpui]
 opt-level = 3

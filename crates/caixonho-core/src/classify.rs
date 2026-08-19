@@ -678,6 +678,14 @@ mod tests {
     fn no_classification_ever_leaks_credential_material() {
         // Everything a real chain could plausibly carry: keys, a session
         // token, and a signed Authorization header.
+        //
+        // A stored credential goes through here too, and it is the case with
+        // the most to lose: it was typed into this application, handed to the
+        // SDK as static credentials, and the first thing a wrong one produces
+        // is a signing failure whose chain quotes what was signed with. The
+        // secret in the list below is the one `credentials.rs` stores, on
+        // purpose — the two redaction tests guard the same string arriving
+        // from opposite directions.
         const SECRETS: &[&str] = &[
             "AKIAIOSFODNN7EXAMPLE",
             "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
@@ -717,6 +725,17 @@ mod tests {
                 .with_code("SlowDown")
                 .with_status(503)
                 .with_text(&leaky),
+            // What a mistyped stored credential actually produces: the app's
+            // own static credentials signed a request and the service did not
+            // agree with the signature. The chain names the key that signed
+            // and the string that was signed.
+            SdkFailure::new(FailureKind::Service)
+                .with_code("SignatureDoesNotMatch")
+                .with_status(403)
+                .with_text(&format!(
+                    "the request signature we calculated does not match the signature you \
+                     provided; check your key and signing method {leaky}"
+                )),
         ];
 
         for failure in &cases {

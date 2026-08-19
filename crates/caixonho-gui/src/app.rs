@@ -1,6 +1,6 @@
 use caixonho_core::{
-    ActiveOutcome, Bucket, ConfigPaths, ConnectionId, Error, HttpStack, Outcome, Profile,
-    RegionChoice, Scope, Session, SessionProblem, TaggedOutcome, region_choices,
+    ActiveOutcome, Bucket, ConfigPaths, ConnectionId, CredentialStoreProblem, Error, HttpStack,
+    Outcome, Profile, RegionChoice, Scope, Session, SessionProblem, TaggedOutcome, region_choices,
 };
 use gpui::{
     AppContext, Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled, Window,
@@ -35,6 +35,13 @@ fn unavailable_reason(error: &Error) -> Option<SharedString> {
             SessionProblem::Invalid => "credentials refused".into(),
         }),
         Error::NoCredentials { .. } => Some("no credentials".into()),
+        // The secret exists somewhere the app cannot reach, which for the
+        // purpose of connecting is the same as not having one.
+        Error::CredentialStore { problem, .. } => Some(match problem {
+            CredentialStoreProblem::Locked => "keychain locked".into(),
+            CredentialStoreProblem::Refused => "keychain refused".into(),
+            CredentialStoreProblem::Absent => "no keychain".into(),
+        }),
         Error::Network { .. }
         | Error::TlsTrust { .. }
         | Error::AccessDenied { .. }
@@ -402,6 +409,23 @@ impl CaixonhoApp {
             Error::MissingConfiguration { .. } => {
                 "Complete the profile's configuration — a region is required — and try again.".into()
             }
+            Error::CredentialStore { connection, problem } => match problem {
+                CredentialStoreProblem::Locked => format!(
+                    "The system keychain is locked, so the secret for `{connection}` cannot be \
+                     read. Unlock it and try again."
+                )
+                .into(),
+                CredentialStoreProblem::Refused => format!(
+                    "The system keychain did not hand back the secret for `{connection}`. If a \
+                     prompt appeared, it may have been declined."
+                )
+                .into(),
+                CredentialStoreProblem::Absent => {
+                    "This system has no credential store for caixonho to use, so credentials \
+                     entered here cannot be kept. Use a profile in ~/.aws instead."
+                        .into()
+                }
+            },
             Error::Unexpected { .. } => "The call failed for an unrecognised reason.".into(),
         };
 
@@ -597,6 +621,27 @@ mod tests {
         };
 
         assert_eq!(unavailable_reason(&error), None);
+    }
+
+    #[test]
+    fn a_secret_the_app_cannot_reach_makes_the_connection_unusable() {
+        // Whether the store is locked, refusing or missing, the effect on
+        // connecting is the same: there is nothing to sign in with.
+        for problem in [
+            CredentialStoreProblem::Locked,
+            CredentialStoreProblem::Refused,
+            CredentialStoreProblem::Absent,
+        ] {
+            let error = Error::CredentialStore {
+                connection: "my-key".into(),
+                problem,
+            };
+
+            assert!(
+                unavailable_reason(&error).is_some(),
+                "a secret that cannot be read leaves nothing to connect with: {problem:?}"
+            );
+        }
     }
 
     #[test]

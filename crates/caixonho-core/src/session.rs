@@ -13,7 +13,8 @@ use tokio::runtime::Handle;
 
 use crate::adapter::S3ObjectStore;
 use crate::capability::{Capability, CapabilityStore, CredentialsId, Observation, Scope};
-use crate::connection::{self, Connection};
+use crate::connection::{self, Connection, ConnectionSource};
+use crate::credentials::{self, CredentialSecret, Keyring, SecretStore, StoredCredential};
 use crate::error::Result;
 use crate::outcome::{Outcome, TaggedOutcome};
 use crate::probe::{ProbeScheduler, ProbeSink, ProbeTarget};
@@ -28,6 +29,13 @@ pub struct Session {
     runtime: Handle,
     http: HttpStack,
     paths: ConfigPaths,
+    /// Where the secret half of a stored credential is kept.
+    ///
+    /// Behind an `Arc<dyn _>` so a test can put a double where the OS
+    /// keychain goes, through the same door production uses. Holding one
+    /// costs nothing at startup: `keyring` initialises the platform store
+    /// lazily, on the first entry anyone builds.
+    secrets: Arc<dyn SecretStore>,
     /// Shared by every clone, so an observation made on a runtime thread is
     /// the same one the frontend reads. The lock is only ever held for a map
     /// lookup — never across an await.
@@ -63,10 +71,22 @@ impl Session {
             runtime,
             http,
             paths,
+            secrets: Arc::new(Keyring),
             capabilities: Arc::new(Mutex::new(CapabilityStore::new())),
             scheduler: Arc::default(),
             settled: Arc::default(),
         }
+    }
+
+    /// The same session, reading and writing secrets somewhere else.
+    ///
+    /// Test-only: the OS keychain is the only credential store the app ships
+    /// with, and a way to redirect it in production would be a way to put
+    /// secrets somewhere the spec forbids.
+    #[cfg(test)]
+    pub(crate) fn with_secret_store(mut self, secrets: Arc<dyn SecretStore>) -> Self {
+        self.secrets = secrets;
+        self
     }
 
     /// Where this session reads profiles from.
@@ -214,16 +234,23 @@ impl Session {
 
     /// Open a connection and list its buckets, off the caller's thread.
     ///
+    /// `source` is a named profile or a stored credential; nothing below this
+    /// point behaves differently for the two, which is the point of the type
+    /// (design.md, "A connection is a source, not a profile"). A bare name
+    /// still means a profile, so a caller that has one may pass it as it is.
+    ///
     /// `deliver` is called exactly once with the tagged result. It runs on a
     /// runtime thread, so a frontend should do nothing in it but hand the
     /// message to its own executor.
-    pub fn spawn_listing<F>(&self, id: ConnectionId, profile: String, deliver: F)
+    pub fn spawn_listing<S, F>(&self, id: ConnectionId, source: S, deliver: F)
     where
+        S: Into<ConnectionSource>,
         F: FnOnce(TaggedOutcome) + Send + 'static,
     {
+        let source = source.into();
         let session = self.clone();
         self.runtime.spawn(async move {
-            let outcome = match session.list_buckets(id, &profile).await {
+            let outcome = match session.list_buckets(id, &source).await {
                 Ok(buckets) => Outcome::Loaded(buckets),
                 Err(error) => Outcome::Failed(error),
             };
@@ -231,21 +258,63 @@ impl Session {
         });
     }
 
-    /// Open a connection for `profile` and list what it can see.
-    async fn list_buckets(&self, id: ConnectionId, profile: &str) -> Result<Vec<crate::Bucket>> {
-        let connection = self.open(id, profile).await?;
+    /// Open a connection for `source` and list what it can see.
+    async fn list_buckets(
+        &self,
+        id: ConnectionId,
+        source: &ConnectionSource,
+    ) -> Result<Vec<crate::Bucket>> {
+        let connection = self.open(id, source.clone()).await?;
         S3ObjectStore::new(&connection).list_buckets().await
     }
 
-    /// Open a connection for `profile`.
+    /// Save a stored credential's secret, off the caller's thread.
     ///
-    /// Opening is the moment the credentials change: it is how a profile
-    /// switch reaches core, and how a re-authentication of the current
-    /// profile does too. Both discard every observation gathered so far —
-    /// unconditionally, and before the attempt, because a profile that fails
-    /// to open must not leave the previous one's evidence standing under its
-    /// name (`capability-awareness`, "Observations are scoped to the
-    /// credentials that produced them").
+    /// On the runtime for the same reason every network call is: reaching the
+    /// credential store can raise a prompt the user has to answer, and a
+    /// render thread waiting on one is a frozen window (design.md, Risks).
+    ///
+    /// `deliver` is called exactly once, on a runtime thread, and is handed
+    /// back the credential's configuration half so a frontend can offer the
+    /// connection the moment it is real. A store that refuses is reported as
+    /// itself, and nothing is written anywhere else.
+    pub fn spawn_save_credential<F>(
+        &self,
+        credential: StoredCredential,
+        secret: CredentialSecret,
+        deliver: F,
+    ) where
+        F: FnOnce(Result<StoredCredential>) + Send + 'static,
+    {
+        let secrets = Arc::clone(&self.secrets);
+        self.runtime.spawn(async move {
+            deliver(credentials::save(secrets.as_ref(), &credential, &secret).map(|()| credential));
+        });
+    }
+
+    /// Forget a stored credential, off the caller's thread.
+    ///
+    /// Deletes everything the credential store holds for `name`. What the
+    /// frontend does with the connection afterwards is its own business —
+    /// but a connection that has been forgotten is not one to keep offering.
+    pub fn spawn_forget_credential<F>(&self, name: String, deliver: F)
+    where
+        F: FnOnce(Result<()>) + Send + 'static,
+    {
+        let secrets = Arc::clone(&self.secrets);
+        self.runtime
+            .spawn(async move { deliver(credentials::forget(secrets.as_ref(), &name)) });
+    }
+
+    /// Open a connection for `source`.
+    ///
+    /// Opening is the moment the credentials change: it is how a switch to
+    /// another connection reaches core, and how a re-authentication of the
+    /// current one does too. Both discard every observation gathered so far —
+    /// unconditionally, and before the attempt, because a connection that
+    /// fails to open must not leave the previous one's evidence standing
+    /// under its name (`capability-awareness`, "Observations are scoped to
+    /// the credentials that produced them").
     ///
     /// The previous connection's probe scheduler goes with them, for the same
     /// reason and one more: it probes through a store built for credentials
@@ -253,11 +322,21 @@ impl Session {
     /// that is no longer on screen. A connection that comes up gets a
     /// scheduler of its own, so reporting a viewport starts probing without
     /// the frontend having to wire anything up.
-    pub async fn open(&self, id: ConnectionId, profile: &str) -> Result<Connection> {
-        let credentials = self.credentials_changed(profile);
+    ///
+    /// None of that reads `source`. Whether the credentials came from
+    /// `~/.aws` or from this application's own store is settled inside
+    /// `connection::open` and is invisible from here upwards.
+    pub async fn open<S: Into<ConnectionSource>>(
+        &self,
+        id: ConnectionId,
+        source: S,
+    ) -> Result<Connection> {
+        let source = source.into();
+        let credentials = self.credentials_changed(source.name());
         *self.scheduler_slot() = None;
 
-        let connection = connection::open(id, profile, &self.paths, &self.http).await?;
+        let connection =
+            connection::open(id, &source, &self.paths, &self.http, self.secrets.as_ref()).await?;
         self.install_scheduler(Arc::new(S3ObjectStore::new(&connection)), credentials);
         Ok(connection)
     }
@@ -270,12 +349,22 @@ mod tests {
     //! the store forget. The model itself is covered in `capability.rs`, and
     //! the scheduling rules in `probe.rs`; what is asserted here is that the
     //! session hands the two to each other.
+    //!
+    //! And `stored-credentials` at the seam: that a connection opened from a
+    //! credential this application holds is treated exactly like one opened
+    //! from a profile, and that saving a credential leaves the AWS shared
+    //! files alone.
 
     use super::*;
     use crate::capability::{Observation, Scope};
+    use crate::credentials::double::SecretStoreDouble;
+    use crate::error::{CredentialStoreProblem, Error};
     use crate::probe::double::{HeldProbes, settle, until};
     use crate::types::Region;
     use std::path::PathBuf;
+
+    /// The secret the fixtures put through the store. Not a real key.
+    const SECRET: &str = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
 
     struct Fixture {
         dir: PathBuf,
@@ -289,11 +378,23 @@ mod tests {
             Self { dir }
         }
 
+        /// Where this fixture's session reads shared configuration from.
+        ///
+        /// Names a credentials file that does not exist, exactly as the real
+        /// app does — and, below, so that a test can watch whether anything
+        /// ever creates it.
+        fn paths(&self) -> ConfigPaths {
+            ConfigPaths {
+                config: Some(self.dir.join("config")),
+                credentials: Some(self.dir.join("credentials")),
+            }
+        }
+
         /// A session reading a config file that declares `profile`.
         fn session(&self, profile: &str) -> Session {
-            let path = self.dir.join("config");
+            let paths = self.paths();
             std::fs::write(
-                &path,
+                paths.config.as_ref().expect("a config path"),
                 format!(
                     "[profile {profile}]\nregion = ap-southeast-1\n\
                      aws_access_key_id = AKIAEXAMPLE\n\
@@ -304,10 +405,7 @@ mod tests {
             Session::new(
                 Handle::current(),
                 HttpStack::with_ca_bundle(None).expect("client builds"),
-                ConfigPaths {
-                    config: Some(path),
-                    credentials: None,
-                },
+                paths,
             )
         }
     }
@@ -316,6 +414,23 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.dir);
         }
+    }
+
+    /// The stored credential the tests below connect with.
+    fn stored() -> StoredCredential {
+        StoredCredential::new("typed-in", "ap-southeast-1", "AKIAIOSFODNN7EXAMPLE")
+    }
+
+    /// A credential store already holding [`stored`]'s secret.
+    fn store_holding_the_secret() -> Arc<SecretStoreDouble> {
+        let store = Arc::new(SecretStoreDouble::open());
+        credentials::save(
+            store.as_ref(),
+            &stored(),
+            &CredentialSecret::new(SECRET, None),
+        )
+        .expect("an open store accepts it");
+        store
     }
 
     #[tokio::test]
@@ -472,5 +587,186 @@ mod tests {
             session.capability(&now, &Scope::bucket("logs")).list,
             Observation::Unknown
         );
+    }
+
+    #[tokio::test]
+    async fn a_connection_opens_from_either_source_and_everything_above_it_is_the_same() {
+        // The property this change exists to preserve. Above the connection
+        // — the capability store, the probe scheduler, the listing — nothing
+        // asks where the credentials came from, so a profile and a stored
+        // credential have to arrive in the same state and leave the same
+        // state behind them.
+        let fixture = Fixture::new("either-source");
+        let session = fixture
+            .session("work")
+            .with_secret_store(store_holding_the_secret());
+
+        for (case, source, name) in [
+            ("a named profile", ConnectionSource::from("work"), "work"),
+            (
+                "a stored credential",
+                ConnectionSource::from(stored()),
+                "typed-in",
+            ),
+        ] {
+            let before = session.credentials_changed("whatever-was-open");
+            session.observe_list(&before, Scope::bucket("logs"), Observation::Denied);
+
+            let connection = session
+                .open(ConnectionId(3), source)
+                .await
+                .unwrap_or_else(|error| panic!("{case} must open: {error}"));
+
+            assert_eq!(connection.id(), ConnectionId(3), "{case}");
+            assert_eq!(connection.name(), name, "{case}");
+            assert!(!connection.region().is_empty(), "{case}");
+
+            let now = session.credentials().expect("a connection is open");
+            assert_ne!(now, before, "{case}: opening mints new credentials");
+            assert_eq!(
+                now.profile(),
+                name,
+                "{case}: observations are attributed to what the user chose"
+            );
+            assert_eq!(
+                session.capability(&now, &Scope::bucket("logs")).list,
+                Observation::Unknown,
+                "{case}: nothing observed before the connection was opened may survive it"
+            );
+            assert!(
+                session.scheduler().is_some(),
+                "{case}: a connection that comes up is one a viewport can be probed against"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stored_connection_that_cannot_reach_its_secret_discards_the_previous_evidence_too() {
+        // The same rule as a profile that fails to resolve: the discard is
+        // not conditional on the connection coming up, whichever source was
+        // asked for.
+        let fixture = Fixture::new("stored-failure");
+        let session =
+            fixture
+                .session("work")
+                .with_secret_store(Arc::new(SecretStoreDouble::refusing(
+                    CredentialStoreProblem::Locked,
+                )));
+        let before = session.credentials_changed("work");
+        session.observe_list(&before, Scope::bucket("logs"), Observation::Allowed);
+
+        let opened = session.open(ConnectionId(4), stored()).await;
+
+        assert!(matches!(opened, Err(Error::CredentialStore { .. })));
+        let now = session.credentials().expect("a connection was attempted");
+        assert_ne!(now, before);
+        assert_eq!(
+            session.capability(&now, &Scope::bucket("logs")).list,
+            Observation::Unknown
+        );
+    }
+
+    #[tokio::test]
+    async fn a_saved_credential_never_reaches_the_aws_shared_files() {
+        // The shortest route to a working connection is to write
+        // `~/.aws/credentials`, and the spec refuses it: that file belongs to
+        // every other AWS tool on the machine, and editing it on the user's
+        // behalf is a side effect nobody asked for. This watches the very
+        // paths this session was given.
+        let fixture = Fixture::new("shared-files-untouched");
+        let store = Arc::new(SecretStoreDouble::open());
+        let session = fixture
+            .session("work")
+            .with_secret_store(Arc::clone(&store) as Arc<dyn SecretStore>);
+        let paths = fixture.paths();
+        let config_before =
+            std::fs::read(paths.config.as_ref().expect("a config path")).expect("the fixture");
+
+        let (tell, told) = tokio::sync::oneshot::channel();
+        session.spawn_save_credential(
+            stored(),
+            CredentialSecret::new(SECRET, None),
+            move |saved| {
+                let _ = tell.send(saved.map(|credential| credential.name().to_owned()));
+            },
+        );
+        let saved = told.await.expect("the callback runs exactly once");
+
+        assert_eq!(saved.expect("an open store accepts it"), "typed-in");
+        assert_eq!(
+            store
+                .holds()
+                .values()
+                .filter(|held| held.as_str() == SECRET)
+                .count(),
+            1,
+            "the secret went to the credential store"
+        );
+        assert!(
+            !paths
+                .credentials
+                .as_ref()
+                .expect("a credentials path")
+                .exists(),
+            "the AWS shared credentials file must not be created on the user's behalf"
+        );
+        assert_eq!(
+            std::fs::read(paths.config.as_ref().expect("a config path")).expect("the fixture"),
+            config_before,
+            "nor may the shared config be edited"
+        );
+    }
+
+    #[tokio::test]
+    async fn forgetting_a_connection_deletes_what_the_store_held_for_it() {
+        let fixture = Fixture::new("forget");
+        let store = store_holding_the_secret();
+        let session = fixture
+            .session("work")
+            .with_secret_store(Arc::clone(&store) as Arc<dyn SecretStore>);
+
+        let (tell, told) = tokio::sync::oneshot::channel();
+        session.spawn_forget_credential("typed-in".to_owned(), move |forgotten| {
+            let _ = tell.send(forgotten);
+        });
+
+        told.await
+            .expect("the callback runs exactly once")
+            .expect("an open store forgets it");
+        assert!(
+            store.holds().is_empty(),
+            "a forgotten connection leaves nothing behind to be signed with"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_store_that_refuses_a_save_says_so_through_the_callback() {
+        let fixture = Fixture::new("refused-save");
+        let session =
+            fixture
+                .session("work")
+                .with_secret_store(Arc::new(SecretStoreDouble::refusing(
+                    CredentialStoreProblem::Refused,
+                )));
+
+        let (tell, told) = tokio::sync::oneshot::channel();
+        session.spawn_save_credential(
+            stored(),
+            CredentialSecret::new(SECRET, None),
+            move |saved| {
+                let _ = tell.send(saved.map(|_| ()));
+            },
+        );
+
+        match told.await.expect("the callback runs exactly once") {
+            Err(Error::CredentialStore {
+                connection,
+                problem,
+            }) => {
+                assert_eq!(connection, "typed-in");
+                assert_eq!(problem, CredentialStoreProblem::Refused);
+            }
+            other => panic!("expected CredentialStore, got {other:?}"),
+        }
     }
 }

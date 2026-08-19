@@ -19,6 +19,10 @@
 //!   stream or channel.
 //! - **Errors stay structured.** Rich error enums (`thiserror`), never
 //!   stringified early — the permission-awareness feature depends on it.
+//! - **Secrets reach the OS credential store and nothing else.** Never a
+//!   configuration file, never a log, never an error message — and never
+//!   `~/.aws/credentials`, which belongs to every other AWS tool on the
+//!   machine. See `credentials`.
 //! - **TDD.** This crate is built test-first; the UI may be exploratory, the
 //!   core may not.
 
@@ -26,6 +30,7 @@ pub mod adapter;
 pub mod capability;
 pub(crate) mod classify;
 pub mod connection;
+pub mod credentials;
 pub mod error;
 pub mod outcome;
 pub mod probe;
@@ -37,8 +42,9 @@ pub mod types;
 
 pub use adapter::{LIST_BUCKET_ACTION, S3ObjectStore};
 pub use capability::{Capability, CapabilityStore, CredentialsId, Observation, Scope};
-pub use connection::Connection;
-pub use error::{Error, Result, SessionProblem};
+pub use connection::{Connection, ConnectionSource};
+pub use credentials::{CredentialSecret, StoredCredential};
+pub use error::{CredentialStoreProblem, Error, Result, SessionProblem};
 pub use outcome::{ActiveOutcome, Outcome, TaggedOutcome};
 pub use probe::{IN_FLIGHT_BUDGET, ProbeTarget};
 pub use profiles::{ConfigPaths, discover, sso_session};

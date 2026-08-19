@@ -79,7 +79,7 @@ impl S3ObjectStore {
     pub fn new(connection: &Connection) -> Self {
         Self::over(
             connection.sdk_config().clone(),
-            connection.profile(),
+            connection.name(),
             connection.region(),
             connection.sso_session(),
         )

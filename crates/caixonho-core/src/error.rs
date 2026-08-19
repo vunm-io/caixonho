@@ -7,9 +7,11 @@
 //!   a TLS interception proxy, a dead network and a real policy denial all
 //!   surface as "can't list" — the whole point of this enum is that the UI can
 //!   offer the matching next action for each without parsing strings.
-//! - **No credential material, ever.** Variants carry profile names, endpoint
-//!   hosts and classifier-authored detail strings — never keys, tokens or raw
-//!   wire payloads. A test in the classifier module enforces this.
+//! - **No credential material, ever.** Variants carry profile and connection
+//!   names, endpoint hosts and authored detail strings — never keys, tokens
+//!   or raw payloads, whether those came off the wire or out of the operating
+//!   system's credential store. A test in the classifier module and one in
+//!   the credentials module enforce this from both ends.
 
 /// Why credentials were refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,6 +20,24 @@ pub enum SessionProblem {
     Expired,
     /// The service does not recognise them, or the signature did not match.
     Invalid,
+}
+
+/// Why the operating system's credential store could not be used.
+///
+/// A cause of its own, never folded into a generic failure and never into an
+/// access denial: a locked keychain and an IAM policy are fixed by different
+/// people in different places, and a store that will not open says nothing at
+/// all about what the credentials inside it may do (`stored-credentials`
+/// spec, "The credential store may be unavailable").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialStoreProblem {
+    /// The store exists and will not open until the user unlocks it.
+    Locked,
+    /// The store was reached and did not carry out the request — a prompt the
+    /// user declined, a platform failure, or an entry it will not hand back.
+    Refused,
+    /// There is no credential store on this machine to use at all.
+    Absent,
 }
 
 /// Why a connection or a call failed.
@@ -82,6 +102,25 @@ pub enum Error {
         profile: Option<String>,
         /// What exactly is missing or malformed.
         detail: String,
+    },
+
+    /// The operating system's credential store could not be used.
+    ///
+    /// Carries no detail from the store's own error on purpose. `keyring`
+    /// reports a payload it could not decode by attaching the payload, and
+    /// here that payload *is* the secret — so only the kind of failure
+    /// crosses this boundary, exactly as the classifier reads an SDK chain
+    /// without echoing it.
+    ///
+    /// Nothing is written anywhere else when this happens. There is no second
+    /// place for a secret to go, least of all the AWS shared credentials file
+    /// (`stored-credentials` spec).
+    #[error("the credential store {} (connection `{connection}`)", match problem { CredentialStoreProblem::Locked => "is locked — unlock it and try again", CredentialStoreProblem::Refused => "refused the request — allow caixonho to use it and try again", CredentialStoreProblem::Absent => "is not available on this machine" })]
+    CredentialStore {
+        /// The connection whose secret was being saved, read or removed.
+        connection: String,
+        /// What the store did.
+        problem: CredentialStoreProblem,
     },
 
     /// Anything the classifier could not attribute to a specific cause.
