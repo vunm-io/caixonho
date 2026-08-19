@@ -88,11 +88,11 @@
 
 ## 8. Verification and close-out
 
-- [ ] 8.1 [dispatch: main] `cargo clippy --workspace --all-targets -- -D warnings` and
+- [x] 8.1 [dispatch: main] `cargo clippy --workspace --all-targets -- -D warnings` and
       `cargo test --workspace` green locally
 - [ ] 8.2 [dispatch: main] CI green on `windows-latest` and `macos-latest`
 - [ ] 8.3 [dispatch: main] Manual live check against a real SSO profile and a static-key profile:
       list buckets, let the session expire (or revoke it) and confirm the
       expired-session path; record what was exercised in the change's notes
-- [ ] 8.4 [dispatch: main] Update `AGENTS.md` "Current state" to M1 and note the M0 spike's
+- [x] 8.4 [dispatch: main] Update `AGENTS.md` "Current state" to M1 and note the M0 spike's
       retirement

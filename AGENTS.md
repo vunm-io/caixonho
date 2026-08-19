@@ -59,8 +59,13 @@ targets — Windows is the primary daily driver and must never be the lagging po
 
 ## Current state
 
-- **Milestone: M0** — UI-stack spike. `caixonho-gui` is the spike binary:
-  100k-row virtualized DataTable fed asynchronously from tokio. Gates and
-  measurements to fill in: `docs/adr/0001-ui-framework.md`.
-- CI builds Windows + macOS on every push/PR and uploads the spike binaries as
-  artifacts (`caixonho-spike-*`) for on-device M0b measurement.
+- **Milestone: M1** — first real capability. `caixonho-gui` is the app now, not
+  a spike: it resolves an AWS profile, lists that account's buckets, and reports
+  each failure cause with the action that fixes it. The M0 spike (synthetic
+  100k-row feed, FPS overlay) is retired; what survived it is the virtualized
+  table, the tokio→channel→GPUI bridge and the scroll accelerator.
+- M0's verdict and measurements stay in `docs/adr/0001-ui-framework.md`. The
+  ADR is still `Proposed`: its last open cell is the Windows machine without a
+  working Vulkan driver, where the required outcome is a graceful failure.
+- CI builds Windows + macOS on every push/PR and uploads the app binaries as
+  artifacts (`caixonho-app-*`) for on-device checks.

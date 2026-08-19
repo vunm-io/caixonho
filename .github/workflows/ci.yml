@@ -34,12 +34,12 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Tests
         run: cargo test --workspace
-      - name: Build spike (release)
+      - name: Build app (release)
         run: cargo build --release -p caixonho-gui
-      - name: Upload spike binary (M0b hand-off)
+      - name: Upload app binary (on-device checks)
         uses: actions/upload-artifact@v4
         with:
-          name: caixonho-spike-${{ matrix.os }}
+          name: caixonho-app-${{ matrix.os }}
           path: |
             target/release/caixonho-gui
             target/release/caixonho-gui.exe
