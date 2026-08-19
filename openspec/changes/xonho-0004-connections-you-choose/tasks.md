@@ -100,8 +100,14 @@
       optional session token, reachable from the sidebar.
 - [x] 4.2 [dispatch: main] Saving makes the connection selectable immediately;
       the keychain is written off the render thread.
-- [ ] 4.3 [dispatch: main] Forgetting a connection deletes what was stored and
+- [x] 4.3 [dispatch: main] Forgetting a connection deletes what was stored and
       removes it from the list.
+      - Offered only for connections this application holds. A profile in
+        `~/.aws` is not ours to remove, and offering to would be offering to
+        edit a file shared with every other AWS tool on the machine.
+      - The row disappears only once the store has actually let go: dropping it
+        on a failure would leave a secret nobody can name, which is the same
+        orphan 4.0 exists to prevent.
 - [x] 4.4 [dispatch: main] A store that refuses says so, and the form keeps what
       was typed apart from the secret.
       - The form stays open on a refusal with everything still in it, including

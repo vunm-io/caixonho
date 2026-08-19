@@ -17,3 +17,4 @@ aws-runtime.workspace = true
 aws-smithy-http-client.workspace = true
 aws-smithy-runtime-api.workspace = true
 keyring.workspace = true
+directories.workspace = true

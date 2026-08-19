@@ -298,6 +298,54 @@ impl CaixonhoApp {
         profiles.chain(stored).collect()
     }
 
+    /// The active connection, when it is one this application could forget.
+    fn forgettable(&self) -> Option<(usize, SharedString)> {
+        let index = self.active_profile?;
+        let stored = self.stored.get(index.checked_sub(self.profiles.len())?)?;
+        Some((index, stored.name().to_owned().into()))
+    }
+
+    /// Remove a stored connection, and what the credential store holds for it.
+    fn forget_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some((index, name)), Some(session)) = (self.forgettable(), self.session.clone())
+        else {
+            return;
+        };
+
+        let (done, arrivals) = flume::bounded::<Result<(), Error>>(1);
+        session.spawn_forget_credential(name.to_string(), move |result| {
+            let _ = done.send(result);
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(result) = arrivals.recv_async().await else {
+                return;
+            };
+            let _ = this.update_in(cx, |app, window, cx| {
+                match result {
+                    // Removed from the list only once the store has actually
+                    // let go of the secret: dropping it here on a failure would
+                    // leave a secret nobody can name.
+                    Ok(()) => {
+                        if let Some(position) = index.checked_sub(app.profiles.len())
+                            && position < app.stored.len()
+                        {
+                            app.stored.remove(position);
+                        }
+                        app.active_profile = None;
+                        app.unavailable.remove(&index);
+                        app.outcome.switch_to(ConnectionId(app.next_connection));
+                        app.set_rows(Vec::new(), window, cx);
+                    }
+                    Err(error) => {
+                        app.unavailable.insert(index, error.to_string().into());
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     /// Save what was typed, if it is enough to connect with.
     fn save_credential(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let Some(form) = &mut self.form else {
@@ -440,17 +488,32 @@ impl CaixonhoApp {
                     .child(div().font_weight(gpui::FontWeight::BOLD).child("caixonho")),
             )
             .footer(
-                SidebarFooter::new().child(
-                    Button::new("add-connection")
-                        .label("Add a connection")
-                        .icon(IconName::Plus)
-                        .ghost()
-                        .w_full()
-                        .on_click(cx.listener(|app, _, window, cx| {
-                            app.form = Some(CredentialForm::new(window, cx));
-                            cx.notify();
-                        })),
-                ),
+                SidebarFooter::new()
+                    .child(
+                        Button::new("add-connection")
+                            .label("Add a connection")
+                            .icon(IconName::Plus)
+                            .ghost()
+                            .w_full()
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                app.form = Some(CredentialForm::new(window, cx));
+                                cx.notify();
+                            })),
+                    )
+                    // Only for a connection this application holds. A profile
+                    // in ~/.aws is not ours to remove, and offering to would be
+                    // offering to edit a file shared with every other AWS tool
+                    // on the machine.
+                    .children(self.forgettable().map(|(_, name)| {
+                        Button::new("forget-connection")
+                            .label(format!("Forget {name}"))
+                            .icon(IconName::Close)
+                            .ghost()
+                            .w_full()
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                app.forget_active(window, cx);
+                            }))
+                    })),
             )
             .child(
                 SidebarGroup::new("Connections").child(
