@@ -20,10 +20,10 @@ gap is named. **none** — not started.
 | IAM Identity Center (SSO), including `[sso-session]` profiles | partial | Resolves through the provider chain when a token is cached. `sso_session` is read only from the profile's own section, so a legacy inline profile or a `source_profile` chain loses the session name and with it the exact re-login command |
 | Reuse tokens cached by the AWS CLI (`~/.aws/sso/cache`) | done | Exercised live, `XONHO-0003` |
 | In-app login via the OIDC device flow | none | `XONHO-0011`. Until this lands the AWS CLI is a hard dependency, which the brief says it must not be |
-| Detect expired/invalid tokens and offer re-login inline | partial | Detecting landed 2026-08-19. Nothing is offered — the user is told to go and run a command |
-| Static credentials in the OS keychain | none | `XONHO-0004`. There is no way to enter a credential in the app at all |
+| Detect expired/invalid tokens and offer re-login inline | partial | Detecting landed 2026-08-19, and a connection that cannot authenticate now reads as unavailable where it is chosen. The *offer* is still a sentence telling the user to run a command — `XONHO-0011` |
+| Static credentials in the OS keychain | done | `XONHO-0004`. Entered in the app, secret in the keychain, the rest in the platform's config location; a stored connection can be forgotten |
 | Named profiles, including `role_arn` + `source_profile` chains and `mfa_serial` prompting | partial | Profiles are discovered and chains resolve through the SDK. No MFA prompt |
-| Multiple simultaneous connections; switch profile **and region** live | partial | One connection at a time; switching profile works. Switching region is not offered |
+| Multiple simultaneous connections; switch profile **and region** live | partial | One connection at a time; choosing one is now an explicit act, which simultaneity will need. Switching region is not offered |
 | Region handling that follows `x-amz-bucket-region` instead of a misleading error | none | Probes use a client for the bucket's own region, but the listing path does not follow a redirect, and a wrong region is not even a distinct cause in the classifier |
 
 ## §4.2 Browsing — M1
@@ -59,6 +59,6 @@ are not started. They are M2+ and are not late.
 
 ## The count
 
-Of the 24 `[M]` requirements in the three M1 areas: **9 done, 7 partial, 8 not
-started.** The nearest gaps to the product being usable by anyone other than its
-author are entering a credential, signing in, and opening a bucket.
+Of the 24 `[M]` requirements in the three M1 areas: **10 done, 7 partial, 7 not
+started.** The nearest gaps are now signing in to IAM Identity Center from the app, and
+opening a bucket. Entering a credential closed on 2026-08-20.

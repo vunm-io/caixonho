@@ -13,6 +13,10 @@ Working today:
 
 - Reads the profiles in `~/.aws` and connects with the credentials they name —
   an SSO profile with a valid cached token, `credential_process`, or static keys.
+- Takes a credential you type in, keeps the secret in the system keychain, and
+  offers it again next time. Nothing goes into a config file, a log, or `~/.aws`.
+- Contacts nothing until you choose a connection, and says so when one cannot
+  sign in rather than offering it as though it worked.
 - Lists that account's buckets with name, creation date and region, and narrows
   the list to one region.
 - Says which buckets your credentials can actually open, and names the IAM action
@@ -23,9 +27,11 @@ Working today:
   network failure and a trust failure are each reported as themselves, with the
   action that fixes them, and none of them is ever reported as "access denied".
 
-Not there yet: opening a bucket and browsing objects, transfers, and entering
-credentials in the app rather than in `~/.aws`. Those are the next changes —
-see [`docs/planned-changes.md`](docs/planned-changes.md).
+Not there yet: opening a bucket and browsing its objects, transfers, and signing
+in to IAM Identity Center from the app rather than through the AWS CLI. Those
+are the next changes — see [`docs/planned-changes.md`](docs/planned-changes.md),
+and [`docs/requirements-status.md`](docs/requirements-status.md) for every
+requirement and whether it is actually built.
 
 ## Why another S3 client
 

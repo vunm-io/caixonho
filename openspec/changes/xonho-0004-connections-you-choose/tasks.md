@@ -189,14 +189,18 @@
         marking it would send someone to fix a sign-in that is fine.
         Mutation-checked: treating a denial as unavailable turns
         `a_denial_does_not_make_the_connection_unusable` red.
-- [ ] 5.3 [dispatch: main] The cause names what would make it usable, which for
+- [x] 5.3 [dispatch: main] The cause names what would make it usable, which for
       a spent SSO session is re-establishing it — the action itself is
       `XONHO-0011`.
+      - The advice moved out of the failure panel into a function of the cause,
+        because the sidebar banner needs the same sentences. A cause with two
+        surfaces and one wording cannot drift between them.
 
 ## 6. Close-out
 
-- [ ] 6.1 [dispatch: main] `cargo fmt --all`, `cargo clippy --workspace
+- [x] 6.1 [dispatch: main] `cargo fmt --all`, `cargo clippy --workspace
       --all-targets -- -D warnings`, `cargo test --workspace` green.
+      - All three exit 0 on 2026-08-20: 155 core tests, 7 GUI tests.
 - [ ] 6.2 [dispatch: main] CI green on both targets.
 - [ ] 6.3 [dispatch: main] Live: enter a real key, list with it, forget it, and
       confirm the secret is in the keychain and in no file the app wrote.
