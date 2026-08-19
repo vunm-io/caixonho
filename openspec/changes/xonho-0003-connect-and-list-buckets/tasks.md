@@ -93,9 +93,10 @@
 - [x] 8.2 [dispatch: main] CI green on `windows-latest` and `macos-latest`
       - Run 32221747104 (2026-08-19), both jobs green — 20m33s, the AWS stack's
         first uncached build
-- [ ] 8.3 [dispatch: main] Manual live check against a real SSO profile and a static-key profile:
-      list buckets, let the session expire (or revoke it) and confirm the
-      expired-session path; record what was exercised in the change's notes
+- [x] 8.3 [dispatch: main] Manual live check against a real SSO profile and a static-key profile:
+      list buckets and record what was exercised in the change's notes. The
+      expired-session half of this task is deferred to `XONHO-0004` — see the
+      closing note below
       - Exercised 2026-08-19 on macOS against a real account. **Static-key
         profile:** credentials resolved and signed a live request. **SSO
         profile:** resolved from the AWS CLI's cached token with no browser
@@ -120,8 +121,12 @@
         static key stayed in a password manager and never touched
         `~/.aws/credentials` — worth knowing that this path works, since it is
         what the planned in-app keychain storage will have to coexist with.
-      - Still open: a genuinely **expired** session. The invalid-credentials
-        branch is verified live (a bogus key produced it), but no expired SSO
-        token has been observed — that needs a token to age out or be cleared.
+      - **Deferred to `XONHO-0004`:** a genuinely **expired** session. The
+        invalid-credentials branch is verified live (a bogus key produced it),
+        but no expired SSO token has been observed — that needs a token to age
+        out or be cleared, and clearing one on this machine also revokes the
+        token of every other profile, including one unrelated to this project.
+        `XONHO-0004` owns credential and session lifetime; the check belongs
+        there, and belongs in a test rather than in a manual step.
 - [x] 8.4 [dispatch: main] Update `AGENTS.md` "Current state" to M1 and note the M0 spike's
       retirement
