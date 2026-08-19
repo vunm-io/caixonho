@@ -123,22 +123,33 @@ Two things section 5 left for this section, discovered while building it:
   not a denial would need the error carried out of the scheduler.
 
 
-- [ ] 7.1 [dispatch: main] Report the visible rows to the scheduler, debounced,
+- [x] 7.1 [dispatch: main] Report the visible rows to the scheduler, debounced,
       as the user scrolls.
-- [ ] 7.2 [dispatch: main] Present four states per row — probing, enterable,
+- [x] 7.2 [dispatch: main] Present four states per row — probing, enterable,
       not enterable, and not yet known — with only observed denials rendering as
       not enterable.
-- [ ] 7.3 [dispatch: main] Group or dim the buckets observed to be unlistable
+- [x] 7.3 [dispatch: main] Group or dim the buckets observed to be unlistable
       without removing them, and show the cause and the required IAM action on
       request.
-- [ ] 7.4 [dispatch: main] Handle the all-denied account: every bucket visible,
+- [x] 7.4 [dispatch: main] Handle the all-denied account: every bucket visible,
       nothing presented as an empty or failed listing.
+      - Dispatched: main (2026-08-19) — section 7 complete. The scheduler gained
+        the sink section 5 flagged as missing, since nothing watched the
+        capability store and rows would have sat at "checking…" over an answer
+        that had already arrived; it announces after recording, which is
+        mutation-checked. Reporting the viewport also had a hole worth naming:
+        the table announces a *changed* range, so switching profiles could leave
+        a whole screen unprobed when the range happened to match. Rows are
+        reported again whenever the rows themselves change.
+      - 7.4 needed no code: rows are never removed, and the empty-listing branch
+        keys off what the service returned rather than what can be entered.
 
 ## 8. Verification and close-out
 
-- [ ] 8.1 [dispatch: main] `cargo fmt --all`, then
+- [x] 8.1 [dispatch: main] `cargo fmt --all`, then
       `cargo clippy --workspace --all-targets -- -D warnings` and
       `cargo test --workspace` green locally.
+      - All three exit 0 on 2026-08-19: 102 core tests, 2 GUI tests.
 - [ ] 8.2 [dispatch: main] CI green on `windows-latest` and `macos-latest`.
 - [ ] 8.3 [dispatch: main] Live check on the development account: regions
       populated and filterable, probes visible as they resolve, and a bucket the
