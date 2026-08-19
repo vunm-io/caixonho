@@ -15,8 +15,8 @@ branch nobody can land.
 
 | Change | Scope | Brief | Milestone |
 |---|---|---|---|
-| `XONHO-0004` | Static credentials entered in the app and stored in the OS keychain | §4.1 | M1 |
 | `XONHO-0005` | Opening a bucket and browsing its objects as folders (prefix navigation) | §4.2 | M1 |
+| `XONHO-0004` | Static credentials entered in the app and stored in the OS keychain, and session lifetime | §4.1 | M1 |
 | `XONHO-0006` | Downloading objects to disk | §4.4 | M2 |
 | `XONHO-0007` | Previewing text and images without a full download (ranged GET) | §4.5 `[S]` | M3 |
 
@@ -25,16 +25,26 @@ asking for the first N KB instead of the whole object.
 
 ## Order
 
-Default: **0004 → 0005 → 0006 → 0007**.
+**0005 → 0004 → 0006 → 0007.**
 
-The argument for it: credential entry is the only one of the four that makes
-the app usable without the AWS CLI. Today it can only read profiles that
-already exist in `~/.aws`, which is a hard requirement to place on someone
-opening a GUI client.
+Browsing comes first because a bucket list alone is a dead end: the app can
+name three buckets and then do nothing with them, and opening objects is what
+a person launches an S3 client to do. `0005` also carries opening a bucket by
+name, which turns a credential scoped to one bucket from unusable into usable
+— a shape this project has already run into.
 
-The argument against, worth revisiting before starting: a bucket list alone
-does nothing useful — browsing objects is what a person opens the app to do,
-so `0005` delivers real value sooner. Owner's call.
+Credential entry was the earlier default, on the argument that it is the only
+one of the four that makes the app usable without the AWS CLI. That argument
+holds for a user who does not have one; it buys nothing for the person
+currently using the app, whose working profiles already exist in `~/.aws`. It
+is real work that has to happen before anyone else can use this, but it is not
+what unblocks the next useful thing.
+
+`0004` also inherits one item from `XONHO-0003`: confirming the expired-session
+path. It was left unverified there because no expired SSO token was available
+and clearing one on the development machine revokes every other profile's
+token as well. Session lifetime is `0004`'s subject, and the check belongs in
+a test rather than a manual step.
 
 ## Two additions, and the evidence for them
 
