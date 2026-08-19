@@ -55,6 +55,29 @@ secret access key and session token go to the credential store under a key
 derived from the connection's name. This keeps the config file readable and
 diffable, and means losing the config loses no secret.
 
+### A stored connection is remembered, or it should not be offered at all
+
+Found while implementing: the secret was going to the keychain and nothing was
+keeping the rest, so a connection entered in the app would vanish on restart
+while its secret stayed behind. That is worse than useless. It leaves orphaned
+secrets in the keychain that the application can no longer see, name or delete —
+the user would have to open Keychain Access to clean up after a client whose
+whole promise is that they do not have to touch files by hand.
+
+So the non-secret half is written to a configuration file in the platform's own
+config location, through `directories` 6.0.0 (MIT OR Apache-2.0, ~66M downloads,
+verified on crates.io rather than recalled) — XDG on Linux, the Known Folder API
+on Windows, the standard location on macOS. It holds a name, a region and an
+access key id per connection, and nothing else. Losing that file loses no
+secret; it loses the app's knowledge that a secret exists, which is exactly the
+orphan case above, so forgetting a connection deletes the keychain entry first
+and the config entry second.
+
+Hand-rolling the paths from `HOME` and `APPDATA` was the alternative, and it is
+what the crate does — tested on three platforms, which this repository is not
+yet in a position to do for itself. Windows is a first-class target here and the
+one least likely to be exercised by hand.
+
 ### Startup renders; it does not fetch
 
 `CaixonhoApp::new` stops selecting a profile. The first screen is the sidebar

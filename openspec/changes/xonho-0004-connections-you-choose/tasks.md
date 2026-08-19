@@ -88,6 +88,14 @@
 
 ## 4. Entering and forgetting
 
+- [ ] 4.0 [dispatch: claude-subagent] Remember stored connections across
+      restarts: the name, region and access key id in a configuration file in
+      the platform's config location, never the secret. Forgetting deletes the
+      keychain entry first and the configuration entry second, so a failure
+      cannot leave an orphaned secret the app can no longer name.
+      - Added during implementation. Without it a credential entered in the app
+        disappears on restart while its secret stays in the keychain, which
+        leaves secrets nobody can see or remove from the application.
 - [ ] 4.1 [dispatch: main] A form for name, region, access key id, secret and
       optional session token, reachable from the sidebar.
 - [ ] 4.2 [dispatch: main] Saving makes the connection selectable immediately;
