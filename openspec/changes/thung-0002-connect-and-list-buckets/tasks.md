@@ -25,7 +25,7 @@
 
 ## 3. Credential resolution
 
-- [ ] 3.1 [dispatch: main] Implement profile discovery from the shared config files, honouring
+- [x] 3.1 [dispatch: main] Implement profile discovery from the shared config files, honouring
       `AWS_CONFIG_FILE` / `AWS_SHARED_CREDENTIALS_FILE`, with tests over
       fixture files covering: named + default, no files, malformed entry
 - [ ] 3.2 [dispatch: main] Implement connection opening for a selected profile via the SDK

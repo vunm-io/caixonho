@@ -24,9 +24,11 @@
 
 pub mod capability;
 pub mod error;
+pub mod profiles;
 pub mod store;
 pub mod types;
 
 pub use error::{Error, Result};
+pub use profiles::{ConfigPaths, discover};
 pub use store::ObjectStore;
 pub use types::{Bucket, ConnectionId, Profile, Region};
