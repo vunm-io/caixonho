@@ -89,11 +89,22 @@ out of a type the CLI will also consume.
 
 ### Failures that are not denials leave the model untouched
 
-The classifier from `XONHO-0003` already separates denial, rejected session,
-expired session, wrong region, network and missing bucket. A probe that fails
-with anything but a denial records nothing, so the scope stays unknown and can
-be probed again. Throttling is treated the same way, so a slow account does not
-turn into a wall of locks.
+The classifier from `XONHO-0003` separates denial, rejected session, expired
+session, network failure, trust failure and missing configuration. A wrong
+region, a missing bucket and throttling are not causes of their own: they land
+in the catch-all, which preserves the service's code and status. This section
+previously claimed otherwise, and the implementation found it out.
+
+That is enough for what this change needs. A denial requires an explicit denial
+code, so none of those can become one, and the mapping from a probe's result to
+an observation is an allowlist — a new error variant cannot quietly become a new
+way to accuse the user. Presenting a wrong region or a missing bucket as its own
+cause requires extending the classifier, which belongs with the work that
+surfaces it rather than here.
+
+A probe that fails with anything but a denial records nothing, so the scope
+stays unknown and can be probed again. Throttling is treated the same way, so a
+slow account does not turn into a wall of locks.
 
 ## Risks / Trade-offs
 
