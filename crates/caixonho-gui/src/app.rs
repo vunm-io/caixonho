@@ -17,10 +17,31 @@ use gpui_component::{
     v_flex,
 };
 
-use crate::components::{empty_state, inline_message, skeleton_rows};
+use crate::components::{empty_state, inline_message, skeleton_rows, status_badge};
 use crate::scroll::{self, ScrollAccel};
 use crate::theme::space;
 use crate::views::buckets::{BucketsDelegate, RegionSelect, region_label};
+
+/// Why a connection cannot be used at all, if that is what happened.
+///
+/// Only a failure to authenticate makes a *connection* unusable. A network
+/// failure belongs to the network and will pass; a denial means the connection
+/// worked perfectly and the permission did not. Marking either would say
+/// something untrue about the connection.
+fn unavailable_reason(error: &Error) -> Option<SharedString> {
+    match error {
+        Error::SessionRejected { problem, .. } => Some(match problem {
+            SessionProblem::Expired => "sign-in expired".into(),
+            SessionProblem::Invalid => "credentials refused".into(),
+        }),
+        Error::NoCredentials { .. } => Some("no credentials".into()),
+        Error::Network { .. }
+        | Error::TlsTrust { .. }
+        | Error::AccessDenied { .. }
+        | Error::MissingConfiguration { .. }
+        | Error::Unexpected { .. } => None,
+    }
+}
 
 /// Everything the window shows.
 pub(crate) struct CaixonhoApp {
@@ -38,6 +59,11 @@ pub(crate) struct CaixonhoApp {
     table: Entity<TableState<BucketsDelegate>>,
     accel: Entity<ScrollAccel>,
     inbox: flume::Sender<TaggedOutcome>,
+    /// Connections that could not authenticate, and the short reason each
+    /// gave. A connection that cannot sign in is not a connection, so it is
+    /// marked where it is chosen rather than only where its listing would have
+    /// been.
+    unavailable: std::collections::HashMap<usize, SharedString>,
     /// Which region the list is narrowed to.
     region: RegionChoice,
     /// The choices currently on offer, in the order the selector shows them.
@@ -149,6 +175,7 @@ impl CaixonhoApp {
             table,
             accel,
             inbox,
+            unavailable: std::collections::HashMap::new(),
             region: RegionChoice::All,
             region_options: vec![RegionChoice::All],
             region_select,
@@ -204,9 +231,25 @@ impl CaixonhoApp {
         if !self.outcome.accept(tagged) {
             return; // Stale: a late answer from a profile the user left.
         }
-        if let Outcome::Loaded(buckets) = self.outcome.state() {
-            let buckets = buckets.clone();
-            self.set_rows(buckets, window, cx);
+        match self.outcome.state() {
+            Outcome::Loaded(buckets) => {
+                let buckets = buckets.clone();
+                if let Some(index) = self.active_profile {
+                    self.unavailable.remove(&index);
+                }
+                self.set_rows(buckets, window, cx);
+            }
+            Outcome::Failed(error) => {
+                // Only a connection that could not authenticate is marked
+                // unavailable. A network failure is the network's, and a denial
+                // means the connection worked and the permission did not — both
+                // would be a lie about the connection itself.
+                let reason = unavailable_reason(error);
+                if let (Some(index), Some(reason)) = (self.active_profile, reason) {
+                    self.unavailable.insert(index, reason);
+                }
+            }
+            Outcome::Loading => {}
         }
         cx.notify();
     }
@@ -304,12 +347,26 @@ impl CaixonhoApp {
                         } else {
                             profile.name.clone()
                         };
-                        SidebarMenuItem::new(label)
+                        let item = SidebarMenuItem::new(label)
                             .icon(IconName::CircleUser)
                             .active(Some(index) == active)
                             .on_click(cx.listener(move |app, _, window, cx| {
                                 app.select_profile(index, window, cx);
-                            }))
+                            }));
+                        // Marked, not hidden, and not removed: a connection
+                        // that cannot sign in is still a fact about this
+                        // machine, and hiding it would leave the user
+                        // wondering where it went.
+                        match self.unavailable.get(&index).cloned() {
+                            None => item,
+                            Some(reason) => item.suffix(move |_, cx| {
+                                status_badge(
+                                    IconName::TriangleAlert,
+                                    reason.clone(),
+                                    cx.theme().warning,
+                                )
+                            }),
+                        }
                     }),
                 )),
             )
@@ -491,5 +548,67 @@ impl Render for CaixonhoApp {
                             ),
                     ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! `connections` spec — "A connection that cannot authenticate is not
+    //! offered as usable". Which failures mean that, and which do not.
+
+    use super::*;
+
+    #[test]
+    fn a_session_the_service_will_not_accept_makes_the_connection_unusable() {
+        let expired = Error::SessionRejected {
+            profile: "work".into(),
+            sso_session: Some("corp".into()),
+            problem: SessionProblem::Expired,
+        };
+        let refused = Error::SessionRejected {
+            profile: "work".into(),
+            sso_session: None,
+            problem: SessionProblem::Invalid,
+        };
+
+        assert_eq!(unavailable_reason(&expired), Some("sign-in expired".into()));
+        assert_eq!(
+            unavailable_reason(&refused),
+            Some("credentials refused".into())
+        );
+    }
+
+    #[test]
+    fn a_connection_with_nothing_to_sign_in_with_is_unusable() {
+        let error = Error::NoCredentials {
+            profile: "work".into(),
+        };
+
+        assert_eq!(unavailable_reason(&error), Some("no credentials".into()));
+    }
+
+    #[test]
+    fn a_denial_does_not_make_the_connection_unusable() {
+        // The whole point: the connection worked and the permission did not.
+        // Marking it would say something untrue about the connection, and send
+        // the user to fix a sign-in that is fine.
+        let error = Error::AccessDenied {
+            iam_action: "s3:ListAllMyBuckets",
+        };
+
+        assert_eq!(unavailable_reason(&error), None);
+    }
+
+    #[test]
+    fn a_failure_of_the_environment_is_not_the_connection_s_fault() {
+        let network = Error::Network {
+            detail: "connection reset".into(),
+        };
+        let trust = Error::TlsTrust {
+            endpoint: "s3.example.com".into(),
+        };
+
+        assert_eq!(unavailable_reason(&network), None);
+        assert_eq!(unavailable_reason(&trust), None);
     }
 }

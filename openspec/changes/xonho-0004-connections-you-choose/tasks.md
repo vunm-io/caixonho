@@ -52,10 +52,16 @@
 
 ## 5. Unavailable connections
 
-- [ ] 5.1 [dispatch: main] A connection that cannot authenticate is marked in
+- [x] 5.1 [dispatch: main] A connection that cannot authenticate is marked in
       the sidebar with its cause.
-- [ ] 5.2 [dispatch: main] It stays listed, and its failure is never rendered as
+- [x] 5.2 [dispatch: main] It stays listed, and its failure is never rendered as
       an empty account.
+      - Which failures mean the *connection* is unusable is a decision, not a
+        rendering detail, so it is a function with tests of its own. A denial
+        does not qualify — the connection worked and the permission did not, and
+        marking it would send someone to fix a sign-in that is fine.
+        Mutation-checked: treating a denial as unavailable turns
+        `a_denial_does_not_make_the_connection_unusable` red.
 - [ ] 5.3 [dispatch: main] The cause names what would make it usable, which for
       a spent SSO session is re-establishing it — the action itself is
       `XONHO-0011`.
