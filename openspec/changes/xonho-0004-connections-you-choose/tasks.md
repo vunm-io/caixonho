@@ -213,8 +213,13 @@
         in the repo, ignored by default). What it actually was is unknown, and
         that is the gap `XONHO-0012` exists to close — there was nothing written
         down to read afterwards.
-      - Still unverified: that the configuration file holds no secret. The test
-        asserts it against the encoder; nobody has opened the real file. It is
-        one `cat` away and belongs in the next session.
+      - The configuration file was then opened and read: it holds a comment
+        explaining itself, and per connection a name, a region and an access key
+        id. No secret access key, no session token. The test asserted it against
+        the encoder; this is the file on disk.
+      - Worth knowing for the refused-credential question: both saved
+        connections carry the *same* access key id, and only one of them works.
+        Whatever differs is in the keychain, which points at the secret captured
+        on the first save rather than at anything the application does with it.
 - [ ] 6.4 [dispatch: main] Update `docs/requirements-status.md`, and run the
       close-out review in `AGENTS.md`.

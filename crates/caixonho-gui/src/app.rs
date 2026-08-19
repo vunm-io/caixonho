@@ -1,7 +1,7 @@
 use caixonho_core::{
     ActiveOutcome, Bucket, ConfigPaths, ConnectionId, ConnectionSource, ConnectionsProblem,
-    CredentialStoreProblem, Error, HttpStack, Outcome, Profile, RegionChoice, Scope, Session,
-    SessionProblem, StoredCredential, TaggedOutcome, region_choices,
+    CredentialStoreProblem, Diagnostics, Error, HttpStack, Outcome, Profile, RegionChoice, Scope,
+    Session, SessionProblem, StoredCredential, TaggedOutcome, region_choices,
 };
 use gpui::{
     AnyElement, App, AppContext, Context, Entity, InteractiveElement, IntoElement, ParentElement,
@@ -152,6 +152,8 @@ pub(crate) struct CaixonhoApp {
     table: Entity<TableState<BucketsDelegate>>,
     accel: Entity<ScrollAccel>,
     inbox: flume::Sender<TaggedOutcome>,
+    /// Where this run is writing its log, and whether it managed to.
+    diagnostics: Diagnostics,
     /// Set when the remembered connections could not be read. Deliberately
     /// not a startup failure: the profiles in `~/.aws` are unaffected and the
     /// application is perfectly usable, so this is said above the content
@@ -182,7 +184,11 @@ pub(crate) struct CaixonhoApp {
 }
 
 impl CaixonhoApp {
-    pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(
+        diagnostics: Diagnostics,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let table = cx.new(|cx| TableState::new(BucketsDelegate::new(), window, cx));
         let accel = cx.new(|_| ScrollAccel::default());
 
@@ -300,6 +306,7 @@ impl CaixonhoApp {
             table,
             accel,
             inbox,
+            diagnostics,
             connections_error,
             stored,
             form: None,
@@ -456,6 +463,37 @@ impl CaixonhoApp {
             });
         })
         .detach();
+    }
+
+    /// Where this run is writing its log, said quietly and always.
+    ///
+    /// In the status bar rather than behind a menu: the moment it is wanted is
+    /// the moment something has gone wrong, and hunting for it then is the
+    /// worst time. The directory rather than the file, because the file's name
+    /// changes when the log rolls.
+    fn log_location(&self, cx: &Context<Self>) -> AnyElement {
+        match (self.diagnostics.directory(), self.diagnostics.problem()) {
+            (Some(directory), _) => {
+                let shown = directory.display().to_string();
+                div()
+                    .id("log-location")
+                    .child(format!("log: {shown}"))
+                    .tooltip(move |window, cx| {
+                        Tooltip::new(format!(
+                            "caixonho writes what it decides to {shown}. It holds no secrets. \
+                             Set CAIXONHO_LOG=debug for more detail."
+                        ))
+                        .build(window, cx)
+                    })
+                    .into_any_element()
+            }
+            // Not an error panel: nothing the user was doing has failed.
+            (None, Some(_)) => div()
+                .text_color(cx.theme().warning)
+                .child("no log this run")
+                .into_any_element(),
+            (None, None) => div().into_any_element(),
+        }
     }
 
     /// The name of the connection at `index`, when it is one this application
@@ -977,10 +1015,13 @@ impl Render for CaixonhoApp {
                             )
                             .child(
                                 StatusBar::new().child(
-                                    div()
-                                        .text_color(cx.theme().muted_foreground)
+                                    h_flex()
+                                        .w_full()
+                                        .justify_between()
                                         .text_xs()
-                                        .child(status),
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(status)
+                                        .child(self.log_location(cx)),
                                 ),
                             ),
                     ),

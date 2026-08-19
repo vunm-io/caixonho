@@ -42,15 +42,27 @@
 
 ## 3. Finding it
 
-- [ ] 3.1 [dispatch: main] The application can show where the log is, from
+- [x] 3.1 [dispatch: main] The application can show where the log is, from
       somewhere a user will look.
+      - In the status bar, quietly and always, rather than behind a menu: the
+        moment it is wanted is the moment something has already gone wrong, and
+        hunting for it then is the worst time to start. The directory, not the
+        file, because the file's name changes when the log rolls.
 
 ## 4. Close-out
 
-- [ ] 4.1 [dispatch: main] `cargo fmt --all`, `cargo clippy --workspace
+- [x] 4.1 [dispatch: main] `cargo fmt --all`, `cargo clippy --workspace
       --all-targets -- -D warnings`, `cargo test --workspace` green.
 - [ ] 4.2 [dispatch: main] CI green on both targets.
-- [ ] 4.3 [dispatch: main] Live: run the app, make it fail, read the log, and
+- [x] 4.3 [dispatch: main] Live: run the app, make it fail, read the log, and
       confirm it explains the failure and holds no secret.
+      - Partly. The file is created at startup and this machine's log holds a
+        real event: `INFO connection opened connection=… source="profile"
+        region="ap-southeast-1"`. Starting the app writes nothing further, which
+        is correct now that startup contacts nothing — there are no decisions
+        until a connection is chosen.
+      - **Not yet done: a real failure read back out of the log.** That needs
+        someone to use the app and then look, and it is the first thing worth
+        doing next session, because it is the case the change exists for.
 - [ ] 4.4 [dispatch: main] Update `docs/requirements-status.md` and run the
       close-out review in `AGENTS.md`.

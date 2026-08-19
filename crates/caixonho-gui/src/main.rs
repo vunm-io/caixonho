@@ -27,6 +27,9 @@ fn main() {
     gpui_platform::application()
         .with_assets(gpui_component_assets::Assets)
         .run(move |cx| {
+            // Before anything else: a failure during startup is exactly the
+            // kind that leaves nothing on screen to read afterwards.
+            let diagnostics = caixonho_core::diagnostics::start();
             gpui_component::init(cx);
             theme::install(cx);
 
@@ -42,7 +45,7 @@ fn main() {
 
                 cx.open_window(options, |window, cx| {
                     window.set_window_title("caixonho");
-                    let view = cx.new(|cx| CaixonhoApp::new(window, cx));
+                    let view = cx.new(|cx| CaixonhoApp::new(diagnostics, window, cx));
                     cx.new(|cx| Root::new(view, window, cx))
                 })
                 .expect("failed to open window");
