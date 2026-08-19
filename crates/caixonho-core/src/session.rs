@@ -16,14 +16,14 @@ use crate::capability::{Capability, CapabilityStore, CredentialsId, Observation,
 use crate::connection::{self, Connection};
 use crate::error::Result;
 use crate::outcome::{Outcome, TaggedOutcome};
-use crate::probe::{ProbeScheduler, ProbeTarget};
+use crate::probe::{ProbeScheduler, ProbeSink, ProbeTarget};
 use crate::profiles::ConfigPaths;
 use crate::store::ObjectStore;
 use crate::tls::HttpStack;
 use crate::types::ConnectionId;
 
 /// The long-lived context every request runs in.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Session {
     runtime: Handle,
     http: HttpStack,
@@ -39,6 +39,21 @@ pub struct Session {
     /// running on the runtime's. Replaced when a connection opens, so a
     /// scheduler never outlives the store it probes through.
     scheduler: Arc<Mutex<Option<ProbeScheduler>>>,
+    /// Where settled probes are announced, once a frontend has asked to hear
+    /// about them. Shared, and read when a scheduler is installed, so
+    /// registering once covers every connection opened afterwards.
+    settled: Arc<Mutex<Option<ProbeSink>>>,
+}
+
+impl std::fmt::Debug for Session {
+    /// Hand-written because a session now carries the frontend's sink, which
+    /// is a closure and has no `Debug`. Terse for the same reason the
+    /// scheduler's is: the rest is behind locks this must not take.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Session")
+            .field("paths", &self.paths)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Session {
@@ -50,6 +65,7 @@ impl Session {
             paths,
             capabilities: Arc::new(Mutex::new(CapabilityStore::new())),
             scheduler: Arc::default(),
+            settled: Arc::default(),
         }
     }
 
@@ -168,12 +184,32 @@ impl Session {
     /// Its own function so a test can put a double where the S3 adapter goes,
     /// through the same door production uses.
     fn install_scheduler(&self, store: Arc<dyn ObjectStore>, credentials: CredentialsId) {
+        let settled = self
+            .settled
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+            .unwrap_or_else(|| Arc::new(|_| {}));
         *self.scheduler_slot() = Some(ProbeScheduler::new(
             self.runtime.clone(),
             store,
             Arc::clone(&self.capabilities),
             credentials,
+            settled,
         ));
+    }
+
+    /// Hear about each scope whose probe has settled.
+    ///
+    /// `announce` runs on a runtime thread, so a frontend should do nothing in
+    /// it but hand the scope to its own executor — the same rule as
+    /// [`Self::spawn_listing`]. Registering replaces any previous sink and
+    /// applies from the next connection opened.
+    pub fn on_probe_settled<F>(&self, announce: F)
+    where
+        F: Fn(Scope) + Send + Sync + 'static,
+    {
+        *self.settled.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(announce));
     }
 
     /// Open a connection and list its buckets, off the caller's thread.

@@ -92,6 +92,13 @@ struct Schedule {
     pending: VecDeque<ProbeTarget>,
 }
 
+/// Told which scope has settled, once its result is recorded.
+///
+/// A frontend passes one that hands the scope to its own executor — the same
+/// bridge a listing crosses. It is called on a runtime thread, so it must do
+/// nothing but pass the message on.
+pub type ProbeSink = Arc<dyn Fn(Scope) + Send + Sync>;
+
 /// Decides which scopes to probe, and keeps the promise that few are probed
 /// at once.
 ///
@@ -111,6 +118,10 @@ pub(crate) struct ProbeScheduler {
     /// profile switch is refused rather than attributed to whatever replaced
     /// them.
     credentials: CredentialsId,
+    /// Told, after the fact, which scope has settled. The frontend has no
+    /// other way to learn it: probing runs on runtime threads and writes into
+    /// the capability store, which nothing watches.
+    settled: ProbeSink,
     /// Shared by every clone, because each probe carries one to report back
     /// through.
     schedule: Arc<Mutex<Schedule>>,
@@ -127,6 +138,7 @@ impl ProbeScheduler {
         store: Arc<dyn ObjectStore>,
         capabilities: Arc<Mutex<CapabilityStore>>,
         credentials: CredentialsId,
+        settled: ProbeSink,
     ) -> Self {
         Self {
             runtime,
@@ -134,6 +146,7 @@ impl ProbeScheduler {
             capabilities,
             credentials,
             schedule: Arc::default(),
+            settled,
         }
     }
 
@@ -246,6 +259,11 @@ impl ProbeScheduler {
         // between its probe returning and its result landing.
         self.schedule().in_flight.remove(&scope);
         self.pump();
+        // Last, so a frontend woken by this finds the store already updated and
+        // the row no longer counted as being probed. Without it nothing would
+        // tell the window a row had settled, and rows would sit at "probing"
+        // until some unrelated event happened to redraw them.
+        (self.settled)(scope);
     }
 
     /// Whether the credentials this scheduler probes for are still the ones
@@ -453,11 +471,21 @@ mod tests {
         capabilities: &Arc<Mutex<CapabilityStore>>,
         credentials: &CredentialsId,
     ) -> ProbeScheduler {
+        scheduler_announcing(store, capabilities, credentials, Arc::new(|_| {}))
+    }
+
+    fn scheduler_announcing(
+        store: &HeldProbes,
+        capabilities: &Arc<Mutex<CapabilityStore>>,
+        credentials: &CredentialsId,
+        settled: ProbeSink,
+    ) -> ProbeScheduler {
         ProbeScheduler::new(
             Handle::current(),
             Arc::new(store.clone()),
             Arc::clone(capabilities),
             credentials.clone(),
+            settled,
         )
     }
 
@@ -476,6 +504,79 @@ mod tests {
     /// `count` distinct rows, named so a failure says which one.
     fn rows(count: usize) -> Vec<ProbeTarget> {
         (0..count).map(|n| row(&format!("bucket-{n:03}"))).collect()
+    }
+
+    /// What a sink was told, in the order it was told.
+    type Announced = Arc<Mutex<Vec<(Scope, Observation)>>>;
+
+    /// A sink that records what it was told, and checks the store was
+    /// already updated when it was told.
+    fn recording_sink(
+        capabilities: &Arc<Mutex<CapabilityStore>>,
+        credentials: &CredentialsId,
+    ) -> (ProbeSink, Announced) {
+        let announced: Announced = Arc::default();
+        let recorded = Arc::clone(&announced);
+        let capabilities = Arc::clone(capabilities);
+        let credentials = credentials.clone();
+        let sink: ProbeSink = Arc::new(move |scope: Scope| {
+            // Read through the store from inside the announcement: a frontend
+            // told a row settled must find the result already there.
+            let observation = capabilities
+                .lock()
+                .expect("not poisoned")
+                .capability(&credentials, &scope)
+                .list;
+            recorded
+                .lock()
+                .expect("not poisoned")
+                .push((scope, observation));
+        });
+        (sink, announced)
+    }
+
+    #[tokio::test]
+    async fn a_settled_probe_is_announced_with_its_result_already_recorded() {
+        let (capabilities, credentials) = capabilities();
+        let (sink, announced) = recording_sink(&capabilities, &credentials);
+        let store = HeldProbes::open();
+        let scheduler = scheduler_announcing(&store, &capabilities, &credentials, sink);
+
+        scheduler.submit_viewport(&viewport(&["logs"]));
+
+        until("the probe to be announced", || {
+            !announced.lock().expect("not poisoned").is_empty()
+        })
+        .await;
+        assert_eq!(
+            announced.lock().expect("not poisoned").as_slice(),
+            [(Scope::bucket("logs"), Observation::Allowed)],
+            "a row is told it settled, and told after the answer landed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_probe_that_settles_nothing_is_announced_too() {
+        let (capabilities, credentials) = capabilities();
+        let (sink, announced) = recording_sink(&capabilities, &credentials);
+        let store = HeldProbes::answering(|| {
+            Err(Error::Network {
+                detail: "connection reset".to_owned(),
+            })
+        });
+        let scheduler = scheduler_announcing(&store, &capabilities, &credentials, sink);
+
+        scheduler.submit_viewport(&viewport(&["logs"]));
+
+        until("the probe to be announced", || {
+            !announced.lock().expect("not poisoned").is_empty()
+        })
+        .await;
+        assert_eq!(
+            announced.lock().expect("not poisoned").as_slice(),
+            [(Scope::bucket("logs"), Observation::Unknown)],
+            "the row learned nothing, but it must stop saying it is being probed"
+        );
     }
 
     /// What the model knows about listing `bucket`.
