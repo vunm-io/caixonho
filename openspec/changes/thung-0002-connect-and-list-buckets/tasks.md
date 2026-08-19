@@ -28,14 +28,17 @@
 - [x] 3.1 [dispatch: main] Implement profile discovery from the shared config files, honouring
       `AWS_CONFIG_FILE` / `AWS_SHARED_CREDENTIALS_FILE`, with tests over
       fixture files covering: named + default, no files, malformed entry
-- [ ] 3.2 [dispatch: main] Implement connection opening for a selected profile via the SDK
+- [x] 3.2 [dispatch: main] Implement connection opening for a selected profile via the SDK
       provider chain (static keys, `role_arn` + `source_profile`, SSO cached
       token)
-- [ ] 3.3 [dispatch: main] Report a missing region as a configuration error rather than
+- [x] 3.3 [dispatch: main] Report a missing region as a configuration error rather than
       defaulting, with a test
-- [ ] 3.4 [dispatch: main] Build the shared HTTP client with `rustls-platform-verifier`, honour
-      `AWS_CA_BUNDLE` / `SSL_CERT_FILE`, and hand that same client to the
+- [x] 3.4 [dispatch: main] Build the shared HTTP client verifying against the OS trust store,
+      honour `AWS_CA_BUNDLE` / `SSL_CERT_FILE`, and hand that same client to the
       `aws_config` loader so credential/SSO calls use it too
+      - Built on `aws_smithy_http_client`'s `TrustStore` rather than
+        `rustls-platform-verifier`, which the SDK's HTTP client cannot install
+        through any supported API — see the amendment in `design.md`
 
 ## 4. Error classification
 

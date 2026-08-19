@@ -94,7 +94,7 @@ pub(crate) mod double {
         /// Fails with a missing-configuration error.
         pub(crate) fn missing_configuration() -> Self {
             Self::failing(|| Error::MissingConfiguration {
-                profile: "double".into(),
+                profile: Some("double".into()),
                 detail: "no region configured (double)".into(),
             })
         }

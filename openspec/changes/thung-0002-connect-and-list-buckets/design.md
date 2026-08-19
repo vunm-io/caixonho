@@ -86,6 +86,20 @@ calls.
 the service client is exactly the failure the brief calls out. One client, one
 place, no way to configure half of it.
 
+*Amended during implementation (2026-08-19):* the mechanism is
+`aws_smithy_http_client`'s `TlsContext`/`TrustStore` — platform roots plus the
+`AWS_CA_BUNDLE` / `SSL_CERT_FILE` bundle as extra roots — not
+`rustls-platform-verifier`. Verified against the pinned sources:
+`aws-smithy-http-client` 1.3.0 exposes no supported way to install a custom
+`rustls::ClientConfig`; its only custom-connector hook
+(`Builder::build_with_connector_fn`) is `#[doc(hidden)]`, and the alternative is
+hand-rolling an `HttpClient` and owning pooling, timeouts and proxy support for
+a security-critical path. Every clause of the requirement is still met. The
+residual difference is that platform-verifier delegates the verification
+decision to the OS (honouring per-certificate trust overrides and revocation
+policy) while a trust store snapshots the OS roots into rustls; revisit if a
+real enterprise machine produces a chain the OS accepts and we reject.
+
 ## Risks / Trade-offs
 
 - **SDK credential chain is not unit-testable** → tested by hand against a real

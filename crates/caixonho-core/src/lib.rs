@@ -23,12 +23,16 @@
 //!   core may not.
 
 pub mod capability;
+pub mod connection;
 pub mod error;
 pub mod profiles;
 pub mod store;
+pub(crate) mod tls;
 pub mod types;
 
+pub use connection::Connection;
 pub use error::{Error, Result};
 pub use profiles::{ConfigPaths, discover};
 pub use store::ObjectStore;
+pub use tls::HttpStack;
 pub use types::{Bucket, ConnectionId, Profile, Region};

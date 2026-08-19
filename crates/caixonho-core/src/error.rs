@@ -62,10 +62,12 @@ pub enum Error {
 
     /// The profile or environment is incomplete — e.g. no region configured.
     /// A configuration fix, not an authentication problem.
-    #[error("configuration problem with profile `{profile}`: {detail}")]
+    #[error("configuration problem{}: {detail}", profile.as_deref().map(|p| format!(" with profile `{p}`")).unwrap_or_default())]
     MissingConfiguration {
-        /// The profile whose configuration is incomplete.
-        profile: String,
+        /// The profile whose configuration is incomplete, when the
+        /// problem belongs to one — trust material comes from the
+        /// environment and belongs to no profile.
+        profile: Option<String>,
         /// What exactly is missing or malformed.
         detail: String,
     },
