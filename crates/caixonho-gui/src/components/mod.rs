@@ -137,7 +137,9 @@ pub(crate) fn inline_message(
                         .text_color(cx.theme().muted_foreground)
                         .child(message.into()),
                 )
-                .child(div().pt(space::INLINE).child(action)),
+                // A row, so the action is as wide as its label: a column
+                // stretches its children and the button spans the card.
+                .child(h_flex().pt(space::INLINE).child(action)),
         )
         .into_any_element()
 }

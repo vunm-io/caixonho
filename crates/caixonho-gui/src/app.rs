@@ -452,26 +452,36 @@ impl Render for CaixonhoApp {
                 TitleBar::new().child(div().font_weight(gpui::FontWeight::BOLD).child("caixonho")),
             )
             .child(
-                h_flex().flex_1().min_h_0().child(self.sidebar(cx)).child(
-                    v_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_h_0()
-                                .p(space::WINDOW)
-                                .child(self.body(cx)),
-                        )
-                        .child(
-                            StatusBar::new().child(
+                h_flex()
+                    // Stretch, not centre. `h_flex` centres its children by
+                    // default, which left both columns only as tall as their
+                    // own content, floating in the middle of the window — and
+                    // a table with `flex_1` inside a column that had collapsed
+                    // to its content height had no height to render into.
+                    .items_stretch()
+                    .flex_1()
+                    .min_h_0()
+                    .child(self.sidebar(cx))
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
                                 div()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .text_xs()
-                                    .child(status),
+                                    .flex_1()
+                                    .min_h_0()
+                                    .p(space::WINDOW)
+                                    .child(self.body(cx)),
+                            )
+                            .child(
+                                StatusBar::new().child(
+                                    div()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .text_xs()
+                                        .child(status),
+                                ),
                             ),
-                        ),
-                ),
+                    ),
             )
     }
 }

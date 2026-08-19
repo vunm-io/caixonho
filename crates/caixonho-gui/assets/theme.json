@@ -20,7 +20,10 @@
         "sidebar.primary.foreground": "neutral-50",
         "link.foreground": "violet-600",
         "link.hover.foreground": "violet-500",
-        "link.active.foreground": "violet-700"
+        "link.active.foreground": "violet-700",
+        "sidebar.accent.background": "#7c3aed1f",
+        "sidebar.accent.foreground": "violet-700",
+        "sidebar.background": "#faf9fc"
       }
     },
     {
@@ -39,7 +42,9 @@
         "sidebar.primary.foreground": "neutral-950",
         "link.foreground": "violet-400",
         "link.hover.foreground": "violet-300",
-        "link.active.foreground": "violet-500"
+        "link.active.foreground": "violet-500",
+        "sidebar.accent.background": "#a78bfa26",
+        "sidebar.accent.foreground": "violet-300"
       }
     }
   ]
