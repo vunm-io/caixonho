@@ -19,6 +19,7 @@ branch nobody can land.
 | `XONHO-0004` | Credentials the user enters, the OS keychain, in-app SSO sign-in and inline re-login | §4.1 | M1 |
 | `XONHO-0007` | Downloading objects to disk | §4.4 | M2 |
 | `XONHO-0008` | Previewing text and images without a full download (ranged GET) | §4.5 `[S]` | M3 |
+| `XONHO-0013` | Editing a saved connection: its region, its key, and renaming it | §4.1 | M1 |
 
 `XONHO-0008` depends on `XONHO-0007`: a preview is the same download path
 asking for the first N KB instead of the whole object.
@@ -50,6 +51,22 @@ is simply unavailable, which is both truthful and instant.
 path. That path is now half-closed — the classifier names an unusable session as
 of 2026-08-19 — and what remains is offering the re-login, which is `0004`'s
 subject.
+
+## Editing a saved connection
+
+Asked for on 2026-08-20, once removing them had a home. Managing connections is
+now a surface of its own, and editing belongs on it beside removal — but it
+needs requirements before it needs code, because its three parts are not the
+same operation:
+
+- **Changing the region** touches only the configuration file. Safe.
+- **Replacing the key** touches only the credential store. Also safe, and the
+  access key id and the secret must move together — a new id against an old
+  secret is a credential that fails in a way that reads like a typo.
+- **Renaming** is a move: read the secret, write it under the new name, delete
+  the old. It is the one that can strand a secret if it fails halfway, and the
+  ordering rule the store already follows — the residue is always something the
+  application can name — decides how.
 
 ## Connecting is something the user asks for
 

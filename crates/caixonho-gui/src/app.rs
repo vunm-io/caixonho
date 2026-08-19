@@ -4,8 +4,8 @@ use caixonho_core::{
     SessionProblem, StoredCredential, TaggedOutcome, region_choices,
 };
 use gpui::{
-    App, AppContext, Context, Entity, InteractiveElement, IntoElement, ParentElement, Render,
-    SharedString, StatefulInteractiveElement, Styled, Window, div, px,
+    AnyElement, App, AppContext, Context, Entity, InteractiveElement, IntoElement, ParentElement,
+    Render, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
 use gpui_component::{
     ActiveTheme, Icon, IconName, IndexPath, Side, TitleBar,
@@ -104,6 +104,24 @@ fn guidance_for(error: &Error) -> SharedString {
     }
 }
 
+/// The remove control, which changes what it says once it has been asked.
+///
+/// Removing a credential cannot be undone, so it takes two deliberate acts
+/// rather than one that could be a mis-click — and the second one is coloured
+/// like what it does.
+fn remove_button(row: usize, confirming: bool) -> Button {
+    let button = Button::new(("remove", row)).label(if confirming {
+        "Really remove"
+    } else {
+        "Remove"
+    });
+    if confirming {
+        button.danger()
+    } else {
+        button.ghost()
+    }
+}
+
 /// Why a connection cannot be used at all, if that is what happened.
 ///
 /// Only a failure to authenticate makes a *connection* unusable. A network
@@ -162,6 +180,12 @@ pub(crate) struct CaixonhoApp {
     stored: Vec<StoredCredential>,
     /// Open while a credential is being entered.
     form: Option<CredentialForm>,
+    /// Open while connections are being managed rather than used.
+    managing: bool,
+    /// The connection whose removal has been asked for and not yet confirmed.
+    /// Removing a credential cannot be undone, so it takes two deliberate acts
+    /// rather than one that can be a mis-click.
+    confirming: Option<String>,
     /// Connections that could not authenticate, and the short reason each
     /// gave. A connection that cannot sign in is not a connection, so it is
     /// marked where it is chosen rather than only where its listing would have
@@ -297,6 +321,8 @@ impl CaixonhoApp {
             connections_error,
             stored,
             form: None,
+            managing: false,
+            confirming: None,
             unavailable: std::collections::HashMap::new(),
             region: RegionChoice::All,
             region_options: vec![RegionChoice::All],
@@ -403,22 +429,20 @@ impl CaixonhoApp {
         profiles.chain(stored).collect()
     }
 
-    /// The active connection, when it is one this application could forget.
-    fn forgettable(&self) -> Option<(usize, SharedString)> {
-        let index = self.active_profile?;
-        let stored = self.stored.get(index.checked_sub(self.profiles.len())?)?;
-        Some((index, stored.name().to_owned().into()))
-    }
-
     /// Remove a stored connection, and what the credential store holds for it.
-    fn forget_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (Some((index, name)), Some(session)) = (self.forgettable(), self.session.clone())
-        else {
+    fn forget(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(session) = self.session.clone() else {
             return;
         };
+        // Where it sits in the sidebar, if it is the one currently open.
+        let index = self
+            .stored
+            .iter()
+            .position(|credential| credential.name() == name)
+            .map(|position| position + self.profiles.len());
 
         let (done, arrivals) = flume::bounded::<Result<(), Error>>(1);
-        session.spawn_forget_credential(name.to_string(), move |result| {
+        session.spawn_forget_credential(name.clone(), move |result| {
             let _ = done.send(result);
         });
         cx.spawn_in(window, async move |this, cx| {
@@ -431,24 +455,127 @@ impl CaixonhoApp {
                     // let go of the secret: dropping it here on a failure would
                     // leave a secret nobody can name.
                     Ok(()) => {
-                        if let Some(position) = index.checked_sub(app.profiles.len())
-                            && position < app.stored.len()
-                        {
-                            app.stored.remove(position);
+                        app.stored.retain(|credential| credential.name() != name);
+                        if app.active_profile == index {
+                            app.active_profile = None;
+                            app.outcome.switch_to(ConnectionId(app.next_connection));
+                            app.set_rows(Vec::new(), window, cx);
                         }
-                        app.active_profile = None;
-                        app.unavailable.remove(&index);
-                        app.outcome.switch_to(ConnectionId(app.next_connection));
-                        app.set_rows(Vec::new(), window, cx);
+                        if let Some(index) = index {
+                            app.unavailable.remove(&index);
+                        }
                     }
                     Err(error) => {
-                        app.unavailable.insert(index, error.to_string().into());
+                        if let Some(index) = index {
+                            app.unavailable.insert(index, error.to_string().into());
+                        }
                     }
                 }
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    /// The connections this application holds, and what can be done to them.
+    ///
+    /// Only its own: a profile in `~/.aws` is not ours to remove, and offering
+    /// to would be offering to edit a file shared with every other AWS tool on
+    /// the machine.
+    fn manage_connections(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        if self.stored.is_empty() {
+            return empty_state(
+                IconName::Settings,
+                "No saved connections.",
+                "Connections you add here appear in this list. The ones read from ~/.aws are not \
+                 managed by caixonho and are left alone.",
+                cx,
+            );
+        }
+
+        let rows: Vec<_> = self
+            .stored
+            .iter()
+            .map(|credential| {
+                (
+                    credential.name().to_owned(),
+                    credential.region().to_owned(),
+                    credential.access_key_id().to_owned(),
+                )
+            })
+            .collect();
+
+        v_flex()
+            .gap(space::ROW)
+            .max_w(px(680.))
+            .child(
+                div()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child("Saved connections"),
+            )
+            .children(
+                rows.into_iter()
+                    .enumerate()
+                    .map(|(row, (name, region, access_key_id))| {
+                        let confirming = self.confirming.as_deref() == Some(name.as_str());
+                        let for_click = name.clone();
+                        h_flex()
+                            .gap(space::ROW)
+                            .items_center()
+                            .p(space::CARD)
+                            .rounded(cx.theme().radius_lg)
+                            .bg(cx.theme().popover)
+                            .border_1()
+                            .border_color(if confirming {
+                                cx.theme().danger.opacity(0.4)
+                            } else {
+                                cx.theme().border
+                            })
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .gap(space::TIGHT)
+                                    .child(div().child(name.clone()))
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            // The access key id is not a secret. The
+                                            // secret is in the keychain and is not
+                                            // shown here or anywhere else.
+                                            .child(format!("{region} · {access_key_id}")),
+                                    ),
+                            )
+                            .children(confirming.then(|| {
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("This cannot be undone.")
+                            }))
+                            .child(remove_button(row, confirming).on_click(cx.listener(
+                                move |app, _, window, cx| {
+                                    if app.confirming.as_deref() == Some(for_click.as_str()) {
+                                        app.confirming = None;
+                                        app.forget(for_click.clone(), window, cx);
+                                    } else {
+                                        app.confirming = Some(for_click.clone());
+                                    }
+                                    cx.notify();
+                                },
+                            )))
+                    }),
+            )
+            .child(
+                h_flex().child(Button::new("done-managing").label("Done").ghost().on_click(
+                    cx.listener(|app, _, _, cx| {
+                        app.managing = false;
+                        app.confirming = None;
+                        cx.notify();
+                    }),
+                )),
+            )
+            .into_any_element()
     }
 
     /// Save what was typed, if it is enough to connect with.
@@ -604,20 +731,21 @@ impl CaixonhoApp {
                                 cx.notify();
                             })),
                     )
-                    // Only for a connection this application holds. A profile
-                    // in ~/.aws is not ours to remove, and offering to would be
-                    // offering to edit a file shared with every other AWS tool
-                    // on the machine.
-                    .children(self.forgettable().map(|(_, name)| {
-                        Button::new("forget-connection")
-                            .label(format!("Forget {name}"))
-                            .icon(IconName::Close)
+                    // Managing connections is a different activity from
+                    // choosing one, so it lives behind its own control rather
+                    // than as a destructive button beside the row it destroys.
+                    .child(
+                        Button::new("manage-connections")
+                            .label("Manage connections")
+                            .icon(IconName::Settings)
                             .ghost()
                             .w_full()
-                            .on_click(cx.listener(|app, _, window, cx| {
-                                app.forget_active(window, cx);
-                            }))
-                    })),
+                            .on_click(cx.listener(|app, _, _, cx| {
+                                app.managing = !app.managing;
+                                app.confirming = None;
+                                cx.notify();
+                            })),
+                    ),
             )
             // Two groups rather than a label beside each name: where a
             // connection's secret is kept is worth seeing, and a label would
@@ -714,6 +842,9 @@ impl CaixonhoApp {
             return v_flex()
                 .child(self.failure_panel(error, cx))
                 .into_any_element();
+        }
+        if self.managing {
+            return self.manage_connections(cx);
         }
         if let Some(form) = &self.form {
             let this = cx.entity().downgrade();

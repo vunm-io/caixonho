@@ -25,8 +25,12 @@ See `proposal.md`. What shapes the approach:
 - The SSO device flow. `XONHO-0011`.
 - Several connections open at once. This makes choosing explicit, which that
   will need, but does not deliver it.
-- Editing a credential in place: forget it and enter it again. Editing means a
-  partial-update path through the credential store for no benefit yet.
+- Editing a credential in place. Still out of scope here, but no longer because
+  it lacks value — the owner asked for it on 2026-08-20 and it is `XONHO-0013`.
+  It needs requirements of its own before it needs code: changing a region
+  touches only configuration, replacing a key touches only the store, and
+  renaming is a move — read, write under the new name, delete the old — which
+  is the one that can strand a secret if it goes wrong halfway.
 
 ## Decisions
 
@@ -91,6 +95,18 @@ Today a failure is the outcome of a listing attempt, so the failure panel is
 where the content would be. A connection that cannot authenticate is a fact
 about the connection, so it belongs in the sidebar row as well — a mark and a
 cause — with the panel still explaining it when that connection is selected.
+
+### Removing a connection lives behind a gear, not beside its name
+
+Changed on 2026-08-20, after the owner used it. A "Forget" button in the sidebar
+footer put a destructive action one click away in the list people navigate with,
+next to the row it would destroy. Managing connections is a different activity
+from choosing one, and it belongs on a surface of its own — reached from a
+settings control, where removing and (later) editing sit together.
+
+The requirement is unchanged: a stored credential can be forgotten, and what the
+store holds goes with it. Only where the control lives has moved, and it moved
+somewhere a mis-click cannot reach.
 
 ## Risks / Trade-offs
 
