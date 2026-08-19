@@ -22,13 +22,16 @@
 //!
 //! ## Why the chain is read but never echoed
 //!
-//! Matching needs the whole source chain, including text the SDK assembled
-//! from a wire response — which is exactly where credential material could
-//! hide. Copying it into an `Error` would be the one way a secret reaches a
-//! log or the UI, so every message here is authored from a bounded set of
-//! extracted facts (failure kind, service error code, HTTP status) and the
-//! chain is used for matching only (`connections` spec, "Credentials are
-//! never disclosed").
+//! Matching needs the whole source chain, and for one family it is the only
+//! evidence there is: when the *credential provider* fails, the S3 call
+//! never leaves, so the SDK reports a dispatch failure carrying neither a
+//! service error code nor an HTTP status (see `REJECTED_SESSION_MARKERS`).
+//! The chain includes text the SDK assembled from a wire response — which
+//! is exactly where credential material could hide. Copying it into an
+//! `Error` would be the one way a secret reaches a log or the UI, so every
+//! message here is authored from a bounded set of extracted facts (failure
+//! kind, service error code, HTTP status) and the chain is used for matching
+//! only (`connections` spec, "Credentials are never disclosed").
 
 use aws_sdk_s3::config::http::HttpResponse;
 use aws_sdk_s3::error::{ProvideErrorMetadata, SdkError};
@@ -126,6 +129,26 @@ const EXPIRED_MARKERS: &[&str] = &[
     "session has expired",
     "expired credentials",
 ];
+
+/// The same condition once more, in the wording it wears when the thing
+/// refused was the *session* rather than a request signed with it.
+///
+/// IAM Identity Center answers `sso:GetRoleCredentials` with
+/// `UnauthorizedException: Session token not found or invalid` once the
+/// cached SSO token stops being good — observed against a live account on
+/// 2026-08-19. That failure happens while the provider chain is resolving
+/// credentials for an S3 call the SDK then never sends, so it arrives as
+/// `SdkError::DispatchFailure`: no service error code, no HTTP status, and
+/// nothing but the chain to read. Every code-based rule above is blind to
+/// it, and before this list the whole family fell through to
+/// `Error::Unexpected` — the app telling its owner it had no idea, about
+/// the one failure a laptop hits every morning.
+///
+/// Matched on the service's message, not on `UnauthorizedException`: that
+/// exception is also how this operation reports a request it will not serve
+/// for other reasons, and "session token not found or invalid" is the part
+/// that says a session is the thing to re-establish.
+const REJECTED_SESSION_MARKERS: &[&str] = &["session token not found or invalid"];
 
 /// Codes that mean credentials were presented and refused as invalid.
 ///
@@ -275,7 +298,18 @@ pub(crate) fn classify(failure: &SdkFailure, call: &CallContext<'_>) -> Error {
     // 3. Credentials the service refused, before any denial check: AWS
     //    answers 403 to an expired token, an invalid key and a policy denial
     //    alike, so status cannot be the thing that decides.
-    let problem = if failure.code_is(EXPIRED_CODES) || failure.chain_has(EXPIRED_MARKERS) {
+    //
+    //    `REJECTED_SESSION_MARKERS` is read here rather than in a step of
+    //    its own, and reported as `Expired` rather than `Invalid`: a session
+    //    the issuer no longer accepts — aged out, revoked, or gone from the
+    //    cache — is a session the user must establish again, which is what
+    //    `Expired` says and what the GUI turns into `aws sso login`.
+    //    `Invalid` would tell a profile that has no access key to go and
+    //    check its access key.
+    let problem = if failure.code_is(EXPIRED_CODES)
+        || failure.chain_has(EXPIRED_MARKERS)
+        || failure.chain_has(REJECTED_SESSION_MARKERS)
+    {
         Some(SessionProblem::Expired)
     } else if failure.code_is(INVALID_CREDENTIAL_CODES) {
         Some(SessionProblem::Invalid)
@@ -432,6 +466,113 @@ mod tests {
         }
     }
 
+    /// The chain a rejected SSO session actually produced, captured from a
+    /// live account on 2026-08-19.
+    ///
+    /// One `Display` per link, newline-joined — the shape [`source_chain`]
+    /// builds. (A report rendered for a human prefixes each link with
+    /// "caused by:"; those words are the reporter's, not the errors'.) It
+    /// arrives as a *dispatch* failure because the S3 request never left:
+    /// the provider chain failed while resolving credentials for it. So
+    /// there is no service error code and no HTTP status here — the chain is
+    /// the only evidence there is.
+    const REJECTED_SSO_CHAIN: &str = "dispatch failure\n\
+         other\n\
+         an error occurred while loading credentials\n\
+         an error occurred while loading credentials\n\
+         service error\n\
+         UnauthorizedException: Session token not found or invalid\n\
+         UnauthorizedException: Session token not found or invalid";
+
+    #[test]
+    fn a_session_the_service_no_longer_accepts_is_a_session_problem_not_an_unexplained_failure() {
+        // The defect this test exists for: the app told the owner
+        // "unexpected error: the call failed without a reportable cause"
+        // for a profile whose SSO session had simply gone stale. Nothing
+        // was unexplained about it — the cause was in the chain, and the
+        // classifier was only looking at a code that this path never
+        // carries (`connections` spec, "Credential resolution", scenario
+        // "SSO profile with an expired cached token").
+        let failure = SdkFailure::new(FailureKind::Dispatch).with_text(REJECTED_SSO_CHAIN);
+
+        match classify(&failure, &call()) {
+            Error::SessionRejected {
+                profile,
+                sso_session,
+                problem,
+            } => {
+                assert_eq!(profile, "work");
+                assert_eq!(
+                    sso_session.as_deref(),
+                    Some("corp"),
+                    "the message has to name the session `aws sso login --sso-session` needs"
+                );
+                // `Expired`, not `Invalid`, for a token reported as "not
+                // found or invalid": both mean the user must establish the
+                // session again, and only `Expired` says that. `Invalid`
+                // asks a profile without an `sso_session` to check its
+                // access key and secret — advice an SSO profile has no key
+                // to act on.
+                assert_eq!(problem, SessionProblem::Expired);
+            }
+            other => panic!("expected SessionRejected, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_credential_failure_that_names_no_session_is_not_reported_as_a_session_problem() {
+        // The other half of the rule above: the branch reads the session
+        // out of the chain, so it must key on the session and not on the
+        // credential-loading wrapper that carries it. Every credential
+        // failure in existence goes through that wrapper — an unreadable
+        // `credential_process`, a broken role chain, a malformed cache
+        // file — and none of those is fixed by signing in again.
+        let failure = SdkFailure::new(FailureKind::Dispatch).with_text(
+            "dispatch failure\n\
+             other\n\
+             an error occurred while loading credentials\n\
+             an error occurred while loading credentials\n\
+             error running the credential_process command",
+        );
+
+        assert!(
+            !matches!(classify(&failure, &call()), Error::SessionRejected { .. }),
+            "a credential failure saying nothing about a session must not send the \
+             user to sign in again"
+        );
+    }
+
+    #[test]
+    fn a_rejected_session_never_outranks_a_trust_or_network_failure() {
+        // Placement guard for the branch above. It sits inside the
+        // expired-session step, which the spec puts *after* trust and
+        // network ("A TLS trust failure SHALL be classified before the
+        // expired-session case"; a network failure "does not report a
+        // credential problem"). Both fixtures carry the session wording as
+        // well, so a branch that moved earlier would show up here as a
+        // trust or network failure re-labelled "sign in again" — which is
+        // the user rebuilding their trust store or their wifi via the AWS
+        // CLI.
+        let untrusted = SdkFailure::new(FailureKind::Dispatch).with_text(&format!(
+            "invalid peer certificate: UnknownIssuer\n{REJECTED_SSO_CHAIN}"
+        ));
+        let unreachable = SdkFailure::new(FailureKind::Dispatch)
+            .io_error()
+            .with_text(&format!(
+                "error trying to connect: dns error: failed to lookup address information\n\
+                 {REJECTED_SSO_CHAIN}"
+            ));
+
+        assert!(
+            matches!(classify(&untrusted, &call()), Error::TlsTrust { .. }),
+            "trust is checked first and stays first"
+        );
+        assert!(
+            matches!(classify(&unreachable, &call()), Error::Network { .. }),
+            "an endpoint that cannot be reached is never a credential problem"
+        );
+    }
+
     #[test]
     fn a_real_denial_names_the_iam_action_it_needed() {
         let failure = SdkFailure::new(FailureKind::Service)
@@ -560,6 +701,11 @@ mod tests {
                 .with_code("ExpiredToken")
                 .with_status(403)
                 .with_text(&format!("token has expired {leaky}")),
+            // The same cause reached through the credential provider, where
+            // the chain is all there is to match on — and therefore the case
+            // most at risk of being copied into the message.
+            SdkFailure::new(FailureKind::Dispatch)
+                .with_text(&format!("{REJECTED_SSO_CHAIN} {leaky}")),
             SdkFailure::new(FailureKind::Service)
                 .with_code("AccessDenied")
                 .with_status(403)
