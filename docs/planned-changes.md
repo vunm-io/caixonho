@@ -15,36 +15,36 @@ branch nobody can land.
 
 | Change | Scope | Brief | Milestone |
 |---|---|---|---|
-| `XONHO-0005` | Opening a bucket and browsing its objects as folders (prefix navigation) | §4.2 | M1 |
+| `XONHO-0006` | Opening a bucket and browsing its objects as folders (prefix navigation), including reaching a bucket by name | §4.2 | M1 |
 | `XONHO-0004` | Static credentials entered in the app and stored in the OS keychain, and session lifetime | §4.1 | M1 |
-| `XONHO-0006` | Downloading objects to disk | §4.4 | M2 |
-| `XONHO-0007` | Previewing text and images without a full download (ranged GET) | §4.5 `[S]` | M3 |
+| `XONHO-0007` | Downloading objects to disk | §4.4 | M2 |
+| `XONHO-0008` | Previewing text and images without a full download (ranged GET) | §4.5 `[S]` | M3 |
 
-`XONHO-0007` depends on `XONHO-0006`: a preview is the same download path
+`XONHO-0008` depends on `XONHO-0007`: a preview is the same download path
 asking for the first N KB instead of the whole object.
 
 ## Order
 
-**0005 → 0004 → 0006 → 0007.**
+**0005 (in flight) → 0006 → 0004 → 0007 → 0008.**
 
-Browsing comes first because a bucket list alone is a dead end: the app can
-name three buckets and then do nothing with them, and opening objects is what
-a person launches an S3 client to do. `0005` also carries opening a bucket by
-name, which turns a credential scoped to one bucket from unusable into usable
-— a shape this project has already run into.
+Browsing comes before credential entry because a bucket list alone is a dead
+end: the app can name an account's buckets and then do nothing with them, and
+opening objects is what a person launches an S3 client to do. `XONHO-0006` also
+carries reaching a bucket by name, which makes a credential scoped to a single
+bucket usable at all — a shape this project has already met. It waits for
+`XONHO-0005` only because a name box needs a bucket view to land in.
 
 Credential entry was the earlier default, on the argument that it is the only
-one of the four that makes the app usable without the AWS CLI. That argument
-holds for a user who does not have one; it buys nothing for the person
-currently using the app, whose working profiles already exist in `~/.aws`. It
-is real work that has to happen before anyone else can use this, but it is not
-what unblocks the next useful thing.
+one of these that makes the app usable without the AWS CLI. That argument is
+about a user who does not have one; it buys nothing for the person using the app
+today, whose working profiles already exist in `~/.aws`. It is required before
+anyone else can use this, and it keeps its place ahead of the M2 work.
 
-`0004` also inherits one item from `XONHO-0003`: confirming the expired-session
-path. It was left unverified there because no expired SSO token was available
-and clearing one on the development machine revokes every other profile's
-token as well. Session lifetime is `0004`'s subject, and the check belongs in
-a test rather than a manual step.
+`XONHO-0004` also inherits one item from `XONHO-0003`: confirming the
+expired-session path. It was left unverified there because no expired SSO token
+was available and clearing one on the development machine revokes every other
+profile's token as well. Session lifetime is `0004`'s subject, and the check
+belongs in a test rather than a manual step.
 
 ## Two additions, and the evidence for them
 
@@ -54,10 +54,12 @@ causes — a scoped static key, an SSO role without S3 list permission, and a
 key the service rejected outright — and told them apart only because someone
 read the raw API errors. Saying so on the surface, rather than leaving the
 user to guess between "wrong key" and "missing policy", is the differentiator
-the brief already claims. It belongs early, not late.
+the brief already claims. It belongs early, not late — and it is now landing:
+`XONHO-0005` carries the observed-capability model for bucket listing, and
+`XONHO-0006` extends it to prefixes.
 
 **Opening a bucket by name, even when `ListBuckets` is denied.** Part of
-`XONHO-0005`. A key scoped to one bucket is an ordinary way for an
+`XONHO-0006`. A key scoped to one bucket is an ordinary way for an
 organisation to hand out access, and it is exactly the shape the same session
 ran into: permission to work inside a bucket, none to enumerate the account.
 Without this the app is a dead end for those keys — it can only offer a
