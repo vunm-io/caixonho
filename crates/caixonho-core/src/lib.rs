@@ -28,6 +28,7 @@ pub(crate) mod classify;
 pub mod connection;
 pub mod error;
 pub mod outcome;
+pub mod probe;
 pub mod profiles;
 pub mod session;
 pub mod store;
@@ -39,6 +40,7 @@ pub use capability::{Capability, CapabilityStore, CredentialsId, Observation, Sc
 pub use connection::Connection;
 pub use error::{Error, Result, SessionProblem};
 pub use outcome::{ActiveOutcome, Outcome, TaggedOutcome};
+pub use probe::{IN_FLIGHT_BUDGET, ProbeTarget};
 pub use profiles::{ConfigPaths, discover, sso_session};
 pub use session::Session;
 pub use store::ObjectStore;
