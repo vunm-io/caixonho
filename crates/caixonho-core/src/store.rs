@@ -160,6 +160,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn each_bucket_crosses_the_port_with_the_region_the_service_reported() {
+        // What an account looks like when the service reports a region for
+        // some buckets and none for others: each row keeps its own answer.
+        let canned = vec![
+            Bucket {
+                name: "logs".into(),
+                created: None,
+                region: Region::Known("ap-southeast-1".into()),
+            },
+            Bucket {
+                name: "backups".into(),
+                created: None,
+                region: Region::Unknown,
+            },
+        ];
+        let store: Box<dyn ObjectStore> = Box::new(StoreDouble::with_buckets(canned));
+
+        let listed = store.list_buckets().await.expect("listing must succeed");
+
+        assert_eq!(listed[0].region, Region::Known("ap-southeast-1".into()));
+        assert_eq!(
+            listed[1].region,
+            Region::Unknown,
+            "an unreported region stays unknown across the port — the frontend \
+             must never receive a stand-in, least of all the connection's own region"
+        );
+    }
+
+    #[tokio::test]
     async fn empty_account_is_a_truthful_result_not_an_error() {
         let store: Box<dyn ObjectStore> = Box::new(StoreDouble::empty_account());
 

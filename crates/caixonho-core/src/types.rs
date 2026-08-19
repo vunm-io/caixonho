@@ -24,9 +24,12 @@ pub struct ConnectionId(pub u64);
 
 /// A bucket's region, honest about not knowing.
 ///
-/// `ListBuckets` does not return regions; a later slice resolves them per
-/// bucket. Until then a bucket is `Unknown`, never a guessed default —
-/// the spec makes "unknown" a first-class display value.
+/// The bucket listing does report regions, but only when the request carries
+/// at least one valid parameter — which is why the adapter always sends a page
+/// size. `Unknown` is not a placeholder waiting on a later slice: it is what a
+/// bucket the service reported no region for stays, permanently and visibly,
+/// because the alternative is a guessed default that reads as fact. The spec
+/// makes "unknown" a first-class display value, distinct from every region.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Region {
     /// The region is known, e.g. `ap-southeast-1`.
