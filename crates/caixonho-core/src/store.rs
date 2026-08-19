@@ -130,8 +130,8 @@ mod tests {
     //! with no buckets", exercised through the port as the GUI will use it —
     //! a `dyn ObjectStore`, no SDK, no network.
 
-    use super::double::StoreDouble;
     use super::ObjectStore;
+    use super::double::StoreDouble;
     use crate::error::Error;
     use crate::types::{Bucket, Region};
 
