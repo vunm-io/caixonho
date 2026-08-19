@@ -16,16 +16,17 @@ mod scroll;
 
 use caixonho_core::{
     ActiveOutcome, Bucket, ConfigPaths, ConnectionId, Error, HttpStack, Outcome, Profile, Region,
-    Session, SessionProblem, TaggedOutcome,
+    RegionChoice, Session, SessionProblem, TaggedOutcome, region_choices,
 };
 use gpui::{
     App, AppContext, Bounds, Context, Entity, IntoElement, ParentElement, Render, SharedString,
     Styled, Window, WindowBounds, WindowOptions, div, px, size,
 };
 use gpui_component::{
-    ActiveTheme, Root, TitleBar,
+    ActiveTheme, IndexPath, Root, TitleBar,
     button::{Button, ButtonVariants},
     h_flex,
+    select::{SearchableVec, Select, SelectEvent, SelectState},
     table::{Column, DataTable, TableDelegate, TableState},
     v_flex,
 };
@@ -37,10 +38,32 @@ use scroll::ScrollAccel;
 /// region, which would be a guess that reads as fact.
 const UNKNOWN_REGION: &str = "unknown";
 
+/// The region selector's own state, kept as `SharedString` because the control
+/// selects labels; the choice each one stands for is looked up alongside.
+type RegionSelect = SelectState<SearchableVec<SharedString>>;
+
+/// How a choice reads in the selector.
+///
+/// Deliberately not the bare region: "all regions" and the unstated group need
+/// wording of their own, and an empty label would offer a selection nobody can
+/// interpret.
+fn region_label(choice: &RegionChoice) -> SharedString {
+    match choice {
+        RegionChoice::All => "All regions".into(),
+        RegionChoice::In(region) => region.clone().into(),
+        RegionChoice::Unstated => "Region unstated".into(),
+    }
+}
+
 /// The bucket table.
 struct BucketsDelegate {
     columns: Vec<Column>,
+    /// Every bucket the listing returned.
     rows: Vec<Bucket>,
+    /// Indices into `rows` the current region choice admits, in listing order.
+    /// Indices rather than a second copy: narrowing a large account should cost
+    /// a filter, not a clone of every bucket in it.
+    shown: Vec<usize>,
 }
 
 impl BucketsDelegate {
@@ -52,6 +75,7 @@ impl BucketsDelegate {
                 Column::new("region", "Region").width(px(180.)),
             ],
             rows: Vec::new(),
+            shown: Vec::new(),
         }
     }
 }
@@ -62,7 +86,7 @@ impl TableDelegate for BucketsDelegate {
     }
 
     fn rows_count(&self, _cx: &App) -> usize {
-        self.rows.len()
+        self.shown.len()
     }
 
     fn column(&self, col_ix: usize, _cx: &App) -> Column {
@@ -76,7 +100,7 @@ impl TableDelegate for BucketsDelegate {
         _window: &mut Window,
         _cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
-        let row = &self.rows[row_ix];
+        let row = &self.rows[self.shown[row_ix]];
         let text: SharedString = match col_ix {
             0 => row.name.clone().into(),
             1 => row.created.clone().unwrap_or_else(|| "—".into()).into(),
@@ -106,12 +130,46 @@ struct CaixonhoApp {
     table: Entity<TableState<BucketsDelegate>>,
     accel: Entity<ScrollAccel>,
     inbox: flume::Sender<TaggedOutcome>,
+    /// Which region the list is narrowed to.
+    region: RegionChoice,
+    /// The choices currently on offer, in the order the selector shows them.
+    /// Held so a confirmed label can be turned back into the choice it means.
+    region_options: Vec<RegionChoice>,
+    region_select: Entity<RegionSelect>,
 }
 
 impl CaixonhoApp {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let table = cx.new(|cx| TableState::new(BucketsDelegate::new(), window, cx));
         let accel = cx.new(|_| ScrollAccel::default());
+
+        let region_select = cx.new(|cx| {
+            RegionSelect::new(
+                SearchableVec::new(vec![region_label(&RegionChoice::All)]),
+                Some(IndexPath::new(0)),
+                window,
+                cx,
+            )
+        });
+        cx.subscribe(
+            &region_select,
+            |app, _, event: &SelectEvent<SearchableVec<SharedString>>, cx| {
+                let SelectEvent::Confirm(label) = event;
+                let Some(label) = label else { return };
+                // The control confirms a label; the choice it stands for is
+                // whichever offered choice renders as that label.
+                let chosen = app
+                    .region_options
+                    .iter()
+                    .find(|choice| region_label(choice) == *label)
+                    .cloned();
+                if let Some(choice) = chosen {
+                    app.region = choice;
+                    app.narrow_rows(cx);
+                }
+            },
+        )
+        .detach();
 
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -136,9 +194,11 @@ impl CaixonhoApp {
         // The bridge: results cross from runtime threads to the UI as
         // messages, and are applied on GPUI's executor.
         let (inbox, results) = flume::unbounded::<TaggedOutcome>();
-        cx.spawn(async move |this, cx| {
+        // `spawn_in` rather than `spawn`: applying an outcome replaces the
+        // region choices on offer, and that control needs a window.
+        cx.spawn_in(window, async move |this, cx| {
             while let Ok(tagged) = results.recv_async().await {
-                let applied = this.update(cx, |app, cx| app.apply(tagged, cx));
+                let applied = this.update_in(cx, |app, window, cx| app.apply(tagged, window, cx));
                 if applied.is_err() {
                     break; // The window is gone.
                 }
@@ -157,20 +217,23 @@ impl CaixonhoApp {
             table,
             accel,
             inbox,
+            region: RegionChoice::All,
+            region_options: vec![RegionChoice::All],
+            region_select,
         };
 
         // Open on the default profile when there is one, so the first screen
         // shows data rather than an instruction.
         if let Some(index) = app.profiles.iter().position(|profile| profile.is_default) {
-            app.select_profile(index, cx);
+            app.select_profile(index, window, cx);
         } else if !app.profiles.is_empty() {
-            app.select_profile(0, cx);
+            app.select_profile(0, window, cx);
         }
         app
     }
 
     /// Switch to a profile and start listing it.
-    fn select_profile(&mut self, index: usize, cx: &mut Context<Self>) {
+    fn select_profile(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(profile) = self.profiles.get(index).map(|profile| profile.name.clone()) else {
             return;
         };
@@ -180,7 +243,7 @@ impl CaixonhoApp {
         // Clears the previous profile's rows and error before anything of the
         // new one's arrives.
         self.outcome.switch_to(id);
-        self.set_rows(Vec::new(), cx);
+        self.set_rows(Vec::new(), window, cx);
         self.issue(id, profile, cx);
     }
 
@@ -208,22 +271,70 @@ impl CaixonhoApp {
     }
 
     /// Apply an outcome, unless it belongs to a connection we left behind.
-    fn apply(&mut self, tagged: TaggedOutcome, cx: &mut Context<Self>) {
+    fn apply(&mut self, tagged: TaggedOutcome, window: &mut Window, cx: &mut Context<Self>) {
         if !self.outcome.accept(tagged) {
             return; // Stale: a late answer from a profile the user left.
         }
         if let Outcome::Loaded(buckets) = self.outcome.state() {
             let buckets = buckets.clone();
-            self.set_rows(buckets, cx);
+            self.set_rows(buckets, window, cx);
         }
         cx.notify();
     }
 
-    fn set_rows(&mut self, rows: Vec<Bucket>, cx: &mut Context<Self>) {
+    /// Take a new listing, and re-offer the region choices it supports.
+    fn set_rows(&mut self, rows: Vec<Bucket>, window: &mut Window, cx: &mut Context<Self>) {
+        // A choice the new listing cannot satisfy would render an empty table
+        // whose only cure is guessing which control emptied it.
+        self.region = self.region.clone().retained_for(&rows);
+        self.region_options = region_choices(&rows);
+
+        let labels: Vec<SharedString> = self.region_options.iter().map(region_label).collect();
+        let selected = self
+            .region_options
+            .iter()
+            .position(|choice| *choice == self.region)
+            .unwrap_or(0);
+        self.region_select.update(cx, |select, cx| {
+            select.set_items(SearchableVec::new(labels), window, cx);
+            select.set_selected_index(Some(IndexPath::new(selected)), window, cx);
+        });
+
         self.table.update(cx, |state, cx| {
             state.delegate_mut().rows = rows;
             cx.notify();
         });
+        self.narrow_rows(cx);
+    }
+
+    /// Apply the region choice to the listing already held.
+    ///
+    /// No request is made: the service can filter a listing by region, but only
+    /// for a request sent to an endpoint in that same region, which would cost
+    /// a client per region to narrow a list already in hand.
+    fn narrow_rows(&mut self, cx: &mut Context<Self>) {
+        let choice = self.region.clone();
+        self.table.update(cx, |state, cx| {
+            let delegate = state.delegate_mut();
+            delegate.shown = delegate
+                .rows
+                .iter()
+                .enumerate()
+                .filter(|(_, bucket)| choice.matches(bucket))
+                .map(|(index, _)| index)
+                .collect();
+            cx.notify();
+        });
+        cx.notify();
+    }
+
+    /// The region selector, offering only regions this account uses.
+    fn region_picker(&self) -> impl IntoElement {
+        h_flex().gap_2().pb_2().child(
+            div()
+                .w(px(240.))
+                .child(Select::new(&self.region_select).title_prefix("Region: ")),
+        )
     }
 
     /// One button per profile, the active one filled in.
@@ -245,8 +356,8 @@ impl CaixonhoApp {
                     } else {
                         button.ghost()
                     };
-                    button.on_click(cx.listener(move |app, _, _, cx| {
-                        app.select_profile(index, cx);
+                    button.on_click(cx.listener(move |app, _, window, cx| {
+                        app.select_profile(index, window, cx);
                     }))
                 })
                 .collect::<Vec<_>>(),
@@ -339,11 +450,17 @@ impl CaixonhoApp {
                 cx,
             )
             .into_any_element(),
-            Outcome::Loaded(_) => div()
-                .relative()
+            Outcome::Loaded(_) => v_flex()
                 .size_full()
-                .child(DataTable::new(&self.table))
-                .child(scroll::accelerator(self.table.clone(), self.accel.clone()))
+                .child(self.region_picker())
+                .child(
+                    div()
+                        .relative()
+                        .min_h_0()
+                        .flex_1()
+                        .child(DataTable::new(&self.table))
+                        .child(scroll::accelerator(self.table.clone(), self.accel.clone())),
+                )
                 .into_any_element(),
         }
     }
@@ -381,7 +498,17 @@ impl Render for CaixonhoApp {
         let status: SharedString = match (self.active_profile, self.outcome.state()) {
             (None, _) => "".into(),
             (Some(_), Outcome::Loading) => "listing…".into(),
-            (Some(_), Outcome::Loaded(buckets)) => format!("{} buckets", buckets.len()).into(),
+            (Some(_), Outcome::Loaded(buckets)) => {
+                // Says both numbers while a region is chosen: reporting the
+                // account's total beside a narrowed table reads as rows lost.
+                let shown = self.table.read(cx).delegate().shown.len();
+                let total = buckets.len();
+                if shown == total {
+                    format!("{total} buckets").into()
+                } else {
+                    format!("{shown} of {total} buckets").into()
+                }
+            }
             (Some(_), Outcome::Failed(_)) => "failed".into(),
         };
 
