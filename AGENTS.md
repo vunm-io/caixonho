@@ -37,6 +37,11 @@ targets — Windows is the primary daily driver and must never be the lagging po
 ## Conventions
 
 - Everything in the repo is **English**: code, comments, docs, commits, issues.
+- **This repository is public.** Its history is part of what it offers: commits
+  are self-contained and reviewable, each message says what changed and why it
+  changed rather than restating the diff, and history stays linear — no
+  force-pushes to `main`, no rewriting published commits to tidy them. Prefer
+  several focused commits over one that mixes concerns.
 - Conventional Commits with a task ID in the scope: `feat(XONHO-0003): ...`.
   Small housekeeping may use the owner's global `OPS-NNNN` sequence — prefer it
   for anything that is not project work, so the project's own sequence stays
