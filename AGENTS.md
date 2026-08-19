@@ -71,6 +71,38 @@ targets — Windows is the primary daily driver and must never be the lagging po
   before shipping an identifier — the UI stack moves fast; do not trust this
   file or the brief over `cargo` and upstream docs, and say so when they drift.
 
+## Close-out review (run it before calling a change done)
+
+A change is not finished when its tasks are ticked. It is finished when someone
+has asked these five questions out loud and written the answers down — in the
+change's `tasks.md` while it is open, or in the session log. Ticking a checkbox
+records that work happened; this records that nothing was left behind.
+
+1. **Did we build what was asked, or what was convenient?** Re-read the change's
+   own proposal and the requirements it names in `PROJECT_BRIEF.md` and
+   `openspec/specs/`. Every departure is either an amendment written into the
+   document it departs from, or a defect. Neither is a silent decision.
+2. **Do the reader-facing documents still tell the truth?** `README.md`,
+   `docs/architecture.md`, `docs/roadmap.md`, `docs/design-language.md`. A change
+   that alters what the app does for a user carries its own documentation.
+3. **Did we leave rubbish?** Dead code and unused API, throwaway scripts and
+   diagnostic files, commented-out blocks, `TODO`s with nobody's name on them,
+   duplicated constants that will drift. Delete it now — API kept "for later"
+   is how a crate acquires functions nobody dares remove.
+4. **What is asserted but not verified?** Name the paths with no test, the
+   assumptions no test would catch, and anything ticked on the strength of unit
+   tests alone. This project has already had a real failure that 105 green tests
+   said nothing about, because the tests knew only what the double had been told.
+5. **What is left, and where is it written?** Anything discovered and not done
+   belongs in `docs/planned-changes.md` or a change of its own — never only in a
+   conversation. A finding that lives in a transcript is a finding that is lost.
+
+The point is not ceremony. Each of these has already caught something real
+here: a README that described a milestone the repo had left, a spec requirement
+delivered in half, a token module shipped with functions nothing called, a
+diagnostic example left in the tree, and a defect that only appeared when a
+person opened the app.
+
 ## Current state
 
 - **Milestone: M1** — first real capability. `caixonho-gui` is the app now, not
