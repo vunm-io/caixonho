@@ -35,19 +35,27 @@
 
 ## 3. The list probe (core)
 
-- [ ] 3.1 [dispatch: claude-subagent] Test first: a list probe against the
+- [x] 3.1 [dispatch: claude-subagent] Test first: a list probe against the
       double resolves to allowed on success, denied on an authorization denial,
       and leaves the capability untouched for expired session, rejected
       credentials, wrong region, network failure and throttling.
-- [ ] 3.2 [dispatch: claude-subagent] Add the probe to the S3 port and its
+- [x] 3.2 [dispatch: claude-subagent] Add the probe to the S3 port and its
       double: list the bucket's contents with a maximum of one key.
-- [ ] 3.3 [dispatch: claude-subagent] Implement it in the adapter, classifying
+- [x] 3.3 [dispatch: claude-subagent] Implement it in the adapter, classifying
       failures through the existing classifier rather than inspecting SDK errors
       again.
-- [ ] 3.4 [dispatch: claude-subagent] Route each probe through a client for the
+- [x] 3.4 [dispatch: claude-subagent] Route each probe through a client for the
       bucket's own region, built lazily and cached for the session, sharing the
       credentials provider and the HTTP client from `tls.rs`. Assert in a test
       that resolving credentials happens once, not once per region.
+      - Dispatched: claude-subagent (2026-08-19) — section 3 complete; verified:
+        `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D
+        warnings` and `cargo test --workspace` re-run in the main session, all
+        exit 0, 75 core tests. `connection.rs` and `tls.rs` needed no change:
+        the SDK config already carries a lazy identity cache, and a regional
+        client copies the provider, the cache and the HTTP client from it. The
+        single-resolution claim is asserted behaviourally, not by inspection —
+        four regions probed, four resolutions recorded, one cache partition.
 
 ## 4. The capability store (core)
 
