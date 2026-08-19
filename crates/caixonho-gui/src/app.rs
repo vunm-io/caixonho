@@ -4,21 +4,22 @@ use caixonho_core::{
     SessionProblem, StoredCredential, TaggedOutcome, region_choices,
 };
 use gpui::{
-    App, AppContext, Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled,
-    Window, div, px,
+    App, AppContext, Context, Entity, InteractiveElement, IntoElement, ParentElement, Render,
+    SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
 use gpui_component::{
-    ActiveTheme, IconName, IndexPath, Side, TitleBar,
+    ActiveTheme, Icon, IconName, IndexPath, Side, TitleBar,
     button::{Button, ButtonVariants},
     h_flex,
     select::{SearchableVec, Select, SelectEvent},
     sidebar::{Sidebar, SidebarFooter, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem},
     status_bar::StatusBar,
     table::{DataTable, TableState},
+    tooltip::Tooltip,
     v_flex,
 };
 
-use crate::components::{empty_state, inline_message, skeleton_rows, status_badge};
+use crate::components::{empty_state, inline_message, skeleton_rows};
 use crate::scroll::{self, ScrollAccel};
 use crate::theme::space;
 use crate::views::buckets::{BucketsDelegate, RegionSelect, region_label};
@@ -583,7 +584,6 @@ impl CaixonhoApp {
     /// sidebar group, which is where every later connection-shaped thing goes
     /// too — so adding one does not mean redesigning the window.
     fn sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let active = self.active_profile;
         Sidebar::new("connections")
             .side(Side::Left)
             .w(px(220.))
@@ -619,34 +619,74 @@ impl CaixonhoApp {
                             }))
                     })),
             )
-            .child(
-                SidebarGroup::new("Connections").child(
-                    SidebarMenu::new().children(self.connections().into_iter().enumerate().map(
-                        |(index, (label, _))| {
-                            let item = SidebarMenuItem::new(label)
-                                .icon(IconName::CircleUser)
-                                .active(Some(index) == active)
-                                .on_click(cx.listener(move |app, _, window, cx| {
-                                    app.select_profile(index, window, cx);
-                                }));
-                            // Marked, not hidden, and not removed: a connection
-                            // that cannot sign in is still a fact about this
-                            // machine, and hiding it would leave the user
-                            // wondering where it went.
-                            match self.unavailable.get(&index).cloned() {
-                                None => item,
-                                Some(reason) => item.suffix(move |_, cx| {
-                                    status_badge(
-                                        IconName::TriangleAlert,
-                                        reason.clone(),
-                                        cx.theme().warning,
-                                    )
-                                }),
-                            }
-                        },
-                    )),
-                ),
+            // Two groups rather than a label beside each name: where a
+            // connection's secret is kept is worth seeing, and a label would
+            // compete with the name for the little room a sidebar row has.
+            .children(
+                [
+                    self.connection_group("From ~/.aws", 0..self.profiles.len(), cx),
+                    self.connection_group(
+                        "Saved in caixonho",
+                        self.profiles.len()..self.profiles.len() + self.stored.len(),
+                        cx,
+                    ),
+                ]
+                .into_iter()
+                .flatten(),
             )
+    }
+
+    /// One group of the sidebar, over a slice of [`Self::connections`].
+    fn connection_group(
+        &self,
+        title: &'static str,
+        range: std::ops::Range<usize>,
+        cx: &mut Context<Self>,
+    ) -> Option<SidebarGroup<SidebarMenu>> {
+        let active = self.active_profile;
+        let rows: Vec<_> = self
+            .connections()
+            .into_iter()
+            .enumerate()
+            .filter(|(index, _)| range.contains(index))
+            .collect();
+        // A heading over nothing is worse than no heading.
+        if rows.is_empty() {
+            return None;
+        }
+
+        Some(
+            SidebarGroup::new(title).child(SidebarMenu::new().children(rows.into_iter().map(
+                |(index, (label, _))| {
+                    let item = SidebarMenuItem::new(label)
+                        .icon(IconName::CircleUser)
+                        .active(Some(index) == active)
+                        .on_click(cx.listener(move |app, _, window, cx| {
+                            app.select_profile(index, window, cx);
+                        }));
+                    // Marked, not hidden, and not removed: a connection
+                    // that cannot sign in is still a fact about this
+                    // machine, and hiding it would leave the user
+                    // wondering where it went.
+                    match self.unavailable.get(&index).cloned() {
+                        None => item,
+                        // An icon, not a sentence. Spelled out, the badge
+                        // ate the name it was describing and left a row
+                        // reading "v" beside a warning about it.
+                        Some(reason) => item.suffix(move |_, cx| {
+                            div()
+                                .id("unavailable")
+                                .text_color(cx.theme().warning)
+                                .child(Icon::new(IconName::TriangleAlert).size_3())
+                                .tooltip({
+                                    let reason = reason.clone();
+                                    move |window, cx| Tooltip::new(reason.clone()).build(window, cx)
+                                })
+                        }),
+                    }
+                },
+            ))),
+        )
     }
 
     /// What to say about a failure, and what the user can do about it.

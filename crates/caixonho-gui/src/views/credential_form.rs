@@ -10,6 +10,7 @@ use gpui_component::{
     ActiveTheme, IconName,
     button::{Button, ButtonVariants},
     input::{Input, InputState},
+    select::{SearchableVec, Select, SelectState},
     v_flex,
 };
 
@@ -19,7 +20,10 @@ use crate::theme::{space, tile};
 /// What the user is typing, and what is wrong with it so far.
 pub(crate) struct CredentialForm {
     name: Entity<InputState>,
-    region: Entity<InputState>,
+    /// A list rather than a free-text box. A region is a closed set with exact
+    /// spellings, and a typo in one does not fail loudly — it signs requests
+    /// for somewhere else and surfaces later as a bucket that "does not exist".
+    region: Entity<SelectState<SearchableVec<SharedString>>>,
     access_key_id: Entity<InputState>,
     secret: Entity<InputState>,
     session_token: Entity<InputState>,
@@ -33,19 +37,38 @@ pub(crate) struct CredentialForm {
 
 impl CredentialForm {
     pub(crate) fn new(window: &mut Window, cx: &mut App) -> Self {
-        let mut field = |placeholder: &'static str, masked: bool, cx: &mut App| {
+        fn field(
+            placeholder: &'static str,
+            masked: bool,
+            window: &mut Window,
+            cx: &mut App,
+        ) -> Entity<InputState> {
             cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder(placeholder)
                     .masked(masked)
             })
-        };
+        }
+        let regions: Vec<SharedString> = REGIONS.iter().map(|r| SharedString::from(*r)).collect();
+        let default = REGIONS
+            .iter()
+            .position(|region| *region == DEFAULT_REGION)
+            .unwrap_or(0);
+        let region = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::new(regions),
+                Some(gpui_component::IndexPath::new(default)),
+                window,
+                cx,
+            )
+            .searchable(true)
+        });
         Self {
-            name: field("production", false, cx),
-            region: field("ap-southeast-1", false, cx),
-            access_key_id: field("AKIA…", false, cx),
-            secret: field("the secret access key", true, cx),
-            session_token: field("only for temporary credentials", true, cx),
+            name: field("production", false, window, cx),
+            region,
+            access_key_id: field("AKIA…", false, window, cx),
+            secret: field("the secret access key", true, window, cx),
+            session_token: field("only for temporary credentials", true, window, cx),
             problem: None,
             saving: false,
         }
@@ -61,7 +84,13 @@ impl CredentialForm {
         cx: &App,
     ) -> Result<(StoredCredential, CredentialSecret), SharedString> {
         let read = |field: &Entity<InputState>| field.read(cx).value().trim().to_owned();
-        let (name, region) = (read(&self.name), read(&self.region));
+        let name = read(&self.name);
+        let region = self
+            .region
+            .read(cx)
+            .selected_value()
+            .map(ToString::to_string)
+            .unwrap_or_default();
         let (access_key_id, secret) = (read(&self.access_key_id), read(&self.secret));
         let session_token = read(&self.session_token);
 
@@ -126,7 +155,17 @@ impl CredentialForm {
                     ),
             )
             .child(field("Name", &self.name, cx))
-            .child(field("Region", &self.region, cx))
+            .child(
+                v_flex()
+                    .gap(space::TIGHT)
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Region"),
+                    )
+                    .child(Select::new(&self.region)),
+            )
             .child(field("Access key ID", &self.access_key_id, cx))
             .child(field("Secret access key", &self.secret, cx))
             .child(field("Session token (optional)", &self.session_token, cx))
@@ -159,6 +198,37 @@ impl CredentialForm {
             .into_any_element()
     }
 }
+
+/// Where this application offers to connect.
+///
+/// Not every AWS region — the list is a convenience, not a catalogue, and one
+/// long enough to scroll past is worse than one that covers where people
+/// actually keep data. It is searchable for the rest.
+const REGIONS: &[&str] = &[
+    "ap-southeast-1",
+    "ap-southeast-2",
+    "ap-southeast-3",
+    "ap-northeast-1",
+    "ap-northeast-2",
+    "ap-south-1",
+    "ap-east-1",
+    "us-east-1",
+    "us-east-2",
+    "us-west-1",
+    "us-west-2",
+    "eu-west-1",
+    "eu-west-2",
+    "eu-central-1",
+    "eu-north-1",
+    "sa-east-1",
+    "ca-central-1",
+    "me-south-1",
+    "af-south-1",
+];
+
+/// Singapore: nearest to where this is being built, and the region its own
+/// test buckets are in.
+const DEFAULT_REGION: &str = "ap-southeast-1";
 
 /// A label above its input, which is the only arrangement that survives a
 /// narrow window without the label being cut off.

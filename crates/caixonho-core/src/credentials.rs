@@ -440,6 +440,45 @@ mod tests {
     //! reported as. The keychain itself is exercised by hand (tasks.md 6.3);
     //! what is verified here is everything above it.
 
+    /// The real keychain, not the double — run it with
+    /// `cargo test -p caixonho-core -- --ignored`.
+    ///
+    /// Ignored because it writes to the machine's own credential store and can
+    /// raise a prompt, which is not something a test run should do behind
+    /// someone's back. It exists because every other test here proves the
+    /// *reasoning* against a double: nothing proved that a real keychain hands
+    /// back exactly what it was given, and a secret that comes back altered is
+    /// indistinguishable, from the outside, from a key the user typed wrongly.
+    #[test]
+    #[ignore = "writes to this machine's credential store"]
+    fn a_real_credential_store_returns_exactly_what_it_was_given() {
+        // Deliberately awkward: base64 padding, a slash, a quote, a backslash
+        // and a tab are all things a store or a format could mangle.
+        let secret = "aB3/xY9+zQ==weird\"chars\\and\ttabs";
+        let token = "IQoJb3JpZ2luX2VjE\n//multiline+token/==";
+        let name = "caixonho-test-please-delete";
+
+        let store = Keyring;
+        let credential = StoredCredential::new(name, "ap-southeast-1", "AKIAEXAMPLE");
+        save(
+            &store,
+            &credential,
+            &CredentialSecret::new(secret, Some(token.to_owned())),
+        )
+        .expect("the store accepted the secret");
+
+        let read = load(&store, name);
+        forget(&store, name).expect("the store released it again");
+        let read = read.expect("the store returned the secret");
+
+        assert_eq!(
+            read.secret_access_key(),
+            secret,
+            "a secret that comes back altered looks exactly like a key typed wrongly"
+        );
+        assert_eq!(read.session_token(), Some(token));
+    }
+
     use super::double::SecretStoreDouble;
     use super::*;
 
