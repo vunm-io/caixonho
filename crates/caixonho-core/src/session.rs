@@ -14,7 +14,8 @@ use tokio::runtime::Handle;
 use crate::adapter::S3ObjectStore;
 use crate::capability::{Capability, CapabilityStore, CredentialsId, Observation, Scope};
 use crate::connection::{self, Connection, ConnectionSource};
-use crate::credentials::{self, CredentialSecret, Keyring, SecretStore, StoredCredential};
+use crate::connections::{self, ConfigDirectory, ConnectionFile};
+use crate::credentials::{CredentialSecret, Keyring, SecretStore, StoredCredential};
 use crate::error::Result;
 use crate::outcome::{Outcome, TaggedOutcome};
 use crate::probe::{ProbeScheduler, ProbeSink, ProbeTarget};
@@ -36,6 +37,15 @@ pub struct Session {
     /// costs nothing at startup: `keyring` initialises the platform store
     /// lazily, on the first entry anyone builds.
     secrets: Arc<dyn SecretStore>,
+    /// Where the half of a stored connection that is not secret is kept, so
+    /// that a connection entered here is still offered after a restart.
+    ///
+    /// Behind an `Arc<dyn _>` for the same reason the credential store is: a
+    /// test puts a double where the platform's config directory goes, through
+    /// the same door production uses. Holding one costs nothing at startup —
+    /// the path is resolved per call, and nothing is read until something is
+    /// asked of it.
+    connections: Arc<dyn ConnectionFile>,
     /// Shared by every clone, so an observation made on a runtime thread is
     /// the same one the frontend reads. The lock is only ever held for a map
     /// lookup — never across an await.
@@ -72,6 +82,7 @@ impl Session {
             http,
             paths,
             secrets: Arc::new(Keyring),
+            connections: Arc::new(ConfigDirectory),
             capabilities: Arc::new(Mutex::new(CapabilityStore::new())),
             scheduler: Arc::default(),
             settled: Arc::default(),
@@ -89,9 +100,36 @@ impl Session {
         self
     }
 
+    /// The same session, remembering connections somewhere else.
+    ///
+    /// Test-only, for the same reason as [`Self::with_secret_store`]: the
+    /// platform's own config directory is the only place the app writes, and
+    /// a way to redirect it in production would be a way to scatter a user's
+    /// connections across the disk.
+    #[cfg(test)]
+    pub(crate) fn with_connection_file(mut self, connections: Arc<dyn ConnectionFile>) -> Self {
+        self.connections = connections;
+        self
+    }
+
     /// Where this session reads profiles from.
     pub fn paths(&self) -> &ConfigPaths {
         &self.paths
+    }
+
+    /// The connections entered in this application on a previous run.
+    ///
+    /// Read at startup, so a credential typed in yesterday is offered again
+    /// today. Synchronous and cheap — one small file, no credential store and
+    /// no network — like [`crate::discover`] beside it, which the frontend
+    /// already calls while building its first screen.
+    ///
+    /// A file that cannot be read is an error rather than an empty list: a
+    /// machine whose connections could not be read is not a machine with no
+    /// connections, and quietly saying the second would invite the user to
+    /// enter the credential again on top of the one already there.
+    pub fn stored_connections(&self) -> Result<Vec<StoredCredential>> {
+        connections::list(self.connections.as_ref())
     }
 
     /// The credentials observations are currently recorded under, if a
@@ -268,7 +306,13 @@ impl Session {
         S3ObjectStore::new(&connection).list_buckets().await
     }
 
-    /// Save a stored credential's secret, off the caller's thread.
+    /// Save a stored credential, off the caller's thread.
+    ///
+    /// Both halves: the name, region and access key id to the configuration
+    /// file, the secret to the credential store — so the connection is still
+    /// there after a restart, and no secret is left filed under a name the
+    /// application has forgotten (design.md, "A stored connection is
+    /// remembered, or it should not be offered at all").
     ///
     /// On the runtime for the same reason every network call is: reaching the
     /// credential store can raise a prompt the user has to answer, and a
@@ -276,8 +320,8 @@ impl Session {
     ///
     /// `deliver` is called exactly once, on a runtime thread, and is handed
     /// back the credential's configuration half so a frontend can offer the
-    /// connection the moment it is real. A store that refuses is reported as
-    /// itself, and nothing is written anywhere else.
+    /// connection the moment it is real. A store that refuses, or a file that
+    /// cannot be written, is reported as itself and leaves nothing half done.
     pub fn spawn_save_credential<F>(
         &self,
         credential: StoredCredential,
@@ -287,23 +331,30 @@ impl Session {
         F: FnOnce(Result<StoredCredential>) + Send + 'static,
     {
         let secrets = Arc::clone(&self.secrets);
+        let file = Arc::clone(&self.connections);
         self.runtime.spawn(async move {
-            deliver(credentials::save(secrets.as_ref(), &credential, &secret).map(|()| credential));
+            deliver(
+                connections::remember(file.as_ref(), secrets.as_ref(), &credential, &secret)
+                    .map(|()| credential),
+            );
         });
     }
 
     /// Forget a stored credential, off the caller's thread.
     ///
-    /// Deletes everything the credential store holds for `name`. What the
-    /// frontend does with the connection afterwards is its own business —
-    /// but a connection that has been forgotten is not one to keep offering.
+    /// Deletes what the credential store holds for `name` first and the
+    /// configuration entry second. The order is the point: the other way
+    /// round, a failure would leave a secret in the keychain under a name this
+    /// application can no longer see, name or delete.
     pub fn spawn_forget_credential<F>(&self, name: String, deliver: F)
     where
         F: FnOnce(Result<()>) + Send + 'static,
     {
         let secrets = Arc::clone(&self.secrets);
-        self.runtime
-            .spawn(async move { deliver(credentials::forget(secrets.as_ref(), &name)) });
+        let file = Arc::clone(&self.connections);
+        self.runtime.spawn(async move {
+            deliver(connections::forget(file.as_ref(), secrets.as_ref(), &name));
+        });
     }
 
     /// Open a connection for `source`.
@@ -357,8 +408,10 @@ mod tests {
 
     use super::*;
     use crate::capability::{Observation, Scope};
+    use crate::connections::double::ConnectionFileDouble;
+    use crate::credentials;
     use crate::credentials::double::SecretStoreDouble;
-    use crate::error::{CredentialStoreProblem, Error};
+    use crate::error::{ConnectionsProblem, CredentialStoreProblem, Error};
     use crate::probe::double::{HeldProbes, settle, until};
     use crate::types::Region;
     use std::path::PathBuf;
@@ -391,6 +444,11 @@ mod tests {
         }
 
         /// A session reading a config file that declares `profile`.
+        ///
+        /// Its remembered connections go to a double, always: a test that
+        /// saved one through the real file would write into the developer's
+        /// own configuration directory, which is exactly what nothing here is
+        /// allowed to touch.
         fn session(&self, profile: &str) -> Session {
             let paths = self.paths();
             std::fs::write(
@@ -407,6 +465,7 @@ mod tests {
                 HttpStack::with_ca_bundle(None).expect("client builds"),
                 paths,
             )
+            .with_connection_file(Arc::new(ConnectionFileDouble::empty()))
         }
     }
 
@@ -737,6 +796,94 @@ mod tests {
             store.holds().is_empty(),
             "a forgotten connection leaves nothing behind to be signed with"
         );
+    }
+
+    #[tokio::test]
+    async fn a_credential_saved_through_a_session_is_offered_again_after_a_restart() {
+        // The defect 4.0 was added for: the secret went to the keychain,
+        // nothing kept the rest, and the connection vanished at exit while
+        // its secret stayed behind. A second session over the same file is
+        // what a restart looks like from here.
+        let fixture = Fixture::new("remembered-across-restarts");
+        let file = Arc::new(ConnectionFileDouble::empty());
+        let session = fixture
+            .session("work")
+            .with_secret_store(Arc::new(SecretStoreDouble::open()))
+            .with_connection_file(Arc::clone(&file) as Arc<dyn ConnectionFile>);
+
+        let (tell, told) = tokio::sync::oneshot::channel();
+        session.spawn_save_credential(
+            stored(),
+            CredentialSecret::new(SECRET, None),
+            move |saved| {
+                let _ = tell.send(saved.map(|_| ()));
+            },
+        );
+        told.await
+            .expect("the callback runs exactly once")
+            .expect("an open store and a writable file accept it");
+
+        let restarted = fixture
+            .session("work")
+            .with_connection_file(Arc::clone(&file) as Arc<dyn ConnectionFile>);
+        assert_eq!(
+            restarted
+                .stored_connections()
+                .expect("the file this session wrote is one it can read"),
+            vec![stored()]
+        );
+    }
+
+    #[tokio::test]
+    async fn forgetting_through_a_session_stops_the_connection_being_offered() {
+        let fixture = Fixture::new("forget-both-halves");
+        let store = store_holding_the_secret();
+        let file = Arc::new(ConnectionFileDouble::empty());
+        let session = fixture
+            .session("work")
+            .with_secret_store(Arc::clone(&store) as Arc<dyn SecretStore>)
+            .with_connection_file(Arc::clone(&file) as Arc<dyn ConnectionFile>);
+        let (tell, told) = tokio::sync::oneshot::channel();
+        session.spawn_save_credential(stored(), CredentialSecret::new(SECRET, None), move |s| {
+            let _ = tell.send(s.map(|_| ()));
+        });
+        told.await.expect("once").expect("accepted");
+
+        let (tell, told) = tokio::sync::oneshot::channel();
+        session.spawn_forget_credential("typed-in".to_owned(), move |forgotten| {
+            let _ = tell.send(forgotten);
+        });
+        told.await
+            .expect("the callback runs exactly once")
+            .expect("an open store and a writable file forget it");
+
+        assert!(
+            session.stored_connections().expect("readable").is_empty(),
+            "a connection that has been forgotten is not one to keep offering"
+        );
+        assert!(
+            store.holds().is_empty(),
+            "and nothing of it is left in the credential store"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_whose_connections_cannot_be_read_says_so_rather_than_showing_none() {
+        // An empty list would say this machine has no stored connections,
+        // which is a different statement and a false one — and it invites the
+        // user to enter a credential on top of one already there.
+        let fixture = Fixture::new("unreadable-connections");
+        let session = fixture.session("work").with_connection_file(Arc::new(
+            ConnectionFileDouble::empty().unreadable(ConnectionsProblem::Unreadable),
+        ));
+
+        match session.stored_connections() {
+            Err(Error::Connections {
+                problem: ConnectionsProblem::Unreadable,
+                ..
+            }) => {}
+            other => panic!("expected Connections/Unreadable, got {other:?}"),
+        }
     }
 
     #[tokio::test]

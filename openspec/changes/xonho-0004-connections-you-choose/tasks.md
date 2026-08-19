@@ -88,7 +88,7 @@
 
 ## 4. Entering and forgetting
 
-- [ ] 4.0 [dispatch: claude-subagent] Remember stored connections across
+- [x] 4.0 [dispatch: claude-subagent] Remember stored connections across
       restarts: the name, region and access key id in a configuration file in
       the platform's config location, never the secret. Forgetting deletes the
       keychain entry first and the configuration entry second, so a failure
@@ -96,6 +96,68 @@
       - Added during implementation. Without it a credential entered in the app
         disappears on restart while its secret stays in the keychain, which
         leaves secrets nobody can see or remove from the application.
+      - `connections.rs`, behind a `ConnectionFile` port with a double beside
+        the credential store's, so no test touches a real config directory or a
+        real keychain. `directories` 6.0.0 resolves the location, read out of
+        its own source rather than recalled: macOS
+        `~/Library/Application Support/caixonho/connections.toml`, Windows
+        `%APPDATA%\caixonho\config\connections.toml`, Linux
+        `$XDG_CONFIG_HOME/caixonho/connections.toml`. The frontend loads them
+        with `Session::stored_connections()` — synchronous, one small file, no
+        keychain and no network, like `discover` beside it.
+      - **One rule fixes both orders: the residue of a partial failure is
+        always something the application can name and remove, never a secret it
+        cannot see.** So remembering writes the configuration entry first and
+        the secret second and takes the entry back out if the secret is
+        refused; forgetting deletes the secret first and the entry second, and
+        does not touch the file at all if the secret could not be deleted.
+        Mutation-checked: reversing `forget` turns *two* tests red, from both
+        sides — `a_credential_store_that_will_not_delete_stops_before_the_
+        configuration_entry` and `a_configuration_that_cannot_be_written_does_
+        not_leave_the_secret_undeleted`.
+      - The rollback puts the *previous* list back rather than taking the new
+        entry out, and the difference is not academic: the two diverge exactly
+        when the credential replaced one of the same name — a key being rotated
+        — and there the store still holds the previous secret, so removing the
+        entry would strand it. Found by review after the first version passed
+        every test; `a_replacement_the_store_refuses_leaves_the_connection_it_
+        would_have_replaced` was written for it and was red before the fix.
+      - **A file this cannot read is reported and left exactly as it is.** Not
+        an empty list — a machine whose connections could not be read is not a
+        machine with no connections, and saying the second invites the user to
+        enter a credential on top of one already there. Not a panic either, and
+        not a rewrite: replacing a file we failed to parse would discard every
+        connection in it to save the one being written, so a failed read stops
+        the write (`a_configuration_this_cannot_understand_is_never_replaced_
+        by_one_it_can`). An absent file *is* an empty list — that is a first
+        run. Writes go to a staged file and are renamed onto the real one, so a
+        write that dies half way leaves the previous list intact.
+      - **Mutation-checked, three spellings.** The file test follows
+        `no_credential_store_failure_ever_discloses_the_secret` and adds one:
+        a secret can reach the file as readable text, as bytes
+        (`[119, 74, 97, ...]`), or *escaped by this file's own quoting*. All
+        three were confirmed to bite — writing the secret in as a quoted value
+        turned it red on the readable spelling, as a byte array on the second,
+        and, with a secret made of characters the format escapes, on the third
+        alone, where the first two sail past.
+      - **Blocks 6.1.** "Its own cause" is a new
+        `Error::Connections { problem, path }` with a
+        `ConnectionsProblem` of `Unreadable` / `Malformed` / `NotWritable` /
+        `NoLocation`, and `caixonho-gui` matches `Error` exhaustively in the
+        same two places 3.1 named — `unavailable_reason` (`app.rs:34`) and
+        `failure_panel`'s guidance (`app.rs:553`). Both need an arm, and 4.4
+        was already ticked when this landed, so the two arms are outstanding
+        work that nothing above will pick up on its own; core is green on its
+        own (`cargo test -p caixonho-core`: 154 passed). The `caixonho-gui`
+        crate was deliberately not edited from here — it was being worked in at
+        the time. No wildcard arm anywhere, for 3.1's reason: the enum
+        exists so that adding a cause forces every reader to decide what it
+        means. Note that neither arm should mark a *connection* unavailable —
+        a file that will not parse says nothing about whether any particular
+        credential works.
+      - What no test here covers: whether the real config directory is
+        writable, and whether the path `directories` computes is the one the
+        platform actually uses. That needs the three platforms — 6.2 and 6.3.
 - [x] 4.1 [dispatch: main] A form for name, region, access key id, secret and
       optional session token, reachable from the sidebar.
 - [x] 4.2 [dispatch: main] Saving makes the connection selectable immediately;

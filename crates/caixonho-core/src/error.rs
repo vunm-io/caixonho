@@ -40,6 +40,34 @@ pub enum CredentialStoreProblem {
     Absent,
 }
 
+/// Why the list of remembered connections could not be used.
+///
+/// A cause of its own, for the same reason a credential store failure is one:
+/// a configuration file the user can repair is not a locked keychain and not
+/// an IAM policy, and each is fixed by a different person in a different
+/// place. None of them is ever reported as another.
+///
+/// Nothing here says anything about the credential store. Losing this file
+/// loses no secret — it loses this application's knowledge that one exists,
+/// which is why the connection it names may not simply be dropped in silence
+/// (design.md, "A stored connection is remembered, or it should not be offered
+/// at all").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionsProblem {
+    /// The file is there and could not be read — permissions, a device
+    /// failure, a directory where a file should be.
+    Unreadable,
+    /// The file was read and is not what this application writes. It is left
+    /// exactly as it was: replacing a file we failed to parse would discard
+    /// every connection in it to save the one being written.
+    Malformed,
+    /// The file could not be written, so the change was not remembered.
+    NotWritable,
+    /// This machine offers nowhere to keep it — no home directory, or no
+    /// configuration directory at all.
+    NoLocation,
+}
+
 /// Why a connection or a call failed.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -121,6 +149,26 @@ pub enum Error {
         connection: String,
         /// What the store did.
         problem: CredentialStoreProblem,
+    },
+
+    /// The list of remembered connections could not be used.
+    ///
+    /// Distinct from [`Error::CredentialStore`] on purpose: that is the
+    /// keychain, this is an ordinary configuration file, and the two fail for
+    /// different reasons and are repaired by different means. Carries no
+    /// contents from the file — there is no secret in it to disclose, and
+    /// echoing a file back at the user is not what tells them what to do.
+    ///
+    /// The file is never replaced on the strength of a failed read. The
+    /// connections in it are the user's, and discarding them to save the one
+    /// being written is the failure this cause exists to make impossible.
+    #[error("the list of remembered connections{}{}", path.as_ref().map(|path| format!(" at `{}`", path.display())).unwrap_or_default(), match problem { ConnectionsProblem::Unreadable => " could not be read", ConnectionsProblem::Malformed => " is not in a form caixonho can read — repair it or remove it; no secret is kept in it", ConnectionsProblem::NotWritable => " could not be written, so this change was not remembered", ConnectionsProblem::NoLocation => " has nowhere to live on this machine" })]
+    Connections {
+        /// What went wrong with it.
+        problem: ConnectionsProblem,
+        /// Where the file is, when this machine has a place for one — so the
+        /// user asked to repair it is told which file to open.
+        path: Option<std::path::PathBuf>,
     },
 
     /// Anything the classifier could not attribute to a specific cause.

@@ -1359,6 +1359,7 @@ dependencies = [
  "aws-sdk-s3",
  "aws-smithy-http-client",
  "aws-smithy-runtime-api",
+ "directories",
  "keyring",
  "thiserror 2.0.20",
  "tokio",
@@ -2072,6 +2073,15 @@ dependencies = [
  "const-oid 0.10.2",
  "crypto-common 0.2.2",
  "ctutils",
+]
+
+[[package]]
+name = "directories"
+version = "6.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "16f5094c54661b38d03bd7e50df373292118db60b585c08a411c6d840017fe7d"
+dependencies = [
+ "dirs-sys",
 ]
 
 [[package]]

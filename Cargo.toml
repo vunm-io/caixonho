@@ -53,6 +53,15 @@ async-trait = "0.1.92"
 # itself.
 keyring = "4.1.6"
 
+# The platform's own configuration location — XONHO-0004. Verified on
+# crates.io on 2026-08-19 (MIT OR Apache-2.0). Used for exactly one thing: the
+# directory the connections file lives in. Hand-rolling that from `HOME` and
+# `APPDATA` is the alternative, and it is what this crate already does —
+# tested on three platforms, which this repository is not yet in a position to
+# do for itself. Windows is a first-class target here and the one least likely
+# to be exercised by hand.
+directories = "6.0.0"
+
 # gpui is unusable without optimization, even in dev builds (mirrors upstream).
 [profile.dev.package.gpui]
 opt-level = 3

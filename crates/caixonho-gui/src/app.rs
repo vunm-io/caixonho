@@ -1,7 +1,7 @@
 use caixonho_core::{
-    ActiveOutcome, Bucket, ConfigPaths, ConnectionId, ConnectionSource, CredentialStoreProblem,
-    Error, HttpStack, Outcome, Profile, RegionChoice, Scope, Session, SessionProblem,
-    StoredCredential, TaggedOutcome, region_choices,
+    ActiveOutcome, Bucket, ConfigPaths, ConnectionId, ConnectionSource, ConnectionsProblem,
+    CredentialStoreProblem, Error, HttpStack, Outcome, Profile, RegionChoice, Scope, Session,
+    SessionProblem, StoredCredential, TaggedOutcome, region_choices,
 };
 use gpui::{
     App, AppContext, Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled,
@@ -24,6 +24,85 @@ use crate::theme::space;
 use crate::views::buckets::{BucketsDelegate, RegionSelect, region_label};
 use crate::views::credential_form::CredentialForm;
 
+/// What to do about a failure. The advice belongs to the cause rather than
+/// to the panel that happens to show it, now that two surfaces need it.
+fn guidance_for(error: &Error) -> SharedString {
+    match error {
+                Error::Network { .. } => "The endpoint could not be reached. Check the connection and try again.".into(),
+                Error::SessionRejected { profile, sso_session, problem } => match (problem, sso_session) {
+                    (_, Some(session)) => format!("Sign in again: `aws sso login --sso-session {session}`").into(),
+                    (SessionProblem::Expired, None) => format!("Sign in again for profile `{profile}`, then retry.").into(),
+                    (SessionProblem::Invalid, None) => format!(
+                        "The service does not recognise these credentials. Check the access key and secret for profile `{profile}`."
+                    )
+                    .into(),
+                },
+                Error::TlsTrust { endpoint } => format!(
+                    "The certificate chain for {endpoint} is not trusted. Add the issuing CA to the \
+                     system trust store, or point AWS_CA_BUNDLE at the bundle your network uses."
+                )
+                .into(),
+                Error::AccessDenied { iam_action } => format!(
+                    "This profile is not allowed to list buckets. It needs the `{iam_action}` permission."
+                )
+                .into(),
+                Error::NoCredentials { profile } => {
+                    format!("No credentials resolved for `{profile}`. Check the profile's keys, role or SSO session.").into()
+                }
+                Error::MissingConfiguration { .. } => {
+                    "Complete the profile's configuration — a region is required — and try again.".into()
+                }
+                Error::CredentialStore { connection, problem } => match problem {
+                    CredentialStoreProblem::Locked => format!(
+                        "The system keychain is locked, so the secret for `{connection}` cannot be \
+                         read. Unlock it and try again."
+                    )
+                    .into(),
+                    CredentialStoreProblem::Refused => format!(
+                        "The system keychain did not hand back the secret for `{connection}`. If a \
+                         prompt appeared, it may have been declined."
+                    )
+                    .into(),
+                    CredentialStoreProblem::Absent => {
+                        "This system has no credential store for caixonho to use, so credentials \
+                         entered here cannot be kept. Use a profile in ~/.aws instead."
+                            .into()
+                    }
+                },
+                Error::Connections { problem, path } => {
+                    let where_it_is = path
+                        .as_ref()
+                        .map(|path| format!(" ({})", path.display()))
+                        .unwrap_or_default();
+                    match problem {
+                        ConnectionsProblem::Unreadable => format!(
+                            "The file of saved connections could not be read{where_it_is}. The \
+                             connections kept in it are not shown; the ones from ~/.aws are \
+                             unaffected."
+                        )
+                        .into(),
+                        ConnectionsProblem::Malformed => format!(
+                            "The file of saved connections is not in a form caixonho understands\
+                             {where_it_is}. It has been left exactly as it is — repair or remove it, \
+                             and nothing in it will be overwritten meanwhile."
+                        )
+                        .into(),
+                        ConnectionsProblem::NotWritable => format!(
+                            "The file of saved connections could not be written{where_it_is}, so the \
+                             change was not kept."
+                        )
+                        .into(),
+                        ConnectionsProblem::NoLocation => {
+                            "This machine offers nowhere to keep saved connections, so a credential \
+                             entered here cannot be remembered. Use a profile in ~/.aws instead."
+                                .into()
+                        }
+                    }
+                }
+                Error::Unexpected { .. } => "The call failed for an unrecognised reason.".into(),
+    }
+}
+
 /// Why a connection cannot be used at all, if that is what happened.
 ///
 /// Only a failure to authenticate makes a *connection* unusable. A network
@@ -44,7 +123,10 @@ fn unavailable_reason(error: &Error) -> Option<SharedString> {
             CredentialStoreProblem::Refused => "keychain refused".into(),
             CredentialStoreProblem::Absent => "no keychain".into(),
         }),
-        Error::Network { .. }
+        // A configuration file that will not parse says nothing about whether
+        // any particular credential works, so it marks no connection.
+        Error::Connections { .. }
+        | Error::Network { .. }
         | Error::TlsTrust { .. }
         | Error::AccessDenied { .. }
         | Error::MissingConfiguration { .. }
@@ -68,6 +150,11 @@ pub(crate) struct CaixonhoApp {
     table: Entity<TableState<BucketsDelegate>>,
     accel: Entity<ScrollAccel>,
     inbox: flume::Sender<TaggedOutcome>,
+    /// Set when the remembered connections could not be read. Deliberately
+    /// not a startup failure: the profiles in `~/.aws` are unaffected and the
+    /// application is perfectly usable, so this is said above the content
+    /// rather than instead of it.
+    connections_error: Option<Error>,
     /// The connections this application holds credentials for. Kept beside the
     /// discovered profiles rather than in a list of their own: to someone
     /// connecting, both are just somewhere to connect.
@@ -140,6 +227,22 @@ impl CaixonhoApp {
             Err(error) => (None, Some(error)),
         };
 
+        // Connections remembered from a previous run. Reading them is local
+        // and cheap — no credential is resolved and nothing is contacted, so
+        // this does not reintroduce the wait that startup just stopped paying.
+        let mut stored = Vec::new();
+        let mut connections_error = None;
+        if let Some(session) = &session {
+            match session.stored_connections() {
+                Ok(remembered) => stored = remembered,
+                // Not shown as "no connections": a machine whose connections
+                // could not be read is not a machine without any, and saying
+                // the second invites entering a credential on top of one that
+                // is already there.
+                Err(error) => connections_error = Some(error),
+            }
+        }
+
         // The table reads observations straight from the session, and reports
         // the rows on screen back to it for probing.
         if let Some(session) = &session {
@@ -190,7 +293,8 @@ impl CaixonhoApp {
             table,
             accel,
             inbox,
-            stored: Vec::new(),
+            connections_error,
+            stored,
             form: None,
             unavailable: std::collections::HashMap::new(),
             region: RegionChoice::All,
@@ -550,51 +654,7 @@ impl CaixonhoApp {
     /// Each cause gets its own next action, which is the whole reason the
     /// error type keeps them apart.
     fn failure_panel(&self, error: &Error, cx: &mut Context<Self>) -> impl IntoElement {
-        let guidance: SharedString = match error {
-            Error::Network { .. } => "The endpoint could not be reached. Check the connection and try again.".into(),
-            Error::SessionRejected { profile, sso_session, problem } => match (problem, sso_session) {
-                (_, Some(session)) => format!("Sign in again: `aws sso login --sso-session {session}`").into(),
-                (SessionProblem::Expired, None) => format!("Sign in again for profile `{profile}`, then retry.").into(),
-                (SessionProblem::Invalid, None) => format!(
-                    "The service does not recognise these credentials. Check the access key and secret for profile `{profile}`."
-                )
-                .into(),
-            },
-            Error::TlsTrust { endpoint } => format!(
-                "The certificate chain for {endpoint} is not trusted. Add the issuing CA to the \
-                 system trust store, or point AWS_CA_BUNDLE at the bundle your network uses."
-            )
-            .into(),
-            Error::AccessDenied { iam_action } => format!(
-                "This profile is not allowed to list buckets. It needs the `{iam_action}` permission."
-            )
-            .into(),
-            Error::NoCredentials { profile } => {
-                format!("No credentials resolved for `{profile}`. Check the profile's keys, role or SSO session.").into()
-            }
-            Error::MissingConfiguration { .. } => {
-                "Complete the profile's configuration — a region is required — and try again.".into()
-            }
-            Error::CredentialStore { connection, problem } => match problem {
-                CredentialStoreProblem::Locked => format!(
-                    "The system keychain is locked, so the secret for `{connection}` cannot be \
-                     read. Unlock it and try again."
-                )
-                .into(),
-                CredentialStoreProblem::Refused => format!(
-                    "The system keychain did not hand back the secret for `{connection}`. If a \
-                     prompt appeared, it may have been declined."
-                )
-                .into(),
-                CredentialStoreProblem::Absent => {
-                    "This system has no credential store for caixonho to use, so credentials \
-                     entered here cannot be kept. Use a profile in ~/.aws instead."
-                        .into()
-                }
-            },
-            Error::Unexpected { .. } => "The call failed for an unrecognised reason.".into(),
-        };
-
+        let guidance = guidance_for(error);
         inline_message(
             IconName::TriangleAlert,
             SharedString::from(error.to_string()),
@@ -738,11 +798,22 @@ impl Render for CaixonhoApp {
                             .flex_1()
                             .min_w_0()
                             .child(
-                                div()
+                                v_flex()
                                     .flex_1()
                                     .min_h_0()
+                                    .gap(space::ROW)
                                     .p(space::WINDOW)
-                                    .child(self.body(cx)),
+                                    .children(self.connections_error.as_ref().map(|error| {
+                                        inline_message(
+                                            IconName::TriangleAlert,
+                                            "Saved connections could not be read",
+                                            guidance_for(error),
+                                            cx.theme().warning,
+                                            div(),
+                                            cx,
+                                        )
+                                    }))
+                                    .child(div().flex_1().min_h_0().child(self.body(cx))),
                             )
                             .child(
                                 StatusBar::new().child(
