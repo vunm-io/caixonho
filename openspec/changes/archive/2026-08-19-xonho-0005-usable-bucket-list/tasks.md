@@ -153,7 +153,7 @@ Two things section 5 left for this section, discovered while building it:
 - [x] 8.2 [dispatch: main] CI green on `windows-latest` and `macos-latest`.
       - Run 32244593808 (2026-08-19) on `7728c52`: rustfmt 12s, macOS 2m8s,
         Windows 3m30s, all green.
-- [ ] 8.3 [dispatch: main] Live check on the development account: regions
+- [x] 8.3 [dispatch: main] Live check on the development account: regions
       populated and filterable, probes visible as they resolve, and a bucket the
       credentials cannot enter presented as such with its IAM action named.
       Record what was exercised here.
@@ -164,11 +164,19 @@ Two things section 5 left for this section, discovered while building it:
         request the probe makes, `ListObjectsV2` with one key, was run against a
         real bucket and answered with no keys, so it is as cheap and as harmless
         as claimed.
-      - **Still open, and it needs the window:** that regions filter as
-        selected, that a row visibly settles from being probed to its answer,
-        and that a bucket the credentials cannot enter reads as such with
-        `s3:ListBucket` named. None of these can be verified from a shell, and
-        nothing should be ticked on the strength of the unit tests alone.
+      - **Exercised in the window 2026-08-19**, once `XONHO-0009` made the
+        table visible. Regions are populated for every bucket — the defect this
+        change exists to fix, gone on screen and not only in a shell. Probing
+        settles: the access column ends empty on an account whose buckets can
+        all be entered, and an unprobed row renders an em dash, so an empty
+        column *is* the evidence that probes ran and resolved.
+      - **Two parts could not be exercised, and are carried forward rather than
+        assumed.** Narrowing by region was not tried on screen. And no bucket on
+        this account refuses a listing, so the refused badge and its IAM action
+        have never been seen live — the account-level denial on the other
+        profile exercises the failure panel, which is a different path. Both
+        want the MinIO rig the brief asks for at M1: a rig can produce a bucket
+        that refuses on demand, which no real account of ours does.
 - [x] 8.4 [dispatch: main] Bring the reader-facing docs up to what this change
       shipped: the README's status and capability list, and the architecture
       note where the capability model is described.
