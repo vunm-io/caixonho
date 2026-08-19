@@ -43,19 +43,27 @@ Alternative considered: a `caixonho-gui::theme` module exposing colour
 constants. It reads simpler for one theme and blocks every later one, including
 the light/dark pair the toolkit gives away.
 
-### Spacing and shadow are theme tokens too, not a local module
+### What the theme owns, and what the app owns
 
-This section originally planned a `tokens.rs` holding the spacing scale and the
-shadows, on the assumption that the toolkit's theme carried only colour and
-radius. It carries more than that: `SemanticThemeConfig` has `spacing`
-(xxs…xxl), `typography`, `radius` and `shadow`, where each shadow is a
-`Vec<BoxShadow>` — so a tinted shadow is declared in the theme document rather
-than constructed in code, and `Theme::apply_semantic_config` installs the set.
+Read out of `gpui-component` rather than assumed, after one wrong guess in each
+direction:
 
-So the spacing scale and the three shadows go in the theme document with the
-colours, and components read them through `cx.theme().semantic_tokens()`. A
-local module survives only for what the schema genuinely lacks — the icon-tile
-sizes — and shadows nothing the theme already provides.
+- **The theme owns colour, radius and typography.** A theme document names them
+  and the toolkit applies them. Colours may be palette entries by name, so
+  `violet-600` is written as itself, and every field is optional — a document
+  overrides what it names and inherits the rest.
+- **The app owns spacing and shadow.** `Theme::apply_semantic_config` resolves a
+  semantic configuration and *returns* the token set; its own documentation
+  calls the result a snapshot "for application-owned UI", and
+  `apply_semantic_tokens` writes back only colour, radius, typography, and a
+  flag for whether shadows exist at all. So the app resolves the configuration
+  once at startup and holds the result.
+- **Icon-tile sizes are app-only.** The schema has no notion of them.
+
+The shadows are built per element rather than taken whole from a token, because
+the rule is that a shadow is tinted with the colour of the thing casting it — a
+single global shadow can only be one colour. What the scale fixes is the blur,
+the offset and the opacity; the colour comes from the element.
 
 ### The status vocabulary is a function of the state, in one place
 
