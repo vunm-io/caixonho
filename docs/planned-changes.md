@@ -16,7 +16,7 @@ branch nobody can land.
 | Change | Scope | Brief | Milestone |
 |---|---|---|---|
 | `XONHO-0006` | Opening a bucket and browsing its objects as folders (prefix navigation), including reaching a bucket by name | §4.2 | M1 |
-| `XONHO-0004` | Static credentials entered in the app and stored in the OS keychain, and session lifetime | §4.1 | M1 |
+| `XONHO-0004` | Credentials the user enters, the OS keychain, in-app SSO sign-in and inline re-login | §4.1 | M1 |
 | `XONHO-0007` | Downloading objects to disk | §4.4 | M2 |
 | `XONHO-0008` | Previewing text and images without a full download (ranged GET) | §4.5 `[S]` | M3 |
 
@@ -25,26 +25,70 @@ asking for the first N KB instead of the whole object.
 
 ## Order
 
-**0005 (in flight) → 0006 → 0004 → 0007 → 0008.**
+**0009 → 0004 → 0006 → 0007 → 0008.**
 
-Browsing comes before credential entry because a bucket list alone is a dead
-end: the app can name an account's buckets and then do nothing with them, and
-opening objects is what a person launches an S3 client to do. `XONHO-0006` also
-carries reaching a bucket by name, which makes a credential scoped to a single
-bucket usable at all — a shape this project has already met. It waits for
-`XONHO-0005` only because a name box needs a bucket view to land in.
+Credential entry moved ahead of browsing on 2026-08-19, reversing the earlier
+decision. The argument for browsing first was that a bucket list alone is a dead
+end and opening objects is why anyone launches an S3 client. That is still true,
+and it is still the argument for putting `XONHO-0006` immediately after.
 
-Credential entry was the earlier default, on the argument that it is the only
-one of these that makes the app usable without the AWS CLI. That argument is
-about a user who does not have one; it buys nothing for the person using the app
-today, whose working profiles already exist in `~/.aws`. It is required before
-anyone else can use this, and it keeps its place ahead of the M2 work.
+What changed is the standing of the counter-argument. Credential entry was
+treated as work for a hypothetical future user, on the grounds that the person
+using the app today already has working profiles in `~/.aws`. Those profiles
+reach a password manager through an external process, which is one developer's
+test scaffolding — it is not how anyone else will hold credentials, and it is
+not what the brief describes. Ordering around it meant ordering around a
+temporary local arrangement, and it showed: the first thing anyone notices about
+the app is a wait that only that arrangement produces.
 
-`XONHO-0004` also inherits one item from `XONHO-0003`: confirming the
-expired-session path. It was left unverified there because no expired SSO token
-was available and clearing one on the development machine revokes every other
-profile's token as well. Session lifetime is `0004`'s subject, and the check
-belongs in a test rather than a manual step.
+`XONHO-0004` is also where a connection stops pretending. Today a profile whose
+sign-in fails is offered like any other and explains itself only after seven
+seconds of trying. With sign-in in the app, a connection that cannot authenticate
+is simply unavailable, which is both truthful and instant.
+
+`XONHO-0004` inherits one item from `XONHO-0003`: confirming the expired-session
+path. That path is now half-closed — the classifier names an unusable session as
+of 2026-08-19 — and what remains is offering the re-login, which is `0004`'s
+subject.
+
+## Connecting is something the user asks for
+
+Recorded 2026-08-19, after the owner watched the app take seven seconds to show
+anything and asked what it was doing.
+
+The app opens, picks a profile on its own, and resolves that profile's
+credentials immediately — the code says so: *"Open on the default profile when
+there is one, so the first screen shows data rather than an instruction."* That
+sentence is the defect. Nobody asked for a listing yet, and on a machine whose
+credentials come from an external process the wait is **7 seconds, or 26 on the
+first run of the day**, measured. The window looks frozen doing work nobody
+requested.
+
+**Startup should show the connections and stop there.** Nothing resolves until a
+connection is chosen. This removes the wait rather than hiding it, and it is a
+smaller change than the caching that was briefly planned to paper over it.
+
+### And the credential story was upside down
+
+Credentials on the development machine come from a password manager through
+`credential_process`. That is **test scaffolding for one developer**, not the
+product. The brief has said so from the start, and all three of these are `[M]`
+in §4.1 with none of them built:
+
+- **Static credentials typed into the app**, stored in the OS keychain. This is
+  the answer to "why is it slow" for anyone who is not that one developer — there
+  is no external process to wait for.
+- **In-app SSO sign-in** via the OIDC device flow, "so the AWS CLI is not a hard
+  dependency".
+- **Inline re-login when a token is spent.** As of today the app *detects* an
+  unusable session and names it; it still offers nothing to do about it. A
+  connection that cannot sign in is simply a connection that is not available,
+  and should read that way rather than being listed as though it worked.
+
+`XONHO-0004` therefore covers entry, the keychain, sign-in and re-login, and
+moves ahead of the caching idea. Caching what an external credential process
+returned is still worth doing for profile switching, but it optimises a path the
+product does not depend on, so it waits.
 
 ## Two additions, and the evidence for them
 
