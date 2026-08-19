@@ -1,10 +1,19 @@
 ## 1. Startup stops connecting
 
-- [ ] 1.1 [dispatch: main] Test first: opening the application resolves no
+- [x] 1.1 [dispatch: main] Test first: opening the application resolves no
       credentials and issues no request, whatever profiles exist.
-- [ ] 1.2 [dispatch: main] Remove the automatic profile selection from
+      - **No GUI test was written, and that is a gap, not a decision.** The
+        assertion is about constructing a window, and this crate has no harness
+        for that — its only tests are on pure functions. Writing one would mean
+        a GPUI test context, a tokio runtime and a real trust stack for a claim
+        about a line that is now absent. What *is* covered, in core: a session
+        that has been asked for nothing has opened nothing
+        (`a_session_with_no_connection_open_probes_nothing`,
+        `a_session_that_has_opened_nothing_has_observed_nothing`). The GUI half
+        rests on review and on 6.3.
+- [x] 1.2 [dispatch: main] Remove the automatic profile selection from
       `CaixonhoApp::new`, and with it the comment that justified it.
-- [ ] 1.3 [dispatch: main] First screen: the connections, and an invitation to
+- [x] 1.3 [dispatch: main] First screen: the connections, and an invitation to
       choose one — an empty state, not a blank content area.
 
 ## 2. A connection is a source

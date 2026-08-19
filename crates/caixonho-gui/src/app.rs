@@ -138,7 +138,7 @@ impl CaixonhoApp {
         })
         .detach();
 
-        let mut app = Self {
+        let app = Self {
             _runtime: runtime,
             session,
             startup_error,
@@ -154,13 +154,10 @@ impl CaixonhoApp {
             region_select,
         };
 
-        // Open on the default profile when there is one, so the first screen
-        // shows data rather than an instruction.
-        if let Some(index) = app.profiles.iter().position(|profile| profile.is_default) {
-            app.select_profile(index, window, cx);
-        } else if !app.profiles.is_empty() {
-            app.select_profile(0, window, cx);
-        }
+        // Nothing is contacted until a connection is chosen. Opening on a
+        // profile of our own choosing used to spare the first screen an
+        // instruction; it bought that with seconds of a window that looks
+        // frozen, resolving credentials for work nobody had asked for.
         app
     }
 
@@ -374,9 +371,20 @@ impl CaixonhoApp {
         if self.profiles.is_empty() {
             return empty_state(
                 IconName::Inbox,
-                "No AWS profiles found.",
-                "caixonho reads ~/.aws/config and ~/.aws/credentials (or the files named by \
-                 AWS_CONFIG_FILE and AWS_SHARED_CREDENTIALS_FILE). Add a profile there to begin.",
+                "No connections yet.",
+                "caixonho reads the profiles in ~/.aws/config and ~/.aws/credentials (or the \
+                 files named by AWS_CONFIG_FILE and AWS_SHARED_CREDENTIALS_FILE). Add one there \
+                 to begin.",
+                cx,
+            );
+        }
+        if self.active_profile.is_none() {
+            // The first screen states what has happened, which is nothing.
+            return empty_state(
+                IconName::CircleUser,
+                "Choose a connection.",
+                "Nothing has been contacted yet. Pick a connection on the left and caixonho will \
+                 sign in to it and list its buckets.",
                 cx,
             );
         }
