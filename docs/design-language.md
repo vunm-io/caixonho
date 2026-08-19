@@ -55,6 +55,58 @@ element and the cheapest way to make a list read as designed rather than dumped.
 caption in the muted colour, a section header at 13pt uppercase with 0.5pt
 tracking, numbers in the monospaced face so columns line up.
 
+## Colour
+
+The reference's accent is Tailwind's violet ramp, and `gpui-component` already
+carries that ramp in its palette — so the colours are copied exactly rather than
+matched by eye.
+
+| Role | Value | Palette entry |
+|---|---|---|
+| Accent, light theme | `#7C3AED` | `violet-600` |
+| Accent, dark theme | `#A78BFA` | `violet-400` |
+| Accent deep — gradient terminus, pressed states | `#5B21B6` | `violet-800` |
+| Accent soft — badge and pill backgrounds | the accent at 12–18% opacity | derived |
+
+The reference's light accent is `rgb(0.486, 0.227, 0.929)` and its deep accent
+is `rgb(91, 33, 182)`; those are `violet-600` and `violet-800` to the digit.
+
+The accent is loaded as a theme, not written into components:
+`ThemeRegistry::load_themes_from_str` takes a theme document, and the app ships
+one. A component asks the theme for `accent`, never for violet — which is what
+keeps a second theme, or a light/dark pair, from becoming a search-and-replace.
+
+**One accent, used sparingly.** In the reference it marks the active sidebar
+row, the primary action, and the encrypted badge — nothing else. Semantic
+meaning stays with the semantic tokens the theme already has: `danger` for a
+refused bucket, `warning`, `success`, `info`. An accent that appears on
+everything stops meaning anything.
+
+## Shadow
+
+This is the detail that separates the reference from a flat mockup, and it is
+copyable: GPUI's `BoxShadow` takes a colour, an offset, a blur radius, a spread
+and an inset flag, so a tinted shadow is a first-class thing rather than
+something to fake.
+
+**Shadows are tinted with the element's own colour, never black.** That single
+rule is most of the effect. A violet tile casts a violet shadow at low opacity;
+a neutral card casts a neutral one.
+
+| Use | Reference | Starting values here |
+|---|---|---|
+| Chip, small tile | own colour 18%, y 2 | blur 8, y 2, spread 0 |
+| Raised control, primary tile | accent 25%, y 3 | blur 12, y 3, spread 0 |
+| Hero surface | own colour 35%, y 14 | blur 36, y 14, spread 0 |
+
+The blur figures are doubled from the reference's, because SwiftUI's shadow
+radius and a CSS-style blur radius are not the same quantity — SwiftUI's is
+roughly half. Treat them as a starting point to be trimmed by eye against a
+screenshot, not as a conversion that is settled.
+
+Two shadows already exist in the toolkit and should be reused rather than
+reinvented: `popover_shadow` and `toast_shadow` in `gpui-component`.
+
 ## The shell
 
 ```
