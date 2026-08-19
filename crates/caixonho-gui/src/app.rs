@@ -1,17 +1,18 @@
 use caixonho_core::{
-    ActiveOutcome, Bucket, ConfigPaths, ConnectionId, CredentialStoreProblem, Error, HttpStack,
-    Outcome, Profile, RegionChoice, Scope, Session, SessionProblem, TaggedOutcome, region_choices,
+    ActiveOutcome, Bucket, ConfigPaths, ConnectionId, ConnectionSource, CredentialStoreProblem,
+    Error, HttpStack, Outcome, Profile, RegionChoice, Scope, Session, SessionProblem,
+    StoredCredential, TaggedOutcome, region_choices,
 };
 use gpui::{
-    AppContext, Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled, Window,
-    div, px,
+    App, AppContext, Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled,
+    Window, div, px,
 };
 use gpui_component::{
     ActiveTheme, IconName, IndexPath, Side, TitleBar,
-    button::Button,
+    button::{Button, ButtonVariants},
     h_flex,
     select::{SearchableVec, Select, SelectEvent},
-    sidebar::{Sidebar, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem},
+    sidebar::{Sidebar, SidebarFooter, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem},
     status_bar::StatusBar,
     table::{DataTable, TableState},
     v_flex,
@@ -21,6 +22,7 @@ use crate::components::{empty_state, inline_message, skeleton_rows, status_badge
 use crate::scroll::{self, ScrollAccel};
 use crate::theme::space;
 use crate::views::buckets::{BucketsDelegate, RegionSelect, region_label};
+use crate::views::credential_form::CredentialForm;
 
 /// Why a connection cannot be used at all, if that is what happened.
 ///
@@ -66,6 +68,12 @@ pub(crate) struct CaixonhoApp {
     table: Entity<TableState<BucketsDelegate>>,
     accel: Entity<ScrollAccel>,
     inbox: flume::Sender<TaggedOutcome>,
+    /// The connections this application holds credentials for. Kept beside the
+    /// discovered profiles rather than in a list of their own: to someone
+    /// connecting, both are just somewhere to connect.
+    stored: Vec<StoredCredential>,
+    /// Open while a credential is being entered.
+    form: Option<CredentialForm>,
     /// Connections that could not authenticate, and the short reason each
     /// gave. A connection that cannot sign in is not a connection, so it is
     /// marked where it is chosen rather than only where its listing would have
@@ -182,6 +190,8 @@ impl CaixonhoApp {
             table,
             accel,
             inbox,
+            stored: Vec::new(),
+            form: None,
             unavailable: std::collections::HashMap::new(),
             region: RegionChoice::All,
             region_options: vec![RegionChoice::All],
@@ -197,7 +207,7 @@ impl CaixonhoApp {
 
     /// Switch to a profile and start listing it.
     fn select_profile(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(profile) = self.profiles.get(index).map(|profile| profile.name.clone()) else {
+        let Some((_, source)) = self.connections().into_iter().nth(index) else {
             return;
         };
         self.active_profile = Some(index);
@@ -207,7 +217,7 @@ impl CaixonhoApp {
         // new one's arrives.
         self.outcome.switch_to(id);
         self.set_rows(Vec::new(), window, cx);
-        self.issue(id, profile, cx);
+        self.issue(id, source, cx);
     }
 
     /// Try the active profile again on the same connection.
@@ -215,18 +225,18 @@ impl CaixonhoApp {
         let (Some(index), id) = (self.active_profile, self.outcome.active()) else {
             return;
         };
-        let Some(profile) = self.profiles.get(index).map(|profile| profile.name.clone()) else {
+        let Some((_, source)) = self.connections().into_iter().nth(index) else {
             return;
         };
         self.outcome.switch_to(id);
-        self.issue(id, profile, cx);
+        self.issue(id, source, cx);
     }
 
     /// Ask core for a listing; the answer arrives through the inbox.
-    fn issue(&mut self, id: ConnectionId, profile: String, cx: &mut Context<Self>) {
+    fn issue(&mut self, id: ConnectionId, source: ConnectionSource, cx: &mut Context<Self>) {
         if let Some(session) = self.session.clone() {
             let inbox = self.inbox.clone();
-            session.spawn_listing(id, profile, move |tagged| {
+            session.spawn_listing(id, source, move |tagged| {
                 let _ = inbox.send(tagged);
             });
         }
@@ -259,6 +269,89 @@ impl CaixonhoApp {
             Outcome::Loading => {}
         }
         cx.notify();
+    }
+
+    /// Everything there is to connect to, in the order the sidebar shows it.
+    ///
+    /// Discovered profiles first, then the credentials this application holds.
+    /// One list because to someone connecting there is one question — where
+    /// do I want to connect — and where the secret lives is an answer to a
+    /// different one.
+    fn connections(&self) -> Vec<(SharedString, ConnectionSource)> {
+        let profiles = self.profiles.iter().map(|profile| {
+            let label = if profile.is_default {
+                format!("{} (default)", profile.name)
+            } else {
+                profile.name.clone()
+            };
+            (
+                SharedString::from(label),
+                ConnectionSource::from(profile.name.clone()),
+            )
+        });
+        let stored = self.stored.iter().map(|credential| {
+            (
+                SharedString::from(credential.name().to_owned()),
+                ConnectionSource::Stored(credential.clone()),
+            )
+        });
+        profiles.chain(stored).collect()
+    }
+
+    /// Save what was typed, if it is enough to connect with.
+    fn save_credential(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(form) = &mut self.form else {
+            return;
+        };
+        if form.saving {
+            return; // A second click while the store is being written.
+        }
+
+        let entered = form.entered(cx);
+        let Some(form) = &mut self.form else {
+            return;
+        };
+        let (credential, secret) = match entered {
+            Ok(entered) => entered,
+            Err(problem) => {
+                form.problem = Some(problem);
+                cx.notify();
+                return;
+            }
+        };
+
+        form.problem = None;
+        form.saving = true;
+        cx.notify();
+
+        let Some(session) = self.session.clone() else {
+            return;
+        };
+        let (saved, arrivals) = flume::bounded::<Result<StoredCredential, Error>>(1);
+        session.spawn_save_credential(credential, secret, move |result| {
+            let _ = saved.send(result);
+        });
+        cx.spawn(async move |this, cx| {
+            let Ok(result) = arrivals.recv_async().await else {
+                return;
+            };
+            let _ = this.update(cx, |app, cx| {
+                match result {
+                    Ok(credential) => {
+                        app.stored.push(credential);
+                        app.form = None;
+                    }
+                    Err(error) => {
+                        if let Some(form) = &mut app.form {
+                            form.saving = false;
+                            form.problem = Some(error.to_string().into());
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Take a new listing, and re-offer the region choices it supports.
@@ -346,36 +439,46 @@ impl CaixonhoApp {
                 SidebarHeader::new()
                     .child(div().font_weight(gpui::FontWeight::BOLD).child("caixonho")),
             )
+            .footer(
+                SidebarFooter::new().child(
+                    Button::new("add-connection")
+                        .label("Add a connection")
+                        .icon(IconName::Plus)
+                        .ghost()
+                        .w_full()
+                        .on_click(cx.listener(|app, _, window, cx| {
+                            app.form = Some(CredentialForm::new(window, cx));
+                            cx.notify();
+                        })),
+                ),
+            )
             .child(
-                SidebarGroup::new("Connections").child(SidebarMenu::new().children(
-                    self.profiles.iter().enumerate().map(|(index, profile)| {
-                        let label = if profile.is_default {
-                            format!("{} (default)", profile.name)
-                        } else {
-                            profile.name.clone()
-                        };
-                        let item = SidebarMenuItem::new(label)
-                            .icon(IconName::CircleUser)
-                            .active(Some(index) == active)
-                            .on_click(cx.listener(move |app, _, window, cx| {
-                                app.select_profile(index, window, cx);
-                            }));
-                        // Marked, not hidden, and not removed: a connection
-                        // that cannot sign in is still a fact about this
-                        // machine, and hiding it would leave the user
-                        // wondering where it went.
-                        match self.unavailable.get(&index).cloned() {
-                            None => item,
-                            Some(reason) => item.suffix(move |_, cx| {
-                                status_badge(
-                                    IconName::TriangleAlert,
-                                    reason.clone(),
-                                    cx.theme().warning,
-                                )
-                            }),
-                        }
-                    }),
-                )),
+                SidebarGroup::new("Connections").child(
+                    SidebarMenu::new().children(self.connections().into_iter().enumerate().map(
+                        |(index, (label, _))| {
+                            let item = SidebarMenuItem::new(label)
+                                .icon(IconName::CircleUser)
+                                .active(Some(index) == active)
+                                .on_click(cx.listener(move |app, _, window, cx| {
+                                    app.select_profile(index, window, cx);
+                                }));
+                            // Marked, not hidden, and not removed: a connection
+                            // that cannot sign in is still a fact about this
+                            // machine, and hiding it would leave the user
+                            // wondering where it went.
+                            match self.unavailable.get(&index).cloned() {
+                                None => item,
+                                Some(reason) => item.suffix(move |_, cx| {
+                                    status_badge(
+                                        IconName::TriangleAlert,
+                                        reason.clone(),
+                                        cx.theme().warning,
+                                    )
+                                }),
+                            }
+                        },
+                    )),
+                ),
             )
     }
 
@@ -449,7 +552,23 @@ impl CaixonhoApp {
                 .child(self.failure_panel(error, cx))
                 .into_any_element();
         }
-        if self.profiles.is_empty() {
+        if let Some(form) = &self.form {
+            let this = cx.entity().downgrade();
+            let save = {
+                let this = this.clone();
+                move |window: &mut Window, cx: &mut App| {
+                    let _ = this.update(cx, |app, cx| app.save_credential(window, cx));
+                }
+            };
+            let cancel = move |_: &mut Window, cx: &mut App| {
+                let _ = this.update(cx, |app, cx| {
+                    app.form = None;
+                    cx.notify();
+                });
+            };
+            return form.render(save, cancel, cx);
+        }
+        if self.connections().is_empty() {
             return empty_state(
                 IconName::Inbox,
                 "No connections yet.",

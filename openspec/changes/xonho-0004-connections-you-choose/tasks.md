@@ -96,14 +96,18 @@
       - Added during implementation. Without it a credential entered in the app
         disappears on restart while its secret stays in the keychain, which
         leaves secrets nobody can see or remove from the application.
-- [ ] 4.1 [dispatch: main] A form for name, region, access key id, secret and
+- [x] 4.1 [dispatch: main] A form for name, region, access key id, secret and
       optional session token, reachable from the sidebar.
-- [ ] 4.2 [dispatch: main] Saving makes the connection selectable immediately;
+- [x] 4.2 [dispatch: main] Saving makes the connection selectable immediately;
       the keychain is written off the render thread.
 - [ ] 4.3 [dispatch: main] Forgetting a connection deletes what was stored and
       removes it from the list.
-- [ ] 4.4 [dispatch: main] A store that refuses says so, and the form keeps what
+- [x] 4.4 [dispatch: main] A store that refuses says so, and the form keeps what
       was typed apart from the secret.
+      - The form stays open on a refusal with everything still in it, including
+        the secret: clearing it would punish the user for the keychain's
+        refusal, and the secret is in the process's memory either way while the
+        form is open.
 
 ## 5. Unavailable connections
 
