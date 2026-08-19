@@ -19,7 +19,7 @@ targets — Windows is the primary daily driver and must never be the lagging po
 2. **Nothing that touches the network runs on the render thread.** AWS calls
    live on a tokio runtime on background threads; results cross to the UI over
    channels; UI state updates happen on GPUI's executor. The bridge pattern is
-   demonstrated in `caixonho-gui/src/main.rs` (M0 spike).
+   demonstrated in `caixonho-gui/src/app.rs`.
 3. **Dependency pins are deliberate.** The UI stack tracks git (ADR-0001):
    `gpui-component` is pinned by `rev`, the zed commit is frozen by
    `Cargo.lock`, and `gpui`/`gpui_platform` specs must stay byte-identical to
