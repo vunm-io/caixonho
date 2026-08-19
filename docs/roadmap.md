@@ -29,7 +29,8 @@ that each own a subsystem and land on their own:
 | Change | Delivers | State |
 |---|---|---|
 | `XONHO-0003` | Connecting to an account, listing its buckets, telling failure causes apart | landed |
-| `XONHO-0005` | Regions on the list, filtering by region, and the first working piece of permission awareness | in progress |
+| `XONHO-0005` | Regions on the list, filtering by region, and the first working piece of permission awareness | landed |
+| `XONHO-0009` | The app shell, the palette, and loading, empty and error states that were improvised before | in progress |
 | `XONHO-0006` | Opening a bucket and browsing objects by prefix, including reaching a bucket by name when the account listing is denied | next |
 | `XONHO-0004` | Entering credentials in the app, storing them in the OS keychain, and session lifetime | after browsing |
 

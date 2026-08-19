@@ -50,10 +50,11 @@ tasks never get a change directory — so this is the index:
 | `XONHO-0002` | `scripts/mac-app.sh`, so the binary opens like a real macOS app | commit history |
 | `XONHO-0003` | Connecting to an account and listing its buckets, with failure causes told apart | `openspec/changes/archive/` |
 | `XONHO-0004` | Entering credentials in the app, the OS keychain, session lifetime | planned |
-| `XONHO-0005` | A bucket list you can act on: regions, filtering, observed capability | `openspec/changes/` |
+| `XONHO-0005` | A bucket list you can act on: regions, filtering, observed capability | `openspec/changes/archive/` |
 | `XONHO-0006` | Opening a bucket and browsing objects by prefix | planned |
 | `XONHO-0007` | Downloading objects | planned |
 | `XONHO-0008` | Previewing text and images with ranged GETs | planned |
+| `XONHO-0009` | The app shell, the palette and the four states | `openspec/changes/` |
 
 Two slugs appear in the history and are retired. `THUNG-0001` and `THUNG-0002`
 were written before the project was renamed; they are never reused, and the

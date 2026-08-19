@@ -17,7 +17,8 @@ Working today:
   the list to one region.
 - Says which buckets your credentials can actually open, and names the IAM action
   a refused one would need. A bucket nobody has asked about yet says so, rather
-  than guessing.
+  than guessing — and one still being checked says that, which is a different
+  thing again.
 - Tells failure causes apart — an expired session, rejected credentials, a
   network failure and a trust failure are each reported as themselves, with the
   action that fixes them, and none of them is ever reported as "access denied".
