@@ -43,4 +43,4 @@ pub use profiles::{ConfigPaths, discover, sso_session};
 pub use session::Session;
 pub use store::ObjectStore;
 pub use tls::HttpStack;
-pub use types::{Bucket, ConnectionId, Profile, Region};
+pub use types::{Bucket, ConnectionId, Profile, Region, RegionChoice, region_choices};
