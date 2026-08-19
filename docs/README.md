@@ -12,6 +12,7 @@ go stale at different rates.
 | [`../openspec/changes/`](../openspec/changes/) | The change being built right now, and its finished siblings under `archive/` | Proposal, design, delta specs and task list per change |
 | [`architecture.md`](architecture.md) | How the pieces fit at runtime, with diagrams | Explains the invariants; the invariants themselves are in `AGENTS.md` |
 | [`roadmap.md`](roadmap.md) | What is built, what is next, and what this project will not do | Direction, not commitment on dates |
+| [`design-language.md`](design-language.md) | What the interface should look like and why, and the vocabulary it is built from | Binding on UI work — a screen that departs from it is a bug or an amendment |
 
 The brief and the specs overlap on purpose and must not be read as the same
 thing: the brief says what is wanted, the specs say what is owed. A feature in
