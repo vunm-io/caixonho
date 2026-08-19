@@ -169,3 +169,9 @@ Two things section 5 left for this section, discovered while building it:
         and that a bucket the credentials cannot enter reads as such with
         `s3:ListBucket` named. None of these can be verified from a shell, and
         nothing should be ticked on the strength of the unit tests alone.
+- [x] 8.4 [dispatch: main] Bring the reader-facing docs up to what this change
+      shipped: the README's status and capability list, and the architecture
+      note where the capability model is described.
+      - Done under `OPS-0027`, which also fixed the older drift this exposed —
+        the README still described the retired M0 spike — and added the standing
+        rule to `AGENTS.md` so a change carries its own documentation.

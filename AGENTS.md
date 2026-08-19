@@ -59,6 +59,14 @@ targets — Windows is the primary daily driver and must never be the lagging po
   Change directory names are lowercase and carry the task ID
   (`xonho-0003-...`). The CLI is installed automatically in web sessions by
   `.claude/hooks/session-start.sh`.
+- **The reader-facing docs are part of the change, not paperwork after it.** A
+  change that alters what the app does for a user updates `README.md` (the
+  status paragraph and what works today) and, where the shape of the system
+  moved, `docs/architecture.md` and `docs/roadmap.md` — in the same change, with
+  a task for it in `tasks.md`. This rule exists because it was broken: the repo
+  moved to M1 and the README went on describing the retired M0 spike, so the
+  first thing a visitor read was false and the workflow had nothing that would
+  ever have caught it.
 - Verify external facts (crate versions, AWS behavior) against current sources
   before shipping an identifier — the UI stack moves fast; do not trust this
   file or the brief over `cargo` and upstream docs, and say so when they drift.
