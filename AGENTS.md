@@ -37,12 +37,13 @@ targets — Windows is the primary daily driver and must never be the lagging po
 ## Conventions
 
 - Everything in the repo is **English**: code, comments, docs, commits, issues.
-- Conventional Commits with a task ID in the scope: `feat(XONHO-0002): ...`.
-  Small housekeeping may use the owner's global `OPS-NNNN` sequence. The
-  original slug `THUNG` (from the launch name *caithung*) is frozen: existing
-  `THUNG-0001`/`THUNG-0002` identifiers keep their IDs and in-flight work
-  closes under them; every new task uses `XONHO-NNNN` (first: `XONHO-0001`,
-  the rename itself).
+- Conventional Commits with a task ID in the scope: `feat(XONHO-0003): ...`.
+  Small housekeeping may use the owner's global `OPS-NNNN` sequence — prefer it
+  for anything that is not project work, so the project's own sequence stays
+  meaningful. The launch-name slug `THUNG` is retired: `THUNG-0001` and
+  `THUNG-0002` remain in commit history and are never reused, but no work
+  continues under them — the in-flight change was renumbered to `XONHO-0003`
+  rather than closing under its old ID. Every task uses `XONHO-NNNN`.
 - No AI co-author trailers on commits (`Co-Authored-By: Claude ...`,
   `Generated with ...` are not used in this repo). Optional light provenance
   trailers `AI-Assisted-By:` / `AI-Reviewed-By:` are allowed when material.
@@ -50,9 +51,9 @@ targets — Windows is the primary daily driver and must never be the lagging po
 - ADR for every irreversible choice, in `docs/adr/NNNN-title.md`.
 - Change management from M1 onward: **OpenSpec** (`openspec/`, `/opsx:*`
   commands, spec-driven schema) — explore → propose → specify → apply → archive.
-  Change directory names are lowercase and carry the task ID (`xonho-0003-...`;
-  the pre-rename `thung-0002-...` keeps its frozen name). The CLI is installed
-  automatically in web sessions by `.claude/hooks/session-start.sh`.
+  Change directory names are lowercase and carry the task ID
+  (`xonho-0003-...`). The CLI is installed automatically in web sessions by
+  `.claude/hooks/session-start.sh`.
 - Verify external facts (crate versions, AWS behavior) against current sources
   before shipping an identifier — the UI stack moves fast; do not trust this
   file or the brief over `cargo` and upstream docs, and say so when they drift.

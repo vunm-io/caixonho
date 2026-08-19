@@ -1,5 +1,5 @@
 //! The crate's error type: one variant per cause a user actually needs to
-//! tell apart (`openspec` change `thung-0002`, `connections` spec).
+//! tell apart (`openspec` change `xonho-0003`, `connections` spec).
 //!
 //! Two rules bind everything here:
 //!

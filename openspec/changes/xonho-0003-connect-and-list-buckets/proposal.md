@@ -1,3 +1,8 @@
+> Opened as `THUNG-0002` before the project was renamed from *caithung* to
+> *caixonho*, and renumbered to `XONHO-0003` on 2026-08-19. Commits made
+> before the renumber carry the `THUNG-0002` scope; everything after carries
+> `XONHO-0003`.
+
 ## Why
 
 M0 proved the UI stack can render 100k rows at 60fps, but every row it shows is
