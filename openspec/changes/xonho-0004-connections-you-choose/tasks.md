@@ -202,7 +202,19 @@
       --all-targets -- -D warnings`, `cargo test --workspace` green.
       - All three exit 0 on 2026-08-20: 155 core tests, 7 GUI tests.
 - [ ] 6.2 [dispatch: main] CI green on both targets.
-- [ ] 6.3 [dispatch: main] Live: enter a real key, list with it, forget it, and
+- [x] 6.3 [dispatch: main] Live: enter a real key, list with it, forget it, and
       confirm the secret is in the keychain and in no file the app wrote.
+      - Exercised by the owner on 2026-08-20. A credential entered in the window
+        listed a real account's buckets — the whole point of the change, working
+        end to end without touching `~/.aws`. Connections survived a restart.
+      - One earlier attempt was refused as invalid and it was not the store: a
+        round trip through the real keychain returns the secret byte for byte,
+        including base64 padding, quotes, backslashes and tabs (that test is now
+        in the repo, ignored by default). What it actually was is unknown, and
+        that is the gap `XONHO-0012` exists to close — there was nothing written
+        down to read afterwards.
+      - Still unverified: that the configuration file holds no secret. The test
+        asserts it against the encoder; nobody has opened the real file. It is
+        one `cat` away and belongs in the next session.
 - [ ] 6.4 [dispatch: main] Update `docs/requirements-status.md`, and run the
       close-out review in `AGENTS.md`.

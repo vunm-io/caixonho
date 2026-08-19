@@ -23,7 +23,7 @@ gap is named. **none** — not started.
 | Detect expired/invalid tokens and offer re-login inline | partial | Detecting landed 2026-08-19, and a connection that cannot authenticate now reads as unavailable where it is chosen. The *offer* is still a sentence telling the user to run a command — `XONHO-0011` |
 | Static credentials in the OS keychain | done | `XONHO-0004`. Entered in the app, secret in the keychain, the rest in the platform's config location; a stored connection can be forgotten |
 | Named profiles, including `role_arn` + `source_profile` chains and `mfa_serial` prompting | partial | Profiles are discovered and chains resolve through the SDK. No MFA prompt |
-| Multiple simultaneous connections; switch profile **and region** live | partial | One connection at a time; choosing one is now an explicit act, which simultaneity will need. Switching region is not offered |
+| Multiple simultaneous connections; switch profile **and region** live | partial | One connection at a time; choosing one is an explicit act, which simultaneity will need. Switching region is not offered |
 | Region handling that follows `x-amz-bucket-region` instead of a misleading error | none | Probes use a client for the bucket's own region, but the listing path does not follow a redirect, and a wrong region is not even a distinct cause in the classifier |
 
 ## §4.2 Browsing — M1
@@ -51,6 +51,16 @@ gap is named. **none** — not started.
 | KMS denial distinguished from an S3 denial | none | No object reads yet |
 | Cache per `(profile, bucket, prefix)` with TTL | partial | Cached and invalidated on credential change; no TTL |
 | A list-only bucket stays visible | done | |
+
+## §7–8 Non-functional and security
+
+| Requirement | State | Notes |
+|---|---|---|
+| Crash handling without telemetry — a local file, with a way to attach it to an issue | partial | `XONHO-0012` lands the log and the path to it; the crash hook itself is not written |
+| Secrets redacted from all logs, asserted by a unit test | partial | Was vacuous while there were no logs. `XONHO-0012` makes it real |
+| No telemetry | done | There is no network path out of this application other than to the endpoint the user chose |
+| Dependencies audited in CI | none | The brief promises it; CI runs fmt, clippy and tests only |
+| One self-contained binary per platform | partial | It builds on both; there is no installer and nothing is signed |
 
 ## §4.4–4.6 — M2 and later
 
