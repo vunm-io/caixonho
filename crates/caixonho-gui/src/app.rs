@@ -19,9 +19,9 @@ use gpui_component::{
     v_flex,
 };
 
-use crate::components::{empty_state, inline_message, skeleton_rows};
+use crate::components::{empty_state, icon_tile, inline_message, skeleton_rows};
 use crate::scroll::{self, ScrollAccel};
-use crate::theme::space;
+use crate::theme::{space, tile};
 use crate::views::buckets::{BucketsDelegate, RegionSelect, region_label};
 use crate::views::credential_form::CredentialForm;
 
@@ -518,11 +518,13 @@ impl CaixonhoApp {
                     .enumerate()
                     .map(|(row, (name, region, access_key_id))| {
                         let confirming = self.confirming.as_deref() == Some(name.as_str());
-                        let for_click = name.clone();
+                        let for_remove = name.clone();
+                        let for_edit = name.clone();
                         h_flex()
                             .gap(space::ROW)
                             .items_center()
-                            .p(space::CARD)
+                            .px(space::CARD)
+                            .py(space::ROW)
                             .rounded(cx.theme().radius_lg)
                             .bg(cx.theme().popover)
                             .border_1()
@@ -531,6 +533,12 @@ impl CaixonhoApp {
                             } else {
                                 cx.theme().border
                             })
+                            .child(icon_tile(
+                                IconName::CircleUser,
+                                tile::SM,
+                                cx.theme().primary,
+                                false,
+                            ))
                             .child(
                                 v_flex()
                                     .flex_1()
@@ -542,40 +550,80 @@ impl CaixonhoApp {
                                             .text_xs()
                                             .text_color(cx.theme().muted_foreground)
                                             // The access key id is not a secret. The
-                                            // secret is in the keychain and is not
-                                            // shown here or anywhere else.
+                                            // secret is in the keychain, and is shown
+                                            // neither here nor anywhere else.
                                             .child(format!("{region} · {access_key_id}")),
                                     ),
                             )
                             .children(confirming.then(|| {
                                 div()
                                     .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
+                                    .text_color(cx.theme().danger)
                                     .child("This cannot be undone.")
                             }))
-                            .child(remove_button(row, confirming).on_click(cx.listener(
-                                move |app, _, window, cx| {
-                                    if app.confirming.as_deref() == Some(for_click.as_str()) {
-                                        app.confirming = None;
-                                        app.forget(for_click.clone(), window, cx);
-                                    } else {
-                                        app.confirming = Some(for_click.clone());
-                                    }
-                                    cx.notify();
-                                },
-                            )))
+                            .child(
+                                h_flex()
+                                    .gap(space::INLINE)
+                                    .flex_shrink_0()
+                                    .child(
+                                        Button::new(("edit", row))
+                                            .label("Edit")
+                                            .outline()
+                                            .on_click(cx.listener(move |app, _, window, cx| {
+                                                app.edit_connection(&for_edit, window, cx);
+                                            })),
+                                    )
+                                    .child(remove_button(row, confirming).on_click(cx.listener(
+                                        move |app, _, window, cx| {
+                                            if app.confirming.as_deref()
+                                                == Some(for_remove.as_str())
+                                            {
+                                                app.confirming = None;
+                                                app.forget(for_remove.clone(), window, cx);
+                                            } else {
+                                                app.confirming = Some(for_remove.clone());
+                                            }
+                                            cx.notify();
+                                        },
+                                    ))),
+                            )
                     }),
             )
             .child(
-                h_flex().child(Button::new("done-managing").label("Done").ghost().on_click(
-                    cx.listener(|app, _, _, cx| {
-                        app.managing = false;
-                        app.confirming = None;
-                        cx.notify();
-                    }),
-                )),
+                h_flex().child(
+                    Button::new("done-managing")
+                        .label("Done")
+                        .outline()
+                        .on_click(cx.listener(|app, _, _, cx| {
+                            app.managing = false;
+                            app.confirming = None;
+                            cx.notify();
+                        })),
+                ),
             )
             .into_any_element()
+    }
+
+    /// Open the form on an existing connection.
+    ///
+    /// Everything but the secret is filled in. The secret is not, and cannot
+    /// be: it is in the keychain and this application does not read secrets
+    /// back to show them. So editing asks for it again — which is honest, and
+    /// is also the thing to improve once core can rewrite a connection's
+    /// configuration without touching what the store holds.
+    fn edit_connection(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(existing) = self
+            .stored
+            .iter()
+            .find(|credential| credential.name() == name)
+            .cloned()
+        else {
+            return;
+        };
+        self.confirming = None;
+        self.managing = false;
+        self.form = Some(CredentialForm::editing(&existing, window, cx));
+        cx.notify();
     }
 
     /// Save what was typed, if it is enough to connect with.
@@ -719,33 +767,41 @@ impl CaixonhoApp {
                     .child(div().font_weight(gpui::FontWeight::BOLD).child("caixonho")),
             )
             .footer(
-                SidebarFooter::new()
-                    .child(
-                        Button::new("add-connection")
-                            .label("Add a connection")
-                            .icon(IconName::Plus)
-                            .ghost()
-                            .w_full()
-                            .on_click(cx.listener(|app, _, window, cx| {
-                                app.form = Some(CredentialForm::new(window, cx));
-                                cx.notify();
-                            })),
-                    )
-                    // Managing connections is a different activity from
-                    // choosing one, so it lives behind its own control rather
-                    // than as a destructive button beside the row it destroys.
-                    .child(
-                        Button::new("manage-connections")
-                            .label("Manage connections")
-                            .icon(IconName::Settings)
-                            .ghost()
-                            .w_full()
-                            .on_click(cx.listener(|app, _, _, cx| {
-                                app.managing = !app.managing;
-                                app.confirming = None;
-                                cx.notify();
-                            })),
-                    ),
+                // One child holding a column. The footer lays its children out
+                // in a row, which squeezed the second button down to its icon
+                // and pushed it past the sidebar's edge.
+                SidebarFooter::new().child(
+                    v_flex()
+                        .w_full()
+                        .gap(space::TIGHT)
+                        .child(
+                            Button::new("add-connection")
+                                .label("Add a connection")
+                                .icon(IconName::Plus)
+                                .ghost()
+                                .w_full()
+                                .on_click(cx.listener(|app, _, window, cx| {
+                                    app.form = Some(CredentialForm::new(window, cx));
+                                    cx.notify();
+                                })),
+                        )
+                        // Managing connections is a different activity from
+                        // choosing one, so it lives behind its own control
+                        // rather than as a destructive button beside the row
+                        // it would destroy.
+                        .child(
+                            Button::new("manage-connections")
+                                .label("Manage connections")
+                                .icon(IconName::Settings)
+                                .ghost()
+                                .w_full()
+                                .on_click(cx.listener(|app, _, _, cx| {
+                                    app.managing = !app.managing;
+                                    app.confirming = None;
+                                    cx.notify();
+                                })),
+                        ),
+                ),
             )
             // Two groups rather than a label beside each name: where a
             // connection's secret is kept is worth seeing, and a label would

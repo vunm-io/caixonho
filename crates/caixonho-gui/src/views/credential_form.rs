@@ -30,6 +30,8 @@ pub(crate) struct CredentialForm {
     /// Set when saving was attempted and refused — by us for being incomplete,
     /// or by the credential store.
     pub(crate) problem: Option<SharedString>,
+    /// The connection being edited, when this form was opened on one.
+    pub(crate) editing: Option<String>,
     /// True while the store is being written, so the form cannot be submitted
     /// twice and the button can say what is happening.
     pub(crate) saving: bool,
@@ -69,6 +71,7 @@ impl CredentialForm {
             access_key_id: field("AKIA…", false, window, cx),
             secret: field("the secret access key", true, window, cx),
             session_token: field("only for temporary credentials", true, window, cx),
+            editing: None,
             problem: None,
             saving: false,
         }
@@ -111,6 +114,31 @@ impl CredentialForm {
         ))
     }
 
+    /// The same form, filled in from a connection that already exists.
+    ///
+    /// The name is what the stored secret is keyed by, so changing it would be
+    /// a move — read, write under the new name, delete the old — and that is
+    /// `XONHO-0013`, not something to do by accident while fixing a region.
+    pub(crate) fn editing(existing: &StoredCredential, window: &mut Window, cx: &mut App) -> Self {
+        let mut form = Self::new(window, cx);
+        form.editing = Some(existing.name().to_owned());
+        form.name.update(cx, |state, cx| {
+            state.set_value(existing.name(), window, cx);
+        });
+        form.access_key_id.update(cx, |state, cx| {
+            state.set_value(existing.access_key_id(), window, cx);
+        });
+        if let Some(index) = REGIONS
+            .iter()
+            .position(|region| *region == existing.region())
+        {
+            form.region.update(cx, |state, cx| {
+                state.set_selected_index(Some(gpui_component::IndexPath::new(index)), window, cx);
+            });
+        }
+        form
+    }
+
     pub(crate) fn render(
         &self,
         save: impl Fn(&mut Window, &mut App) + 'static,
@@ -138,19 +166,24 @@ impl CredentialForm {
                     .child(
                         v_flex()
                             .gap(space::TIGHT)
-                            .child(
-                                div()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .child("Add a connection"),
-                            )
+                            .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child(
+                                if self.editing.is_some() {
+                                    "Edit this connection"
+                                } else {
+                                    "Add a connection"
+                                },
+                            ))
                             .child(
                                 div()
                                     .text_color(cx.theme().muted_foreground)
                                     .text_xs()
-                                    .child(
+                                    .child(if self.editing.is_some() {
+                                        "Enter the secret again to save. It is in the keychain \
+                                         and caixonho does not read secrets back to show them."
+                                    } else {
                                         "The secret is kept in this system's keychain. It is \
-                                         never written to a file, a log, or ~/.aws.",
-                                    ),
+                                         never written to a file, a log, or ~/.aws."
+                                    }),
                             ),
                     ),
             )
