@@ -6,9 +6,25 @@ A fast, native, cross-platform S3 client. GPU-rendered with [GPUI](https://gpui.
 (the framework behind Zed), written in Rust, built to feel instant: cold start under
 half a second, buttery scrolling through prefixes with 100k+ objects, keyboard-first.
 
-**Status: pre-alpha.** The project is at milestone M0 — a spike proving the UI stack
-on Windows 11 and macOS. Nothing here is usable yet. Watch the repo if you want to
-follow along; the full requirements live in [`docs/PROJECT_BRIEF.md`](docs/PROJECT_BRIEF.md).
+**Status: pre-alpha, milestone M1.** The app connects and reads; it does not yet
+open anything. Watch the repo if you want to follow along.
+
+Working today:
+
+- Reads the profiles in `~/.aws` and connects with the credentials they name —
+  an SSO profile with a valid cached token, `credential_process`, or static keys.
+- Lists that account's buckets with name, creation date and region, and narrows
+  the list to one region.
+- Says which buckets your credentials can actually open, and names the IAM action
+  a refused one would need. A bucket nobody has asked about yet says so, rather
+  than guessing.
+- Tells failure causes apart — an expired session, rejected credentials, a
+  network failure and a trust failure are each reported as themselves, with the
+  action that fixes them, and none of them is ever reported as "access denied".
+
+Not there yet: opening a bucket and browsing objects, transfers, and entering
+credentials in the app rather than in `~/.aws`. Those are the next changes —
+see [`docs/planned-changes.md`](docs/planned-changes.md).
 
 ## Why another S3 client
 
@@ -36,11 +52,21 @@ honest about permissions and fast on huge buckets*:
 
 ## Building
 
-Requires stable Rust (see `rust-toolchain.toml`).
+Requires the Rust toolchain pinned in `rust-toolchain.toml`, which rustup installs
+on its own the first time you build.
 
 ```sh
-cargo run -p caixonho-gui   # currently: the M0 spike (100k-row virtualized table)
+cargo run -p caixonho-gui
 ```
+
+It opens on a profile from `~/.aws` and lists its buckets. With no profiles
+configured it says so and does nothing else — it never invents credentials.
+
+## Documentation
+
+[`docs/`](docs/README.md) maps the rest: what the product is meant to be, what it
+is contracted to do today, the decisions that are hard to reverse, and what each
+task number in the commit log refers to.
 
 ## License
 
