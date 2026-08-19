@@ -22,7 +22,9 @@
 //! - **TDD.** This crate is built test-first; the UI may be exploratory, the
 //!   core may not.
 
+pub mod adapter;
 pub mod capability;
+pub(crate) mod classify;
 pub mod connection;
 pub mod error;
 pub mod profiles;
@@ -30,9 +32,10 @@ pub mod store;
 pub(crate) mod tls;
 pub mod types;
 
+pub use adapter::S3ObjectStore;
 pub use connection::Connection;
 pub use error::{Error, Result};
-pub use profiles::{ConfigPaths, discover};
+pub use profiles::{ConfigPaths, discover, sso_session};
 pub use store::ObjectStore;
 pub use tls::HttpStack;
 pub use types::{Bucket, ConnectionId, Profile, Region};

@@ -30,8 +30,7 @@ pub struct Connection {
     id: ConnectionId,
     profile: String,
     region: String,
-    /// Read by the S3 adapter (section 5 of this change).
-    #[allow(dead_code)]
+    sso_session: Option<String>,
     sdk: aws_config::SdkConfig,
 }
 
@@ -51,8 +50,13 @@ impl Connection {
         &self.region
     }
 
+    /// The `sso_session` this profile belongs to, when it declares one —
+    /// the name `aws sso login --sso-session <name>` needs.
+    pub fn sso_session(&self) -> Option<&str> {
+        self.sso_session.as_deref()
+    }
+
     /// The resolved SDK configuration, for the adapter that builds clients.
-    #[allow(dead_code)]
     pub(crate) fn sdk_config(&self) -> &aws_config::SdkConfig {
         &self.sdk
     }
@@ -98,6 +102,7 @@ pub async fn open(
         id,
         profile: profile.to_owned(),
         region,
+        sso_session: crate::profiles::sso_session(paths, profile),
         sdk,
     })
 }

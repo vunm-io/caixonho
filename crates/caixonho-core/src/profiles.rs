@@ -82,6 +82,37 @@ pub fn discover(paths: &ConfigPaths) -> Result<Vec<Profile>> {
         .collect())
 }
 
+/// The `sso_session` a profile belongs to, when it declares one.
+///
+/// Only the config file carries it, and only as a plain `key = value` inside
+/// the profile's own section. Read on demand rather than during discovery:
+/// it exists to name the session in an expired-session message
+/// (`connections` spec), and discovery must stay cheap and total.
+pub fn sso_session(paths: &ConfigPaths, profile: &str) -> Option<String> {
+    let contents = std::fs::read_to_string(paths.config.as_deref()?).ok()?;
+    let wanted = [format!("[profile {profile}]"), format!("[{profile}]")];
+
+    let mut inside = false;
+    for line in contents.lines().map(str::trim) {
+        if line.starts_with('[') {
+            inside = wanted.iter().any(|header| line == header);
+            continue;
+        }
+        if !inside {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once('=')
+            && key.trim() == "sso_session"
+        {
+            let value = value.trim();
+            if !value.is_empty() {
+                return Some(value.to_owned());
+            }
+        }
+    }
+    None
+}
+
 /// `config` writes `[profile foo]`; `credentials` writes `[foo]`.
 #[derive(Clone, Copy)]
 enum SectionStyle {

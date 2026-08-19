@@ -42,21 +42,25 @@
 
 ## 4. Error classification
 
-- [ ] 4.1 [dispatch: main] Implement classification at the adapter boundary in one module, in the
+- [x] 4.1 [dispatch: main] Implement classification at the adapter boundary in one module, in the
       fixed order TLS-trust → network → expired session → access denied →
       missing configuration → unexpected
-- [ ] 4.2 [dispatch: main] Test each ordering hazard explicitly, at minimum: a TLS-trust failure
+- [x] 4.2 [dispatch: main] Test each ordering hazard explicitly, at minimum: a TLS-trust failure
       is not reported as expired credentials, and an expired session is not
       reported as access denied
-- [ ] 4.3 [dispatch: main] Test that no error's message or details contain credential material
+- [x] 4.3 [dispatch: main] Test that no error's message or details contain credential material
       (`connections` spec, "Credentials are never disclosed")
-- [ ] 4.4 [dispatch: main] Populate the required IAM action on access-denied results
+- [x] 4.4 [dispatch: main] Populate the required IAM action on access-denied results
 
 ## 5. AWS adapter
 
-- [ ] 5.1 [dispatch: main] Implement `ObjectStore` over `aws-sdk-s3`, mapping `ListBuckets` to
-      the domain type with region left `Unknown`
-- [ ] 5.2 [dispatch: main] Route every SDK failure through the classifier from task 4.1
+- [x] 5.1 [dispatch: main] Implement `ObjectStore` over `aws-sdk-s3`, mapping `ListBuckets` to
+      the domain type, keeping the region the service states and leaving it
+      `Unknown` when it states none
+      - `ListBuckets` does return `BucketRegion` in aws-sdk-s3 1.142.0, which
+        the spec already provides for ("present each bucket's region when it is
+        known"); listing is paginated for the same reason — see `design.md`
+- [x] 5.2 [dispatch: main] Route every SDK failure through the classifier from task 4.1
 
 ## 6. Runtime and bridge
 

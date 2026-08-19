@@ -109,9 +109,14 @@ real enterprise machine produces a chain the OS accepts and we reject.
   across versions** → classification lives in one module with tests naming each
   case; an SDK bump that breaks it fails those tests rather than silently
   degrading messages into "unexpected".
-- **`ListBuckets` does not return regions** → region shows as unknown until a
-  later slice resolves it per bucket; the spec makes "unknown" a first-class
-  display value so this is honest rather than a gap.
+- **`ListBuckets` does not return regions** → *corrected during implementation
+  (2026-08-19)*: it does. aws-sdk-s3 1.142.0 exposes `Bucket::bucket_region()`,
+  and the same API is paginated (`continuation_token`). The adapter therefore
+  keeps the region the service states and leaves it `Unknown` only when the
+  service states none — which is what the spec asked for all along ("present
+  each bucket's region when it is known") — and pages through the listing,
+  because a truncated first page reads exactly like a smaller account. No
+  region is ever inferred from the connection.
 - **Deleting the synthetic feed removes the M0 performance demo** → the M0
   numbers are already recorded in ADR-0001; the real listing supersedes it.
 
