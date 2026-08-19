@@ -43,12 +43,19 @@ Alternative considered: a `caixonho-gui::theme` module exposing colour
 constants. It reads simpler for one theme and blocks every later one, including
 the light/dark pair the toolkit gives away.
 
-### A token module holds only what the theme does not
+### Spacing and shadow are theme tokens too, not a local module
 
-Spacing, the icon-tile sizes and the shadow scale live in one small module,
-because the toolkit's theme carries colour and radius but not a spacing scale.
-Anything the theme does carry is read from the theme — no shadowing of
-`theme.radius` with a local copy that can drift.
+This section originally planned a `tokens.rs` holding the spacing scale and the
+shadows, on the assumption that the toolkit's theme carried only colour and
+radius. It carries more than that: `SemanticThemeConfig` has `spacing`
+(xxs…xxl), `typography`, `radius` and `shadow`, where each shadow is a
+`Vec<BoxShadow>` — so a tinted shadow is declared in the theme document rather
+than constructed in code, and `Theme::apply_semantic_config` installs the set.
+
+So the spacing scale and the three shadows go in the theme document with the
+colours, and components read them through `cx.theme().semantic_tokens()`. A
+local module survives only for what the schema genuinely lacks — the icon-tile
+sizes — and shadows nothing the theme already provides.
 
 ### The status vocabulary is a function of the state, in one place
 
