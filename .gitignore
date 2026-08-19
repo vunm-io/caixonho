@@ -4,3 +4,7 @@
 # OS noise
 .DS_Store
 Thumbs.db
+
+# Editor state, per-developer and not part of the project
+.idea/
+.vscode/
