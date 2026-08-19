@@ -152,11 +152,18 @@ becomes visible:
 |---|---|
 | Being probed | skeleton or a muted spinner in the badge's place — never text that says "checking" |
 | Can be entered | no badge. The absence of a warning is the good news; a green tick on every row is noise |
-| Cannot be entered | a lock glyph and **No access** in a capsule tinted from `danger`, the row's text muted, the reason and the IAM action on hover |
+| Cannot be entered | **No access** in a capsule tinted from `danger`, the row's text muted, the reason and the IAM action on hover |
 | Nothing observed yet | an em dash in the muted colour, and nothing else — the app does not guess |
 
 `PROJECT_BRIEF.md` §4.3 asked for "dimmed + lock badge" from the start. The
 first pass delivered the dimming and the words "cannot open", and no badge.
+
+**The glyph is a cross, not a lock, and that is a known departure.** The icon
+set the toolkit ships has no lock — it carries `CircleX`, `TriangleAlert` and
+`Info`, and a cross reads as refusal well enough to ship. A real lock needs a
+custom SVG and an asset source of the app's own, which is a change worth making
+deliberately rather than smuggling into a foundation. Recorded here so the next
+reader knows it was chosen, not overlooked.
 
 ## Every screen has four states
 

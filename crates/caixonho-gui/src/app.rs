@@ -7,16 +7,19 @@ use gpui::{
     div, px,
 };
 use gpui_component::{
-    ActiveTheme, IndexPath, TitleBar,
-    button::{Button, ButtonVariants},
+    ActiveTheme, IconName, IndexPath, Side, TitleBar,
+    button::Button,
     h_flex,
     select::{SearchableVec, Select, SelectEvent},
+    sidebar::{Sidebar, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem},
+    status_bar::StatusBar,
     table::{DataTable, TableState},
     v_flex,
 };
 
-use crate::components::notice;
+use crate::components::{empty_state, inline_message, skeleton_rows};
 use crate::scroll::{self, ScrollAccel};
+use crate::theme::space;
 use crate::views::buckets::{BucketsDelegate, RegionSelect, region_label};
 
 /// Everything the window shows.
@@ -282,30 +285,37 @@ impl CaixonhoApp {
     }
 
     /// One button per profile, the active one filled in.
-    fn profile_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The connections this machine knows about.
+    ///
+    /// Profiles used to be loose buttons in the title bar. They belong in a
+    /// sidebar group, which is where every later connection-shaped thing goes
+    /// too — so adding one does not mean redesigning the window.
+    fn sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let active = self.active_profile;
-        h_flex().gap_1().children(
-            self.profiles
-                .iter()
-                .enumerate()
-                .map(|(index, profile)| {
-                    let label = if profile.is_default {
-                        format!("{} (default)", profile.name)
-                    } else {
-                        profile.name.clone()
-                    };
-                    let button = Button::new(("profile", index)).label(label).compact();
-                    let button = if Some(index) == active {
-                        button.primary()
-                    } else {
-                        button.ghost()
-                    };
-                    button.on_click(cx.listener(move |app, _, window, cx| {
-                        app.select_profile(index, window, cx);
-                    }))
-                })
-                .collect::<Vec<_>>(),
-        )
+        Sidebar::new("connections")
+            .side(Side::Left)
+            .w(px(220.))
+            .header(
+                SidebarHeader::new()
+                    .child(div().font_weight(gpui::FontWeight::BOLD).child("caixonho")),
+            )
+            .child(
+                SidebarGroup::new("Connections").child(SidebarMenu::new().children(
+                    self.profiles.iter().enumerate().map(|(index, profile)| {
+                        let label = if profile.is_default {
+                            format!("{} (default)", profile.name)
+                        } else {
+                            profile.name.clone()
+                        };
+                        SidebarMenuItem::new(label)
+                            .icon(IconName::CircleUser)
+                            .active(Some(index) == active)
+                            .on_click(cx.listener(move |app, _, window, cx| {
+                                app.select_profile(index, window, cx);
+                            }))
+                    }),
+                )),
+            )
     }
 
     /// What to say about a failure, and what the user can do about it.
@@ -341,26 +351,17 @@ impl CaixonhoApp {
             Error::Unexpected { .. } => "The call failed for an unrecognised reason.".into(),
         };
 
-        v_flex()
-            .gap_2()
-            .p_4()
-            .child(
-                div()
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .text_color(cx.theme().danger)
-                    .child(SharedString::from(error.to_string())),
-            )
-            .child(
-                div()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(guidance),
-            )
-            .child(
-                Button::new("retry")
-                    .label("Retry")
-                    .outline()
-                    .on_click(cx.listener(|app, _, _, cx| app.retry(cx))),
-            )
+        inline_message(
+            IconName::TriangleAlert,
+            SharedString::from(error.to_string()),
+            guidance,
+            cx.theme().danger,
+            Button::new("retry")
+                .label("Retry")
+                .outline()
+                .on_click(cx.listener(|app, _, _, cx| app.retry(cx))),
+            cx,
+        )
     }
 
     /// The body: whatever the active connection's latest outcome deserves.
@@ -371,29 +372,31 @@ impl CaixonhoApp {
                 .into_any_element();
         }
         if self.profiles.is_empty() {
-            return notice(
+            return empty_state(
+                IconName::Inbox,
                 "No AWS profiles found.",
                 "caixonho reads ~/.aws/config and ~/.aws/credentials (or the files named by \
                  AWS_CONFIG_FILE and AWS_SHARED_CREDENTIALS_FILE). Add a profile there to begin.",
                 cx,
-            )
-            .into_any_element();
+            );
         }
 
         match self.outcome.state() {
-            Outcome::Loading => notice("Listing buckets…", "", cx).into_any_element(),
+            // Rows in the shape of the table that is coming, rather than a
+            // line of text announcing that something is happening somewhere.
+            Outcome::Loading => skeleton_rows(6),
             Outcome::Failed(error) => {
                 // Cloned so the panel can borrow the app immutably.
                 let rendered = error.to_string();
                 let panel = self.failure_panel_from(rendered, error, cx);
                 panel.into_any_element()
             }
-            Outcome::Loaded(buckets) if buckets.is_empty() => notice(
+            Outcome::Loaded(buckets) if buckets.is_empty() => empty_state(
+                IconName::Folder,
                 "This account has no buckets.",
                 "The listing succeeded — there is simply nothing in it yet.",
                 cx,
-            )
-            .into_any_element(),
+            ),
             Outcome::Loaded(_) => v_flex()
                 .size_full()
                 .child(self.region_picker())
@@ -427,7 +430,7 @@ impl Render for CaixonhoApp {
         // status stays empty rather than claiming a listing that never began.
         let status: SharedString = match (self.active_profile, self.outcome.state()) {
             (None, _) => "".into(),
-            (Some(_), Outcome::Loading) => "listing…".into(),
+            (Some(_), Outcome::Loading) => "Listing buckets…".into(),
             (Some(_), Outcome::Loaded(buckets)) => {
                 // Says both numbers while a region is chosen: reporting the
                 // account's total beside a narrowed table reads as rows lost.
@@ -439,28 +442,36 @@ impl Render for CaixonhoApp {
                     format!("{shown} of {total} buckets").into()
                 }
             }
-            (Some(_), Outcome::Failed(_)) => "failed".into(),
+            (Some(_), Outcome::Failed(_)) => "Listing failed".into(),
         };
 
         v_flex()
             .size_full()
             .bg(cx.theme().background)
             .child(
-                TitleBar::new().child(
-                    h_flex()
-                        .w_full()
-                        .pr_2()
-                        .gap_3()
-                        .justify_between()
+                TitleBar::new().child(div().font_weight(gpui::FontWeight::BOLD).child("caixonho")),
+            )
+            .child(
+                h_flex().flex_1().min_h_0().child(self.sidebar(cx)).child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
                         .child(
-                            h_flex()
-                                .gap_3()
-                                .child(div().font_weight(gpui::FontWeight::BOLD).child("caixonho"))
-                                .child(self.profile_picker(cx)),
+                            div()
+                                .flex_1()
+                                .min_h_0()
+                                .p(space::WINDOW)
+                                .child(self.body(cx)),
                         )
-                        .child(div().text_color(cx.theme().muted_foreground).child(status)),
+                        .child(
+                            StatusBar::new().child(
+                                div()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .text_xs()
+                                    .child(status),
+                            ),
+                        ),
                 ),
             )
-            .child(div().min_h_0().flex_1().px_3().pb_3().child(self.body(cx)))
     }
 }

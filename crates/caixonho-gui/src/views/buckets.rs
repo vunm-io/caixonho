@@ -8,11 +8,14 @@ use gpui::{
     StatefulInteractiveElement, Styled, Window, div, px,
 };
 use gpui_component::{
-    ActiveTheme,
+    ActiveTheme, IconName,
     select::{SearchableVec, SelectState},
+    skeleton::Skeleton,
     table::{Column, TableDelegate, TableState},
     tooltip::Tooltip,
 };
+
+use crate::components::status_badge;
 
 /// Displayed instead of a region the service never stated. A first-class
 /// value, not a placeholder: the alternative is showing the connection's own
@@ -115,24 +118,32 @@ impl BucketsDelegate {
     }
 
     /// The access cell, which is the only one that explains itself.
+    ///
+    /// Silence is the good news: a bucket that can be entered gets no badge at
+    /// all, because a mark on every row is noise and the eye stops reading it.
+    /// Only an observed refusal is marked.
     fn render_access(
         &self,
         row_ix: usize,
         access: Access,
         cx: &mut Context<TableState<Self>>,
     ) -> AnyElement {
-        let muted = cx.theme().muted_foreground;
         match access {
-            Access::Open => div().child("can open").into_any_element(),
-            Access::Probing => div()
-                .text_color(muted)
-                .child("checking…")
+            Access::Open => div().into_any_element(),
+            // A probe in flight is its own state: without it a row would
+            // flicker between "nothing known" and "refused" as answers land.
+            Access::Probing => Skeleton::new().w(px(72.)).h(px(14.)).into_any_element(),
+            Access::Unobserved => div()
+                .text_color(cx.theme().muted_foreground)
+                .child("—")
                 .into_any_element(),
-            Access::Unobserved => div().text_color(muted).child("—").into_any_element(),
             Access::Denied => div()
                 .id(("denied", row_ix))
-                .text_color(muted)
-                .child("cannot open")
+                .child(status_badge(
+                    IconName::CircleX,
+                    "No access",
+                    cx.theme().danger,
+                ))
                 .tooltip(|window, cx| {
                     Tooltip::new(format!(
                         "Listing this bucket's contents was denied. It needs \

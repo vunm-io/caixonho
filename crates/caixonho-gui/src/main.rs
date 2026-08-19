@@ -15,6 +15,7 @@
 mod app;
 mod components;
 mod scroll;
+mod theme;
 mod views;
 
 use gpui::{AppContext, Bounds, WindowBounds, WindowOptions, px, size};
@@ -27,6 +28,7 @@ fn main() {
         .with_assets(gpui_component_assets::Assets)
         .run(move |cx| {
             gpui_component::init(cx);
+            theme::install(cx);
 
             cx.spawn(async move |cx| {
                 let options = cx.update(|cx| WindowOptions {

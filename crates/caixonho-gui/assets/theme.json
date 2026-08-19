@@ -1,0 +1,46 @@
+{
+  "name": "caixonho",
+  "author": "caixonho",
+  "url": "https://github.com/vunm-io/caixonho",
+  "themes": [
+    {
+      "is_default": true,
+      "name": "caixonho Light",
+      "mode": "light",
+      "colors": {
+        "primary.background": "violet-600",
+        "primary.foreground": "neutral-50",
+        "primary.hover.background": "violet-500",
+        "primary.active.background": "violet-700",
+        "ring": "violet-500",
+        "selection.background": "#7c3aed40",
+        "list.active.background": "#7c3aed1f",
+        "list.active.border": "violet-400",
+        "sidebar.primary.background": "violet-600",
+        "sidebar.primary.foreground": "neutral-50",
+        "link.foreground": "violet-600",
+        "link.hover.foreground": "violet-500",
+        "link.active.foreground": "violet-700"
+      }
+    },
+    {
+      "name": "caixonho Dark",
+      "mode": "dark",
+      "colors": {
+        "primary.background": "violet-400",
+        "primary.foreground": "neutral-950",
+        "primary.hover.background": "violet-300",
+        "primary.active.background": "violet-500",
+        "ring": "violet-400",
+        "selection.background": "#a78bfa40",
+        "list.active.background": "#a78bfa26",
+        "list.active.border": "violet-400",
+        "sidebar.primary.background": "violet-400",
+        "sidebar.primary.foreground": "neutral-950",
+        "link.foreground": "violet-400",
+        "link.hover.foreground": "violet-300",
+        "link.active.foreground": "violet-500"
+      }
+    }
+  ]
+}
