@@ -46,7 +46,7 @@ const LIST_BUCKETS_PAGE_SIZE: i32 = 1000;
 
 /// The IAM action listing one bucket's contents needs, named in denial
 /// messages so a denied row says what would lift it.
-const LIST_BUCKET_ACTION: &str = "s3:ListBucket";
+pub const LIST_BUCKET_ACTION: &str = "s3:ListBucket";
 
 /// How many keys a list probe asks for.
 ///

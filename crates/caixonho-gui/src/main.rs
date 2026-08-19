@@ -14,13 +14,17 @@
 
 mod scroll;
 
+use std::ops::Range;
+
 use caixonho_core::{
-    ActiveOutcome, Bucket, ConfigPaths, ConnectionId, Error, HttpStack, Outcome, Profile, Region,
-    RegionChoice, Session, SessionProblem, TaggedOutcome, region_choices,
+    ActiveOutcome, Bucket, ConfigPaths, ConnectionId, Error, HttpStack, LIST_BUCKET_ACTION,
+    Observation, Outcome, ProbeTarget, Profile, Region, RegionChoice, Scope, Session,
+    SessionProblem, TaggedOutcome, region_choices,
 };
 use gpui::{
-    App, AppContext, Bounds, Context, Entity, IntoElement, ParentElement, Render, SharedString,
-    Styled, Window, WindowBounds, WindowOptions, div, px, size,
+    AnyElement, App, AppContext, Bounds, Context, Entity, InteractiveElement, IntoElement,
+    ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window, WindowBounds,
+    WindowOptions, div, px, size,
 };
 use gpui_component::{
     ActiveTheme, IndexPath, Root, TitleBar,
@@ -28,6 +32,7 @@ use gpui_component::{
     h_flex,
     select::{SearchableVec, Select, SelectEvent, SelectState},
     table::{Column, DataTable, TableDelegate, TableState},
+    tooltip::Tooltip,
     v_flex,
 };
 
@@ -37,6 +42,25 @@ use scroll::ScrollAccel;
 /// value, not a placeholder: the alternative is showing the connection's own
 /// region, which would be a guess that reads as fact.
 const UNKNOWN_REGION: &str = "unknown";
+
+/// What is known about entering one bucket, as the table shows it.
+///
+/// Four states, not three: a row with a probe open is saying something
+/// different from a row nobody has asked about yet, and collapsing them makes
+/// rows flicker between "unknown" and "denied" as answers land.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Access {
+    /// A probe is open for this bucket.
+    Probing,
+    /// Observed: its contents can be listed.
+    Open,
+    /// Observed: listing its contents was refused on authorization grounds.
+    /// Only a real denial reaches this — never a guess, and never an expired
+    /// session or an unreachable network.
+    Denied,
+    /// Nothing has been observed yet.
+    Unobserved,
+}
 
 /// The region selector's own state, kept as `SharedString` because the control
 /// selects labels; the choice each one stands for is looked up alongside.
@@ -64,6 +88,10 @@ struct BucketsDelegate {
     /// Indices rather than a second copy: narrowing a large account should cost
     /// a filter, not a clone of every bucket in it.
     shown: Vec<usize>,
+    /// Held so the rows on screen can be reported for probing, and so each row
+    /// can read what has been observed about it. `None` until the session is
+    /// built, which is after the table.
+    session: Option<Session>,
 }
 
 impl BucketsDelegate {
@@ -73,9 +101,70 @@ impl BucketsDelegate {
                 Column::new("name", "Bucket").width(px(420.)),
                 Column::new("created", "Created").width(px(200.)),
                 Column::new("region", "Region").width(px(180.)),
+                Column::new("access", "Access").width(px(160.)),
             ],
             rows: Vec::new(),
             shown: Vec::new(),
+            session: None,
+        }
+    }
+
+    /// The probe targets for a range of shown rows.
+    fn targets(&self, rows: Range<usize>) -> Vec<ProbeTarget> {
+        self.shown
+            .get(rows)
+            .unwrap_or_default()
+            .iter()
+            .map(|index| ProbeTarget::from(&self.rows[*index]))
+            .collect()
+    }
+
+    /// What has been observed about entering `bucket`.
+    fn access(&self, bucket: &Bucket) -> Access {
+        let Some(session) = &self.session else {
+            return Access::Unobserved;
+        };
+        let scope = Scope::bucket(&bucket.name);
+        if session.is_probing(&scope) {
+            return Access::Probing;
+        }
+        let Some(credentials) = session.credentials() else {
+            return Access::Unobserved;
+        };
+        match session.capability(&credentials, &scope).list {
+            Observation::Allowed => Access::Open,
+            Observation::Denied => Access::Denied,
+            Observation::Unknown => Access::Unobserved,
+        }
+    }
+
+    /// The access cell, which is the only one that explains itself.
+    fn render_access(
+        &self,
+        row_ix: usize,
+        access: Access,
+        cx: &mut Context<TableState<Self>>,
+    ) -> AnyElement {
+        let muted = cx.theme().muted_foreground;
+        match access {
+            Access::Open => div().child("can open").into_any_element(),
+            Access::Probing => div()
+                .text_color(muted)
+                .child("checking…")
+                .into_any_element(),
+            Access::Unobserved => div().text_color(muted).child("—").into_any_element(),
+            Access::Denied => div()
+                .id(("denied", row_ix))
+                .text_color(muted)
+                .child("cannot open")
+                .tooltip(|window, cx| {
+                    Tooltip::new(format!(
+                        "Listing this bucket's contents was denied. It needs \
+                         {LIST_BUCKET_ACTION} on this bucket."
+                    ))
+                    .build(window, cx)
+                })
+                .into_any_element(),
         }
     }
 }
@@ -93,14 +182,37 @@ impl TableDelegate for BucketsDelegate {
         self.columns[col_ix].clone()
     }
 
+    /// Report the rows on screen, so only those are probed.
+    ///
+    /// The table calls this when the range changes rather than every frame,
+    /// which is the debounce: scrolling reports each range it passes through
+    /// once, and the scheduler drops whatever the previous range had queued.
+    fn visible_rows_changed(
+        &mut self,
+        visible_range: Range<usize>,
+        _window: &mut Window,
+        _cx: &mut Context<TableState<Self>>,
+    ) {
+        let Some(session) = &self.session else {
+            return;
+        };
+        session.submit_viewport(&self.targets(visible_range));
+    }
+
     fn render_td(
         &mut self,
         row_ix: usize,
         col_ix: usize,
         _window: &mut Window,
-        _cx: &mut Context<TableState<Self>>,
+        cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         let row = &self.rows[self.shown[row_ix]];
+        let access = self.access(row);
+
+        if col_ix == 3 {
+            return self.render_access(row_ix, access, cx);
+        }
+
         let text: SharedString = match col_ix {
             0 => row.name.clone().into(),
             1 => row.created.clone().unwrap_or_else(|| "—".into()).into(),
@@ -110,7 +222,16 @@ impl TableDelegate for BucketsDelegate {
             },
             _ => "".into(),
         };
-        div().child(text)
+
+        let cell = div().child(text);
+        // Dimmed, not hidden: a bucket that cannot be entered stays in the
+        // list, because it is still a fact about the account.
+        if access == Access::Denied {
+            cell.text_color(cx.theme().muted_foreground)
+                .into_any_element()
+        } else {
+            cell.into_any_element()
+        }
     }
 }
 
@@ -190,6 +311,30 @@ impl CaixonhoApp {
             ),
             Err(error) => (None, Some(error)),
         };
+
+        // The table reads observations straight from the session, and reports
+        // the rows on screen back to it for probing.
+        if let Some(session) = &session {
+            table.update(cx, |state, _| {
+                state.delegate_mut().session = Some(session.clone());
+            });
+
+            // Probes settle on runtime threads and write into the capability
+            // store, which nothing watches — without this the window would keep
+            // showing "checking…" over an answer that had already arrived.
+            let (settled, arrivals) = flume::unbounded::<Scope>();
+            session.on_probe_settled(move |scope| {
+                let _ = settled.send(scope);
+            });
+            cx.spawn(async move |this, cx| {
+                while arrivals.recv_async().await.is_ok() {
+                    if this.update(cx, |_, cx| cx.notify()).is_err() {
+                        break; // The window is gone.
+                    }
+                }
+            })
+            .detach();
+        }
 
         // The bridge: results cross from runtime threads to the UI as
         // messages, and are applied on GPUI's executor.
@@ -325,7 +470,22 @@ impl CaixonhoApp {
                 .collect();
             cx.notify();
         });
+        self.report_visible_rows(cx);
         cx.notify();
+    }
+
+    /// Report the rows on screen after the rows themselves changed.
+    ///
+    /// The table only announces a *changed* range, and switching accounts or
+    /// narrowing by region can leave the range identical while every row in it
+    /// is different — which would leave a whole screen unprobed.
+    fn report_visible_rows(&self, cx: &mut Context<Self>) {
+        let Some(session) = &self.session else {
+            return;
+        };
+        let table = self.table.read(cx);
+        let rows = table.visible_range().rows().clone();
+        session.submit_viewport(&table.delegate().targets(rows));
     }
 
     /// The region selector, offering only regions this account uses.

@@ -35,7 +35,7 @@ pub mod store;
 pub(crate) mod tls;
 pub mod types;
 
-pub use adapter::S3ObjectStore;
+pub use adapter::{LIST_BUCKET_ACTION, S3ObjectStore};
 pub use capability::{Capability, CapabilityStore, CredentialsId, Observation, Scope};
 pub use connection::Connection;
 pub use error::{Error, Result, SessionProblem};
