@@ -71,6 +71,30 @@ targets — Windows is the primary daily driver and must never be the lagging po
   before shipping an identifier — the UI stack moves fast; do not trust this
   file or the brief over `cargo` and upstream docs, and say so when they drift.
 
+## Planning gate (before choosing what to build)
+
+The close-out review below checks that a change did what it promised. This one
+checks that it was the right change. They are different failures, and only the
+second one wastes a week.
+
+A proposal states, in its own words:
+
+- **which `[M]` requirements from `PROJECT_BRIEF.md` it delivers**, by section;
+- **which `[M]` requirements are still unbuilt ahead of it**, from
+  `docs/requirements-status.md`, and why this change goes first anyway.
+
+The second is the one that matters. Choosing polish over a mandatory requirement
+is allowed; choosing it without noticing is not. When a change lands,
+`docs/requirements-status.md` is updated in the same change — a status file
+nobody diffs against reality stops being read.
+
+This exists because it was missing. The order of work was argued from what was
+convenient on the machine it was being written on — "the person using the app
+today already has working profiles" — while three mandatory requirements about
+how anyone else would get credentials at all sat unstarted, all of them written
+in the brief from the beginning. Nothing in the process ever compared the plan
+to the requirements, so nothing caught it. The owner did.
+
 ## Close-out review (run it before calling a change done)
 
 A change is not finished when its tasks are ticked. It is finished when someone
