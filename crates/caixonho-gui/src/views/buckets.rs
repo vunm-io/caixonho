@@ -88,6 +88,17 @@ impl BucketsDelegate {
         }
     }
 
+    /// The bucket a shown row names.
+    ///
+    /// Through `shown` rather than `rows`: the row the user clicked is a row
+    /// of the narrowed list, and reading `rows` directly would open whichever
+    /// bucket happened to sit at that index before a region was chosen.
+    pub(crate) fn name_at(&self, row: usize) -> Option<String> {
+        self.shown
+            .get(row)
+            .map(|index| self.rows[*index].name.clone())
+    }
+
     /// The probe targets for a range of shown rows.
     pub(crate) fn targets(&self, rows: Range<usize>) -> Vec<ProbeTarget> {
         self.shown

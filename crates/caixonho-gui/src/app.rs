@@ -1,7 +1,7 @@
 use caixonho_core::{
-    ActiveOutcome, Bucket, ConfigPaths, ConnectionId, ConnectionSource, Diagnostics, Error,
-    HttpStack, Outcome, Profile, RegionChoice, Scope, Session, StoredCredential, TaggedOutcome,
-    region_choices,
+    ActiveOutcome, Bucket, ConfigPaths, ConnectionId, ConnectionSource, Cursor, Diagnostics, Error,
+    HttpStack, Location, Outcome, Page, Prefix, Profile, RegionChoice, Scope, Session,
+    StoredCredential, TaggedOutcome, region_choices,
 };
 use gpui::{
     AnyElement, App, AppContext, Context, Entity, InteractiveElement, IntoElement, ParentElement,
@@ -11,11 +11,12 @@ use gpui_component::{
     ActiveTheme, Icon, IconName, IndexPath, Side, TitleBar,
     button::{Button, ButtonVariants},
     h_flex,
+    input::{Input, InputState},
     menu::PopupMenuItem,
     select::{SearchableVec, Select, SelectEvent},
     sidebar::{Sidebar, SidebarFooter, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem},
     status_bar::StatusBar,
-    table::{DataTable, TableState},
+    table::{DataTable, TableEvent, TableState},
     tooltip::Tooltip,
     v_flex,
 };
@@ -26,6 +27,7 @@ use crate::theme::space;
 use crate::views::buckets::{BucketsDelegate, RegionSelect, region_label};
 use crate::views::credential_form::CredentialForm;
 use crate::views::failure::{guidance_for, unavailable_reason};
+use crate::views::objects::ObjectsDelegate;
 
 /// Everything the window shows.
 pub(crate) struct CaixonhoApp {
@@ -43,6 +45,8 @@ pub(crate) struct CaixonhoApp {
     table: Entity<TableState<BucketsDelegate>>,
     accel: Entity<ScrollAccel>,
     inbox: flume::Sender<TaggedOutcome>,
+    /// Where a location's page comes back, tagged with what was asked for.
+    pages: flume::Sender<(Location, Result<Page, Error>)>,
     /// Where this run is writing its log, and whether it managed to.
     diagnostics: Diagnostics,
     /// Set when the remembered connections could not be read. Deliberately
@@ -72,6 +76,40 @@ pub(crate) struct CaixonhoApp {
     /// Held so a confirmed label can be turned back into the choice it means.
     region_options: Vec<RegionChoice>,
     region_select: Entity<RegionSelect>,
+    /// Where the user is, when they are inside a bucket.
+    ///
+    /// One value, and the single answer to the question. The breadcrumb trail
+    /// is read from it rather than kept beside it, because a second record of
+    /// where you are is a second thing that can be wrong. `None` means a
+    /// connection is chosen and no bucket is — the bucket table.
+    location: Option<Location>,
+    /// What one location holds.
+    objects: Entity<TableState<ObjectsDelegate>>,
+    /// How the current location's listing is going.
+    listing: Listing,
+    /// Where to continue, when the service said there is more.
+    more: Option<Cursor>,
+    /// Set while a page is in flight, so reaching the end of the list twice
+    /// does not ask for the same page twice.
+    fetching: bool,
+    /// The path bar's text, which is also how a bucket is opened by name in
+    /// an account whose buckets cannot be listed.
+    path: Entity<InputState>,
+}
+
+/// How reading the current location is going.
+///
+/// Four states and not three: a location that refused is not a location that
+/// is empty, and neither is a location still being read. Collapsing any two
+/// of them is the defect this whole project exists to avoid.
+#[derive(Debug, Default)]
+enum Listing {
+    /// No location open.
+    #[default]
+    Idle,
+    Loading,
+    Failed(Error),
+    Loaded,
 }
 
 impl CaixonhoApp {
@@ -81,6 +119,8 @@ impl CaixonhoApp {
         cx: &mut Context<Self>,
     ) -> Self {
         let table = cx.new(|cx| TableState::new(BucketsDelegate::new(), window, cx));
+        let objects = cx.new(|cx| TableState::new(ObjectsDelegate::new(), window, cx));
+        let path = cx.new(|cx| InputState::new(window, cx).placeholder("s3://bucket/prefix/"));
         let accel = cx.new(|_| ScrollAccel::default());
 
         let region_select = cx.new(|cx| {
@@ -109,6 +149,28 @@ impl CaixonhoApp {
                 }
             },
         )
+        .detach();
+
+        // Double click, not single: a single click selects, and a file
+        // explorer that navigated on selection would move the ground under
+        // anyone walking a list with the keyboard.
+        cx.subscribe_in(
+            &objects,
+            window,
+            |app, _, event: &TableEvent, window, cx| {
+                if let TableEvent::DoubleClickedRow(row) = event {
+                    app.enter(*row, window, cx);
+                }
+            },
+        )
+        .detach();
+
+        // Opening a bucket is the same gesture, one level up.
+        cx.subscribe_in(&table, window, |app, _, event: &TableEvent, window, cx| {
+            if let TableEvent::DoubleClickedRow(row) = event {
+                app.open_bucket(*row, window, cx);
+            }
+        })
         .detach();
 
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -174,11 +236,26 @@ impl CaixonhoApp {
         // The bridge: results cross from runtime threads to the UI as
         // messages, and are applied on GPUI's executor.
         let (inbox, results) = flume::unbounded::<TaggedOutcome>();
+        // A second channel for locations, tagged with the location asked
+        // about: a page that arrives after the user has walked somewhere else
+        // belongs to a screen nobody is looking at, and is dropped rather than
+        // rendered over the one they are.
+        let (pages, arrived) = flume::unbounded::<(Location, Result<Page, Error>)>();
         // `spawn_in` rather than `spawn`: applying an outcome replaces the
         // region choices on offer, and that control needs a window.
         cx.spawn_in(window, async move |this, cx| {
             while let Ok(tagged) = results.recv_async().await {
                 let applied = this.update_in(cx, |app, window, cx| app.apply(tagged, window, cx));
+                if applied.is_err() {
+                    break; // The window is gone.
+                }
+            }
+        })
+        .detach();
+
+        cx.spawn_in(window, async move |this, cx| {
+            while let Ok((asked, outcome)) = arrived.recv_async().await {
+                let applied = this.update_in(cx, |app, _, cx| app.apply_page(asked, outcome, cx));
                 if applied.is_err() {
                     break; // The window is gone.
                 }
@@ -197,6 +274,7 @@ impl CaixonhoApp {
             table,
             accel,
             inbox,
+            pages,
             diagnostics,
             connections_error,
             stored,
@@ -206,6 +284,12 @@ impl CaixonhoApp {
             region: RegionChoice::All,
             region_options: vec![RegionChoice::All],
             region_select,
+            location: None,
+            objects,
+            listing: Listing::Idle,
+            more: None,
+            fetching: false,
+            path,
         };
 
         // Nothing is contacted until a connection is chosen. Opening on a
@@ -228,6 +312,123 @@ impl CaixonhoApp {
         self.outcome.switch_to(id);
         self.set_rows(Vec::new(), window, cx);
         self.issue(id, source, cx);
+    }
+
+    /// Go to `location` and read it.
+    ///
+    /// Everything shown about position is derived from the location this sets,
+    /// so there is nowhere else to keep in step.
+    fn go_to(&mut self, location: Location, window: &mut Window, cx: &mut Context<Self>) {
+        self.path.update(cx, |state, cx| {
+            state.set_value(location.to_string(), window, cx);
+        });
+        self.listing = Listing::Loading;
+        self.more = None;
+        self.fetching = true;
+        self.objects.update(cx, |table, cx| {
+            table
+                .delegate_mut()
+                .show(location.prefix.clone(), Vec::new(), Vec::new());
+            cx.notify();
+        });
+        self.location = Some(location.clone());
+        self.read(location, None, cx);
+    }
+
+    /// Ask core for a page; the answer arrives through the channel.
+    fn read(&mut self, location: Location, cursor: Option<Cursor>, cx: &mut Context<Self>) {
+        let Some(session) = self.session.clone() else {
+            return;
+        };
+        let pages = self.pages.clone();
+        let asked = location.clone();
+        session.spawn_objects(location, cursor, move |outcome| {
+            // On a runtime thread: send, and do nothing else here.
+            let _ = pages.send((asked, outcome));
+        });
+        cx.notify();
+    }
+
+    /// Apply a page, unless it belongs to a location we have already left.
+    fn apply_page(
+        &mut self,
+        asked: Location,
+        outcome: Result<Page, Error>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.location.as_ref() != Some(&asked) {
+            return; // A page for a screen nobody is looking at.
+        }
+        self.fetching = false;
+
+        match outcome {
+            Err(error) => {
+                // Never an empty folder. A refusal keeps its cause, and the
+                // panel says what would lift it.
+                self.listing = Listing::Failed(error);
+            }
+            Ok(page) => {
+                let continuing = self.more.is_some();
+                self.more = page.more.clone();
+                self.listing = Listing::Loaded;
+                self.objects.update(cx, |table, cx| {
+                    if continuing {
+                        table.delegate_mut().extend(page.folders, page.objects);
+                    } else {
+                        table
+                            .delegate_mut()
+                            .show(asked.prefix.clone(), page.folders, page.objects);
+                    }
+                    cx.notify();
+                });
+            }
+        }
+        cx.notify();
+    }
+
+    /// Ask for the next page, if there is one and none is already in flight.
+    fn read_more(&mut self, cx: &mut Context<Self>) {
+        let (Some(location), Some(cursor)) = (self.location.clone(), self.more.clone()) else {
+            return;
+        };
+        if self.fetching {
+            return; // Reaching the end twice must not ask twice.
+        }
+        self.fetching = true;
+        self.read(location, Some(cursor), cx);
+    }
+
+    /// Enter the row at `index`, when it is something that can be entered.
+    fn enter(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(location), Some(entry)) = (
+            self.location.clone(),
+            self.objects.read(cx).delegate().row(index).cloned(),
+        ) else {
+            return;
+        };
+        let Some(prefix) = entry.into_prefix() else {
+            // An object is not a place. Opening one is XONHO-0007's business,
+            // and doing nothing is better than pretending to navigate.
+            return;
+        };
+        self.go_to(Location::at(location.bucket, prefix), window, cx);
+    }
+
+    /// Open the bucket in the table's row `index`.
+    fn open_bucket(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(name) = self.table.read(cx).delegate().name_at(index) else {
+            return;
+        };
+        self.go_to(Location::bucket(name), window, cx);
+    }
+
+    /// Leave the bucket entirely, back to the account's listing.
+    fn leave_bucket(&mut self, cx: &mut Context<Self>) {
+        self.location = None;
+        self.listing = Listing::Idle;
+        self.more = None;
+        self.fetching = false;
+        cx.notify();
     }
 
     /// Try the active profile again on the same connection.
@@ -754,6 +955,150 @@ impl CaixonhoApp {
         )
     }
 
+    /// The trail from the bucket down to here, and the path bar beside it.
+    ///
+    /// The trail is *read* from the location — `Prefix::segments` — rather
+    /// than stored, so it cannot drift from where the user actually is.
+    fn path_bar(&self, location: &Location, cx: &mut Context<Self>) -> impl IntoElement {
+        let steps: Vec<String> = location.prefix.segments().map(ToOwned::to_owned).collect();
+
+        let mut trail = h_flex().items_center().gap(space::TIGHT).child(
+            Button::new("leave-bucket")
+                .label("All buckets")
+                .ghost()
+                .on_click(cx.listener(|app, _, _, cx| app.leave_bucket(cx))),
+        );
+
+        trail = trail.child(div().text_color(cx.theme().muted_foreground).child("/"));
+        trail = trail.child(
+            Button::new("bucket-root")
+                .label(location.bucket.clone())
+                .ghost()
+                .on_click({
+                    let bucket = location.bucket.clone();
+                    cx.listener(move |app, _, window, cx| {
+                        app.go_to(Location::bucket(bucket.clone()), window, cx);
+                    })
+                }),
+        );
+
+        // Each step goes to the prefix that *ends* at it, which is why the
+        // trail is built by accumulating rather than by slicing text.
+        let mut walked = Prefix::root();
+        for (index, step) in steps.iter().enumerate() {
+            walked = walked.child(step);
+            let target = Location::at(location.bucket.clone(), walked.clone());
+            trail = trail
+                .child(div().text_color(cx.theme().muted_foreground).child("/"))
+                .child(
+                    Button::new(("step", index))
+                        .label(step.clone())
+                        .ghost()
+                        .on_click(cx.listener(move |app, _, window, cx| {
+                            app.go_to(target.clone(), window, cx);
+                        })),
+                );
+        }
+
+        v_flex().w_full().gap(space::TIGHT).child(trail).child(
+            h_flex()
+                .w_full()
+                .gap(space::TIGHT)
+                .items_center()
+                .child(div().flex_1().child(Input::new(&self.path)))
+                .child(
+                    Button::new("go")
+                        .label("Go")
+                        .outline()
+                        .on_click(cx.listener(|app, _, window, cx| app.go_typed(window, cx))),
+                ),
+        )
+    }
+
+    /// Go where the path bar says, or say that it says nowhere.
+    fn go_typed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let typed = self.path.read(cx).value().to_string();
+        match Location::parse(&typed) {
+            // This is also how a bucket is opened in an account whose buckets
+            // cannot be listed: typing its name needs no listing first.
+            Some(location) => self.go_to(location, window, cx),
+            None => {
+                self.listing = Listing::Failed(Error::MissingConfiguration {
+                    profile: None,
+                    detail: format!("`{typed}` does not name a bucket to open"),
+                });
+                cx.notify();
+            }
+        }
+    }
+
+    /// What one location holds, or why it does not say.
+    fn contents(&mut self, location: Location, cx: &mut Context<Self>) -> impl IntoElement {
+        let body = match &self.listing {
+            Listing::Loading | Listing::Idle => skeleton_rows(6),
+            Listing::Failed(error) => {
+                let panel = self.failure_panel(error, cx);
+                v_flex().child(panel).into_any_element()
+            }
+            Listing::Loaded if self.objects.read(cx).delegate().rows.is_empty() => empty_state(
+                IconName::Folder,
+                "This folder is empty.",
+                "It was read successfully — there is simply nothing in it. A folder \
+                 you are not allowed to read says so instead.",
+                cx,
+            ),
+            Listing::Loaded => {
+                let truncated = self.more.is_some();
+                let fetching = self.fetching;
+                v_flex()
+                    .size_full()
+                    .child(
+                        div()
+                            .relative()
+                            .min_h_0()
+                            .flex_1()
+                            .child(DataTable::new(&self.objects))
+                            .child(scroll::accelerator(
+                                self.objects.clone(),
+                                self.accel.clone(),
+                            )),
+                    )
+                    // Said, not hidden: a listing that stops early without
+                    // saying so is indistinguishable from a small folder.
+                    .children(truncated.then(|| {
+                        h_flex()
+                            .w_full()
+                            .items_center()
+                            .gap(space::TIGHT)
+                            .p(space::TIGHT)
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(if fetching {
+                                        "Reading more…"
+                                    } else {
+                                        "More to come."
+                                    }),
+                            )
+                            .child(
+                                Button::new("read-more")
+                                    .label(if fetching { "Reading…" } else { "Load more" })
+                                    .ghost()
+                                    .on_click(cx.listener(|app, _, _, cx| app.read_more(cx))),
+                            )
+                    }))
+                    .into_any_element()
+            }
+        };
+
+        v_flex()
+            .size_full()
+            .gap(space::TIGHT)
+            .child(self.path_bar(&location, cx))
+            .child(div().min_h_0().flex_1().child(body))
+    }
+
     /// The body: whatever the active connection's latest outcome deserves.
     fn body(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(error) = &self.startup_error {
@@ -799,6 +1144,13 @@ impl CaixonhoApp {
                  sign in to it and list its buckets.",
                 cx,
             );
+        }
+
+        // Inside a bucket, the panel shows what that location holds. This is
+        // the one branch browsing adds here; everything it renders lives in
+        // `views/objects.rs` (task 1.1, amended).
+        if let Some(location) = self.location.clone() {
+            return self.contents(location, cx).into_any_element();
         }
 
         match self.outcome.state() {

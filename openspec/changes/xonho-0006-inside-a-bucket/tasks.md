@@ -150,7 +150,7 @@
     recorded through `diagnostics`, alongside `listing_settled`.
   - Verification: `cargo test -p caixonho-core`
 
-- [ ] 3.2 [dispatch: main] Fetch the next page as the end of the list is
+- [x] 3.2 [dispatch: main] Fetch the next page as the end of the list is
       approached, not before and not all at once.
   - Paths: `crates/caixonho-core/src/session.rs`,
     `crates/caixonho-gui/src/`
@@ -182,7 +182,7 @@
 
 ## 4. The window
 
-- [ ] 4.1 [dispatch: main] Hold one location as the single source of truth, and
+- [x] 4.1 [dispatch: main] Hold one location as the single source of truth, and
       derive the trail from it.
   - Paths: `crates/caixonho-gui/src/app.rs`
   - Done criteria: no second record of position exists anywhere; the breadcrumb
@@ -200,7 +200,7 @@
     `div()`.
   - Verification: run the application and look
 
-- [ ] 4.3 [dispatch: main] Give the main panel its second view: contents when a
+- [x] 4.3 [dispatch: main] Give the main panel its second view: contents when a
       bucket is chosen, the bucket table when one is not.
   - Paths: `crates/caixonho-gui/src/views/`
   - Done criteria: the object list renders through the virtualized table with
@@ -209,7 +209,7 @@
     (`docs/design-language.md`).
   - Verification: run the application and look
 
-- [ ] 4.4 [dispatch: main] Breadcrumb trail and editable path bar above the
+- [x] 4.4 [dispatch: main] Breadcrumb trail and editable path bar above the
       contents.
   - Paths: `crates/caixonho-gui/src/views/`
   - Done criteria: the trail names every step from the bucket down and each is
@@ -217,7 +217,7 @@
     nowhere says so while leaving the open location unchanged.
   - Verification: run the application and look
 
-- [ ] 4.5 [dispatch: main] Say when more is still coming, and tell an empty
+- [x] 4.5 [dispatch: main] Say when more is still coming, and tell an empty
       location from a refused one on sight.
   - Paths: `crates/caixonho-gui/src/views/`
   - Done criteria: a truncated listing states that more remains; an empty
