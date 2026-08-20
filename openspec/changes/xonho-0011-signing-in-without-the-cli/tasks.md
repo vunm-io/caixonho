@@ -254,15 +254,30 @@
   - Verification: run a sign-in and abandon it mid-way; the connection returns
     to its prior state and the log shows polling stopped
 
-- [ ] 4.3 Open the browser as convenience, never as mechanism
+- [x] 4.3 Open the browser as convenience, never as mechanism
       [dispatch: external-ok]
+      - Dispatched: agy (2026-08-20) — done; verified: only this file changed,
+        `cargo fmt --check`, `clippy -D warnings` and `cargo test --workspace`
+        all clean here, not just in its report.
+      - It ignored a wrong hint and was right to. The prompt said the complete
+        URL would have to be carried through the `Shown` struct; it opened
+        straight from the authorisation in the same arm instead, which is
+        simpler and keeps a URL that is only ever used once out of the state.
+      - **Verification found one gap it missed**, fixed in `main`: the open
+        was unguarded, so a user who pressed Cancel in the gap before the
+        provider answers would still have had a browser tab opened on them.
+        Now guarded on the attempt still wanting it.
   - Paths: `crates/caixonho-gui/src/app.rs`
   - Done criteria: the verification page opens on the user's act; a failure to
     open is not an error, because the code and address are already on screen.
   - Verification: the sign-in completes with the browser opened by hand from
     the shown address
 
-- [ ] 4.4 Name the states so a test can find them [dispatch: external-ok]
+- [x] 4.4 Name the states so a test can find them [dispatch: external-ok]
+      - Dispatched: agy (2026-08-20) — done; verified as above. Selectors
+        `sign-in-button` and `user-code`, beside the `sign-in-panel` the panel
+        already carried. These are what a later test asserts against once the
+        seam of `XONHO-0015` lets the window be constructed.
   - Paths: `crates/caixonho-gui/src/views/`
   - Done criteria: the in-progress surface and the sign-in action carry
     `debug_selector` names, per `XONHO-0015`. No-ops in release; the only way

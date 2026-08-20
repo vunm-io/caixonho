@@ -1070,6 +1070,27 @@ impl CaixonhoApp {
     fn apply_sign_in(&mut self, event: SignInEvent, cx: &mut Context<Self>) {
         match event {
             SignInEvent::Started(authorization) => {
+                // Opened here, and only here: this arm is reached from a
+                // sign-in the user started, which is what makes opening a
+                // browser theirs rather than ours. Never on selection, never
+                // at startup (`sso-sign-in`, "Signing in is something the user
+                // asks for").
+                //
+                // Guarded on the attempt still wanting it. The provider
+                // answers fast, but not instantly, and a user who pressed
+                // Cancel in that gap should not have a browser tab open on
+                // them for something they just stopped.
+                let wanted = self
+                    .signing_in
+                    .as_ref()
+                    .is_some_and(|attempt| !attempt.abandon.asked());
+                if wanted {
+                    // A convenience, never the mechanism: nothing checks
+                    // whether it worked, because the code and the address are
+                    // already on screen and the sign-in stays completable by
+                    // hand either way.
+                    cx.open_url(&authorization.verification_uri_complete);
+                }
                 if let Some(attempt) = &mut self.signing_in {
                     attempt.shown = Some(Shown {
                         user_code: authorization.user_code.into(),
@@ -1137,6 +1158,7 @@ impl CaixonhoApp {
                         .bg(cx.theme().muted)
                         .text_2xl()
                         .font_weight(gpui::FontWeight::BOLD)
+                        .debug_selector(|| "user-code".into())
                         .child(shown.user_code.clone()),
                 )
                 .child(
@@ -1203,6 +1225,7 @@ impl CaixonhoApp {
             Button::new("sign-in")
                 .label("Sign in")
                 .primary()
+                .debug_selector(|| "sign-in-button".into())
                 .on_click(cx.listener(move |app, _, _, cx| {
                     app.sign_in(profile.clone(), cx);
                 }))
