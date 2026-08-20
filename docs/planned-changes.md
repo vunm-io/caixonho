@@ -569,3 +569,39 @@ would then have to live on the same disk — moving the problem rather than
 solving it. The keychain already provides encryption at rest, per-application
 access control, and unlock tied to the OS session. Repo invariant 5 says the
 same thing in one line: secrets never touch the config file or the logs.
+
+## Why the keychain keeps refusing a build you just made
+
+Found 2026-08-20 while testing `XONHO-0011`, and it will happen again to
+whoever develops this next.
+
+A stored connection failed with *"the credential store refused the request"*.
+The item was there — `security find-generic-password -s "caixonho secret
+access key" -a <connection>` found it in the login keychain — and the keychain
+refused to hand it back anyway.
+
+The cause is the binary, not the item. Measured on the machine:
+
+- `codesign -dv target/debug/caixonho-gui` reports `adhoc, linker-signed`, with
+  no TeamIdentifier. An ad-hoc signature carries no identity that survives a
+  rebuild.
+- The item was created at `20260819170800Z`. The binary asking for it was built
+  the following evening.
+
+macOS binds a keychain item's ACL to the application that created it. A rebuilt
+ad-hoc binary is a different application, so the prompt returns, and a prompt
+that is declined — or that appears behind the window and is dismissed — is
+reported exactly as this application reports it: refused, with the item intact.
+
+Two consequences worth keeping:
+
+- **In development, expect it after every rebuild.** "Always Allow" grants the
+  binary that exists at that moment and nothing later. This is also the honest
+  explanation of the earlier note that the keychain "asks twice": it asks per
+  item per binary.
+- **It is an argument for signing, beyond distribution.** `docs/requirements-status.md`
+  carries "One self-contained binary per platform" as `[M]`, currently *partial*
+  with "nothing is signed". Unsigned is not only a download-warning problem:
+  an application whose identity changes every build cannot hold onto the
+  credential access a user granted it. A stable Developer ID is what makes
+  "Always Allow" mean always.
