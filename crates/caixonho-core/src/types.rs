@@ -226,6 +226,45 @@ impl Location {
             prefix,
         }
     }
+
+    /// The location `text` names, if it names one.
+    ///
+    /// Accepts the service's own addressing — `s3://bucket/prefix/` — and the
+    /// same thing without the scheme, because someone who has just read a
+    /// bucket name off a console will type the short form and being refused
+    /// for it would be pedantry.
+    ///
+    /// There is exactly one way to fail: naming no bucket. A bucket name this
+    /// application dislikes is *not* one of them — what is a valid name is the
+    /// service's judgement, not ours, and a client that pre-refuses a name the
+    /// service would have accepted is declaring where it should be observing
+    /// (`ADR-0002`). A name the service rejects comes back as a service
+    /// failure, with its own cause, which is the honest place for it.
+    pub fn parse(text: &str) -> Option<Self> {
+        let trimmed = text.trim();
+        let without_scheme = trimmed
+            .strip_prefix("s3://")
+            .unwrap_or_else(|| trimmed.strip_prefix("S3://").unwrap_or(trimmed))
+            .trim_start_matches('/');
+
+        let (bucket, rest) = match without_scheme.split_once('/') {
+            Some((bucket, rest)) => (bucket, rest),
+            None => (without_scheme, ""),
+        };
+
+        if bucket.is_empty() {
+            return None;
+        }
+
+        Some(Self::at(bucket, Prefix::parse(rest)))
+    }
+}
+
+impl std::fmt::Display for Location {
+    /// The service's own addressing, which is also what the path bar shows.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "s3://{}/{}", self.bucket, self.prefix.as_str())
+    }
 }
 
 /// Where a listing left off.
@@ -524,6 +563,73 @@ mod tests {
         };
         assert!(more_coming.is_empty(), "this page carried nothing");
         assert!(more_coming.is_truncated(), "but the listing is not over");
+    }
+
+    #[test]
+    fn a_location_is_read_from_the_services_own_addressing() {
+        let here = Location::parse("s3://holiday/photos/vacation/").expect("a location");
+
+        assert_eq!(here.bucket, "holiday");
+        assert_eq!(here.prefix.as_str(), "photos/vacation/");
+    }
+
+    #[test]
+    fn the_scheme_and_the_trailing_separator_are_both_optional() {
+        // Someone who has just read a bucket name off a console types the
+        // short form, and being refused for it would be pedantry.
+        let written = [
+            "s3://holiday/photos/",
+            "s3://holiday/photos",
+            "holiday/photos/",
+            "holiday/photos",
+            "  s3://holiday/photos  ",
+        ];
+
+        for text in written {
+            let here = Location::parse(text).unwrap_or_else(|| panic!("{text:?} names a location"));
+            assert_eq!(here.bucket, "holiday", "from {text:?}");
+            assert_eq!(here.prefix.as_str(), "photos/", "from {text:?}");
+        }
+    }
+
+    #[test]
+    fn a_bucket_on_its_own_is_that_buckets_root() {
+        for text in ["s3://holiday", "s3://holiday/", "holiday"] {
+            let here = Location::parse(text).unwrap_or_else(|| panic!("{text:?}"));
+            assert_eq!(here.bucket, "holiday");
+            assert!(here.prefix.is_root(), "from {text:?}");
+        }
+    }
+
+    #[test]
+    fn text_that_names_no_bucket_names_nowhere() {
+        // The one way to fail. The caller keeps the location already open —
+        // `object-browsing`, "Text that names nowhere".
+        for text in ["", "   ", "s3://", "s3:///", "/", "///"] {
+            assert_eq!(Location::parse(text), None, "{text:?} names no bucket");
+        }
+    }
+
+    #[test]
+    fn a_bucket_name_the_service_might_dislike_is_the_services_business() {
+        // Not ours to refuse: pre-rejecting a name the service would have
+        // accepted is declaring where this project observes (`ADR-0002`), and
+        // a name it rejects comes back with a cause of its own.
+        let odd = Location::parse("s3://Not_A_Valid_Bucket_Name/").expect("parsed anyway");
+
+        assert_eq!(odd.bucket, "Not_A_Valid_Bucket_Name");
+    }
+
+    #[test]
+    fn what_is_written_can_be_read_back() {
+        let here = Location::at("holiday", Prefix::parse("photos/vacation"));
+
+        assert_eq!(here.to_string(), "s3://holiday/photos/vacation/");
+        assert_eq!(Location::parse(&here.to_string()), Some(here));
+
+        let root = Location::bucket("holiday");
+        assert_eq!(root.to_string(), "s3://holiday/");
+        assert_eq!(Location::parse(&root.to_string()), Some(root));
     }
 
     #[test]

@@ -85,8 +85,19 @@
     `list_buckets_request` already is.
   - Verification: `cargo test -p caixonho-core`
 
-- [ ] 2.5 [dispatch: main] Make a refused location its own outcome, and prove
+- [x] 2.5 [dispatch: main] Make a refused location its own outcome, and prove
       it is never emptiness.
+      - **`classify.rs` needed no change**, which is the finding rather than a
+        shortcut: the adapter sends a listing failure through the same
+        classifier and the same `s3:ListBucket` context the probe already
+        used, so a refusal was already a typed cause before this task began.
+        What was missing was the proof at this level, not the behaviour.
+      - Established by `a_refused_location_is_an_error_and_never_an_empty_page`
+        and `every_other_cause_stays_itself_across_the_port_too` in
+        `store.rs` — the second matters as much as the first: an expired
+        session, a network failure and a trust failure must each stay
+        themselves, because a window that collapsed them would send the user
+        to fix a sign-in that is fine.
   - Paths: `crates/caixonho-core/src/classify.rs`,
     `crates/caixonho-core/src/store.rs`
   - Done criteria: a listing refused on authorization grounds is an error
@@ -96,7 +107,18 @@
     stay themselves.
   - Verification: `cargo test -p caixonho-core`
 
-- [ ] 2.6 [dispatch: main] Parse and render a location as text.
+- [x] 2.6 [dispatch: main] Parse and render a location as text.
+      - Both the service's `s3://bucket/prefix/` and the same without the
+        scheme, because someone reading a bucket name off a console types the
+        short form and refusing it would be pedantry. `design.md` left this
+        open; there is no ambiguity to fear, since a location always names a
+        bucket first.
+      - **Exactly one way to fail: naming no bucket.** A name this application
+        dislikes is not a failure — what is a valid bucket name is the
+        service's judgement, and pre-refusing one it would have accepted is
+        declaring where `ADR-0002` says to observe. A name the service rejects
+        comes back as a service failure with a cause of its own.
+      - 6 tests, including that what is written reads back.
   - Paths: `crates/caixonho-core/src/types.rs`
   - Done criteria: pure functions both ways, with tests for a bucket alone, a
     bucket with a prefix, a trailing separator present and absent, and text
