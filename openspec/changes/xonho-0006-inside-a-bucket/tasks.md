@@ -34,7 +34,19 @@
 
 ## 2. The port, and the rules that make a listing correct
 
-- [ ] 2.1 [dispatch: main] Add the domain types a listing needs.
+- [x] 2.1 [dispatch: main] Add the domain types a listing needs.
+      - `Prefix` is a newtype rather than a `String`, and that is the load-
+        bearing decision: S3 makes `photos` and `photos/` different requests
+        with different answers, so a prefix normalised only at some call sites
+        is a defect waiting for the one that forgets. Every value of the type
+        has one shape — empty, or ending in `/` — enforced on the way in.
+      - `Prefix::segments` is where a breadcrumb trail comes from, which is why
+        no trail is stored: it is a reading of the location, not a second
+        record that could disagree with it.
+      - `Object::name_within` returns the empty string when a key *is* the
+        prefix being listed — the marker case — so 2.2 has something exact to
+        drop rather than a heuristic to guess with.
+      - 8 tests, all failing shapes included; 182 pass in core.
   - Paths: `crates/caixonho-core/src/types.rs`
   - Done criteria: a location (bucket + prefix), a page (child prefixes,
     objects, whether more remains and how to ask for it), a folder, and an
