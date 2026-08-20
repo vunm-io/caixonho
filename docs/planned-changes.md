@@ -126,6 +126,31 @@ ran into: permission to work inside a bucket, none to enumerate the account.
 Without this the app is a dead end for those keys — it can only offer a
 listing the credential is not allowed to make.
 
+## Smaller things, found at close-out and not yet cut into changes
+
+Recorded 2026-08-20, closing out `XONHO-0004` and `XONHO-0012`. None of these
+is large enough to be a change on its own yet; all of them are large enough to
+be lost if they stay in a session log.
+
+- **The keychain has only ever been exercised on macOS.** Windows Credential
+  Manager is reached through the same `keyring` API and compiles in CI, but
+  nobody has stored, read and forgotten a secret on Windows — and Windows is
+  the primary daily driver by the repo's own account. It belongs to whichever
+  change first has a Windows machine in front of it, and it should be a task
+  in that change rather than a hope.
+- **The refused credential is still unexplained.** Two saved connections carry
+  the same access key id and only one works, so the difference is in the
+  keychain rather than in anything the app does. It was not diagnosable when
+  it appeared; it is now, and it is the natural first case for the log.
+- **`block v0.1.6` will be rejected by a future Rust.** It arrives through
+  `cocoa` → `gpui` at the pinned zed commit, so it is macOS-only, upstream,
+  and movable only by bumping the UI stack — which `ADR-0001` already makes a
+  change of its own, green on both targets. Worth a line in that change rather
+  than a change of its own.
+- **`cargo deny` is promised by the brief (§8) and absent from CI**, which
+  runs fmt, clippy and tests only. The `block` warning above is exactly the
+  class of thing it would have surfaced without anyone reading clippy output.
+
 ## Storing credentials: keychain, not an app-managed cipher
 
 `XONHO-0004` uses the OS keychain (macOS Keychain, Windows Credential

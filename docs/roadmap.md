@@ -30,15 +30,23 @@ that each own a subsystem and land on their own:
 |---|---|---|
 | `XONHO-0003` | Connecting to an account, listing its buckets, telling failure causes apart | landed |
 | `XONHO-0005` | Regions on the list, filtering by region, and the first working piece of permission awareness | landed |
+| `XONHO-0004` | Entering credentials in the app, storing them in the OS keychain, and connecting only when asked | landed |
+| `XONHO-0012` | A log on disk that says what the app decided and why, and never holds a secret | landed |
 | `XONHO-0009` | The app shell, the palette, and loading, empty and error states that were improvised before | in progress |
 | `XONHO-0006` | Opening a bucket and browsing objects by prefix, including reaching a bucket by name when the account listing is denied | next |
-| `XONHO-0004` | Entering credentials in the app, storing them in the OS keychain, and session lifetime | after browsing |
+| `XONHO-0011` | Signing in to IAM Identity Center from the app, via the OIDC device flow | after browsing |
+| `XONHO-0013` | Editing a saved connection: its region, its key, and renaming it | after browsing |
 
-Browsing is ordered ahead of credential entry deliberately: a bucket list alone
-is a dead end, and opening objects is what a person launches an S3 client to do.
-Credential entry is what makes the app usable by someone who does not already
-have the AWS CLI configured, which is required before anyone else can use it,
-but it unblocks nobody today. The reasoning is kept current in
+Credential entry was ordered **ahead** of browsing on 2026-08-19, reversing an
+earlier decision that had put browsing first. The argument for browsing first
+still holds on its own terms — a bucket list alone is a dead end — and it is why
+`XONHO-0006` comes immediately next. What did not hold was the counter-argument:
+credential entry had been treated as work for a hypothetical future user, on the
+grounds that the developer's own machine already had working profiles in
+`~/.aws`. Those profiles reach a password manager through an external process,
+which is one developer's scaffolding rather than the product, and ordering around
+it showed — the first thing anyone noticed about the app was a seven-second wait
+that only that arrangement produced. The full reasoning is in
 [`planned-changes.md`](planned-changes.md).
 
 ## What this project will not do

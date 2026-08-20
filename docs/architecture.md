@@ -40,8 +40,13 @@ flowchart TB
     end
     subgraph resolve ["Getting a connection"]
         PROFILES["profiles<br/><i>reads ~/.aws</i>"]
+        CONNECTIONS["connections<br/><i>the ones entered here, remembered</i>"]
+        CREDENTIALS["credentials<br/><i>the secret half, in the OS store</i>"]
         CONNECTION["connection<br/><i>provider chain, region</i>"]
         TLS["tls<br/><i>one HTTP client, OS trust store</i>"]
+    end
+    subgraph telling ["Saying what happened"]
+        DIAGNOSTICS["diagnostics<br/><i>the log: decisions, never secrets</i>"]
     end
     subgraph work ["Talking to S3"]
         STORE["store<br/><i>the port: a trait</i>"]
@@ -53,12 +58,14 @@ flowchart TB
         PROBE["probe<br/><i>what to ask about next</i>"]
     end
 
-    SESSION --> PROFILES & CONNECTION & STORE & CAPABILITY & PROBE
+    SESSION --> PROFILES & CONNECTIONS & CONNECTION & STORE & CAPABILITY & PROBE
+    CONNECTIONS --> CREDENTIALS
     CONNECTION --> TLS
     STORE -.implemented by.-> ADAPTER
     ADAPTER --> CLASSIFY
     PROBE --> STORE
     PROBE --> CAPABILITY
+    SESSION & CONNECTION & PROBE -.report to.-> DIAGNOSTICS
 ```
 
 `store` is a trait — the *port* — and `adapter` is its one real implementation.
@@ -141,6 +148,41 @@ window matches on the cause to choose what to say and which action to offer;
 a stringified error can only be printed. This is the mechanism behind the
 "honest about permissions" claim, and it is why the classifier is a module of
 its own with its own tests.
+
+## A credential is split the moment it arrives
+
+A credential entered in the app is two things with different homes. The name,
+the region and the access key id are ordinary configuration and go to a file in
+the platform's config location. The secret access key and the session token go
+to the operating system's credential store and nowhere else. This is why losing
+the configuration loses no secret, and why reading the configuration discloses
+none — and it is repo invariant 5 expressed as a data layout rather than as a
+promise to be careful.
+
+Nothing here writes `~/.aws/credentials`. That file is shared with every other
+AWS tool on the machine, and editing it on the user's behalf is a side effect
+nobody asked for; a stored credential is handed to the SDK as static
+credentials for that client instead.
+
+## What it writes down, and what it may never write
+
+`diagnostics` is the log: a file in the platform's own log location, rolled
+daily and bounded, recording the decisions this application made — a connection
+opened or refused, a listing settled this way, a probe that came back with that.
+It is not a trace of every function entered, and it never reaches a network.
+There is no telemetry in this project (invariant 4); the file is on the user's
+machine and only the user can send it anywhere.
+
+**A secret is never handed to the logging layer at all** — not filtered on the
+way out, never given. Every logging function takes a name, a count, a scope or a
+structured error, and no signature among them is one a `CredentialSecret` fits
+into. The rule is therefore checkable by reading six signatures rather than by
+auditing every call site, and the secret type carries the other half itself: no
+`Display` at all, and a hand-written `Debug` that redacts.
+
+Failing to log is not a failure. A log that cannot be opened is reported once
+and the application runs without it — a client that refuses to start because it
+could not write a diagnostic has mistaken the diagnostic for the product.
 
 ## Where to go next
 

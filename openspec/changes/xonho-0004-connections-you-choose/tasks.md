@@ -224,5 +224,63 @@
         connections carry the *same* access key id, and only one of them works.
         Whatever differs is in the keychain, which points at the secret captured
         on the first save rather than at anything the application does with it.
-- [ ] 6.4 [dispatch: main] Update `docs/requirements-status.md`, and run the
+- [x] 6.4 [dispatch: main] Update `docs/requirements-status.md`, and run the
       close-out review in `AGENTS.md`.
+      - `docs/requirements-status.md` carries all three §4.1 rows this change
+        named: static credentials in the OS keychain is **done**, and the two
+        it only moved — simultaneous connections, and inline re-login — stay
+        **partial** with the remainder named against `XONHO-0011`.
+
+      **1. What was asked, or what was convenient?** What was asked, and this
+      change exists because the previous ordering was the other answer. All
+      five bullets landed: startup offers connections and contacts nothing; a
+      credential is entered in the app with its secret in the OS keychain; a
+      connection can be forgotten; one that cannot authenticate reads as
+      unavailable rather than being offered; and discovered and stored
+      connections share one list. Two things arrived that the proposal did
+      not ask for — editing a connection, and remembering it across restarts.
+      The second was a defect rather than a feature: the secret was going to
+      the keychain and nothing kept the rest, so a connection vanished on
+      restart while its secret stayed behind as an orphan the app could no
+      longer name or delete. Both are recorded in `connections.rs` and in
+      `docs/planned-changes.md`, and the part that is genuinely new work —
+      changing a region, replacing a key, renaming — was cut out as
+      `XONHO-0013` rather than absorbed here.
+
+      **2. Do the reader-facing documents still tell the truth?** `README.md`
+      did; it describes typed credentials, the keychain, and contacting
+      nothing until asked. Two did not, and are fixed here.
+      `docs/architecture.md` mapped core without `credentials` or
+      `connections` in it at all — the keychain split, the single largest
+      structural idea in this change, was undocumented — so both modules join
+      the map and the split gets a section of its own. `docs/roadmap.md` was
+      worse than stale: it listed this change as "after browsing" and carried
+      the pre-reversal argument for browsing first, while claiming that
+      reasoning was "kept current" in `planned-changes.md`, which had recorded
+      the reversal on 2026-08-19. A reader following the pointer would have
+      found the two documents contradicting each other.
+
+      **3. Did we leave rubbish?** No. No `TODO`, `FIXME`, `dbg!` or
+      `#[allow(dead_code)]` in `crates/`; clippy clean on this project's code
+      across the workspace and all targets.
+
+      **4. What is asserted but not verified?** The refused credential is
+      still unexplained: two saved connections carry the **same access key
+      id** and only one of them works, so whatever differs is in the keychain
+      and most likely a secret captured short on the first save. It was not
+      diagnosable when it appeared, which is what `XONHO-0012` was written to
+      change — and `XONHO-0012` task 4.3 has since found that the window in
+      use predated the logging build, so this is the obvious first case to
+      put through a current one. Beyond it: the keychain path is exercised
+      live on macOS only. Windows Credential Manager is reached through the
+      same `keyring` API and compiles in CI, but no one has stored, read and
+      forgotten a secret on Windows, and it is a first-class v1 target.
+
+      **5. What is left, and where is it written?** `XONHO-0013` (region, key
+      replacement, rename) is in `docs/planned-changes.md` with its three
+      parts and the reason they are not one operation. The re-login *offer* is
+      `XONHO-0011`, named in `docs/requirements-status.md`. The refused-key
+      question is recorded at 6.3 above and now also against `XONHO-0012`
+      4.3. The Windows keychain gap goes to `docs/planned-changes.md`, under
+      the close-out findings, to be picked up by whichever change first has a
+      Windows machine in front of it.
