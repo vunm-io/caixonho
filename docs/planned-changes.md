@@ -158,6 +158,20 @@ size formatting and a key with spaces and non-ASCII characters, lives in the
 R2 bucket `caixonho-test` (see the endpoint note below). It is deliberately
 richer than the three S3 test buckets, which are empty.
 
+Two of the four are already visible in what the service returns for it. At the
+root, with `delimiter=/`, `notes` comes back as a 35-byte object *and* `notes/`
+as a prefix — one name, two rows, one of them openable. And a marker does not
+appear beside its own folder but *inside* it: listing `prefix=photos/` returns
+
+    CommonPrefixes: photos/vacation/
+    Contents:       photos/ (0 bytes), photos/cat.jpg, photos/dog.jpg
+
+so the key `photos/` is an entry within `photos/` whose name — everything after
+the prefix — is the empty string. Rendered without thought that is **a row with
+no name and no size inside every folder anyone created from a console**. It is
+the first thing to get right, and it costs nothing to get right: the entry
+whose key equals the prefix is the folder itself and is never its own child.
+
 ## Testing against something that is not AWS
 
 R2 is reachable **today on the profile path and not on the stored-credential
@@ -180,6 +194,32 @@ sits: a second implementation is the cheapest way to find every place the code
 assumed AWS rather than S3, and R2's free tier (10 GB, 1M class A operations
 and 10M class B per month, no egress charge) covers this project's testing
 without a bill.
+
+### R2 tokens hand out exactly the shape this project is about
+
+R2's token permissions split along the same line the application does. An
+**Object Read & Write** or **Object Read only** token can list and read objects
+inside buckets but **cannot enumerate the buckets** — and widening its scope to
+"all buckets" does not change that, because the limit is the permission class
+rather than the resource set. Only **Admin Read only** and above can list
+buckets. Confirmed against Cloudflare's token documentation on 2026-08-20,
+after an object-scoped token was widened to every bucket and `ListBuckets`
+went on being denied.
+
+That makes an object-scoped token the cheapest fixture this repository has for
+two things it currently has no way to see:
+
+- `XONHO-0009` needs "a profile that is denied" to check the error state
+  against, and this is one that is denied for a real reason rather than a
+  broken key.
+- It is exactly the "key scoped to a bucket, no permission to enumerate the
+  account" case that `XONHO-0006` has to answer with *open a bucket by name* —
+  and against such a token the application today is a dead end, because
+  `ListBuckets` is its only door in.
+
+So the useful arrangement is two tokens, not one fixed token: an **Admin Read
+only** token for browsing, and the object-scoped one kept deliberately as the
+denied fixture.
 
 ## Smaller things, found at close-out and not yet cut into changes
 
