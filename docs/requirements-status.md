@@ -69,6 +69,16 @@ are not started. They are M2+ and are not late.
 
 ## The count
 
-Of the 24 `[M]` requirements in the three M1 areas: **10 done, 7 partial, 7 not
-started.** The nearest gaps are now signing in to IAM Identity Center from the app, and
+Of the 24 `[M]` requirements in the three M1 areas: **9 done, 8 partial, 7 not
+started** — §4.1 has 2 done, 4 partial, 2 not started; §4.2 has 1, 2 and 4;
+§4.3, the headline, has 6, 2 and 1. Outside M1, §7–8 stands at 1 done, 3
+partial and 1 not started.
+
+The nearest gaps are signing in to IAM Identity Center from the app, and
 opening a bucket. Entering a credential closed on 2026-08-20.
+
+Counted from the tables above on 2026-08-20, after this line had drifted from
+them: it read "10 done, 7 partial" while the rows said otherwise. A summary
+that disagrees with what it summarises is worse than no summary, in a file
+whose whole purpose is to be diffed against reality — so it now names the
+per-section figures, which cannot drift without the drift being visible.
