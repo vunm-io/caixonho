@@ -246,7 +246,15 @@
   - Done criteria: all three commands exit zero
   - Verification: the commands themselves
 
-- [ ] 5.2 [dispatch: main] CI green on both targets.
+- [x] 5.2 [dispatch: main] CI green on both targets.
+      - Dispatched: main (2026-08-20) — run
+        [`32360418961`](https://github.com/vunm-io/caixonho/actions/runs/32360418961)
+        for `4971276`, the current tip: `build (macos-latest)`,
+        `build (windows-latest)` and `rustfmt` all successful. Run
+        [`32355787657`](https://github.com/vunm-io/caixonho/actions/runs/32355787657)
+        for `827710c`, the commit this change closed on, was green on the same
+        three. Both are recorded because the later commit is what a reader will
+        check out, and the earlier one is what this change actually shipped.
   - Paths: none
   - Done criteria: the run for the merge commit shows `build (windows-latest)`
     and `build (macos-latest)` both successful; the run id is recorded here
