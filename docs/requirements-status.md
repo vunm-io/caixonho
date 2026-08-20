@@ -56,8 +56,8 @@ gap is named. **none** — not started.
 
 | Requirement | State | Notes |
 |---|---|---|
-| Crash handling without telemetry — a local file, with a way to attach it to an issue | partial | `XONHO-0012` lands the log and the path to it; the crash hook itself is not written |
-| Secrets redacted from all logs, asserted by a unit test | partial | Was vacuous while there were no logs. `XONHO-0012` makes it real |
+| Crash handling without telemetry — a local file, with a way to attach it to an issue | partial | `XONHO-0012` landed the log, bounded and rolled daily, and the status bar names its directory. The crash hook itself is not written, so a panic still leaves nothing behind |
+| Secrets redacted from all logs, asserted by a unit test | partial | Real rather than vacuous since `XONHO-0012`: no logging signature accepts a `CredentialSecret`, and the three-spelling test guards it. The gap is the AWS SDK — quiet by default, but `CAIXONHO_LOG` can raise it to levels that carry request and header material, and nothing redacts that |
 | No telemetry | done | There is no network path out of this application other than to the endpoint the user chose |
 | Dependencies audited in CI | none | The brief promises it; CI runs fmt, clippy and tests only |
 | One self-contained binary per platform | partial | It builds on both; there is no installer and nothing is signed |

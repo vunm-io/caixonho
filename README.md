@@ -26,6 +26,10 @@ Working today:
 - Tells failure causes apart — an expired session, rejected credentials, a
   network failure and a trust failure are each reported as themselves, with the
   action that fixes them, and none of them is ever reported as "access denied".
+- Writes down what it decided and why, in your platform's own log location, and
+  shows you that location in the status bar so a report can carry evidence
+  instead of a description. The file is bounded and rolls daily; `CAIXONHO_LOG`
+  turns the detail up for an investigation. No secret is ever written to it.
 
 Not there yet: opening a bucket and browsing its objects, transfers, and signing
 in to IAM Identity Center from the app rather than through the AWS CLI. Those

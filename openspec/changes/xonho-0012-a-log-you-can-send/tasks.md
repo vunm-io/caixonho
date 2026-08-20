@@ -53,10 +53,19 @@
 
 - [x] 4.1 [dispatch: main] `cargo fmt --all`, `cargo clippy --workspace
       --all-targets -- -D warnings`, `cargo test --workspace` green.
-- [ ] 4.2 [dispatch: main] CI green on both targets.
-- [x] 4.3 [dispatch: main] Live: run the app, make it fail, read the log, and
+- [x] 4.2 [dispatch: main] CI green on both targets.
+      - Run `32333149778` on `e57015c`, the tip carrying this change:
+        `build (windows-latest)` success, `build (macos-latest)` success,
+        `rustfmt` success. The two commits of this change were each green on
+        both targets when pushed (`32284158017`, `32317769510`).
+- [ ] 4.3 [dispatch: main] Live: run the app, make it fail, read the log, and
       confirm it explains the failure and holds no secret.
-      - Partly. The file is created at startup and this machine's log holds a
+      - **Un-ticked on 2026-08-20.** It was carrying "Partly" and a paragraph
+        saying the failure had never been read, which is a box that reports
+        done while the change's central check has not happened — and with it
+        ticked the change reads 11/11 and archivable. The honest state is
+        that everything except the live failure is finished.
+      - The file is created at startup and this machine's log holds a
         real event: `INFO connection opened connection=… source="profile"
         region="ap-southeast-1"`. Starting the app writes nothing further, which
         is correct now that startup contacts nothing — there are no decisions
@@ -64,5 +73,65 @@
       - **Not yet done: a real failure read back out of the log.** That needs
         someone to use the app and then look, and it is the first thing worth
         doing next session, because it is the case the change exists for.
-- [ ] 4.4 [dispatch: main] Update `docs/requirements-status.md` and run the
+      - 2026-08-20, and this is why it had not happened: the application window
+        open on this machine was **a build that predates logging entirely**. Its
+        binary in `target/Caixonho.app` was built 2026-08-19 15:40 and the
+        process had been running 20 hours; the logging commit `b9f00bb` is dated
+        2026-08-20 00:50, and the whole of `XONHO-0004` (`cd50ed3`…`5906495`)
+        also lands after it. Clicking in that window could never have produced a
+        log line, because that build has no log writer in it — so the absence of
+        failures in the log was evidence about the binary, not about the code.
+        A current build was started from `target/debug/caixonho-gui` and did
+        create today's file. **The check still needs a person to drive the
+        current build into a failure and read it back.**
+- [x] 4.4 [dispatch: main] Update `docs/requirements-status.md` and run the
       close-out review in `AGENTS.md`.
+      - `docs/requirements-status.md`: both §7–8 rows this change names are
+        rewritten from promise to record. Both stay **partial**, and each now
+        says what the remainder is: no crash hook, so a panic still leaves
+        nothing behind; and the AWS SDK's own output, quiet by default but
+        raisable by `CAIXONHO_LOG` to levels carrying request and header
+        material that nothing redacts.
+
+      **1. What was asked, or what was convenient?** What was asked. The
+      proposal's five bullets all landed: a file in the platform's log
+      location, decisions rather than a trace, structural secret exclusion,
+      SDK output quiet by default and raisable for one investigation, and a
+      bounded file. One deliberate departure, already recorded at 3.1: the
+      path is shown in the status bar rather than behind a menu, because the
+      moment it is wanted is the moment something has already gone wrong.
+
+      **2. Do the reader-facing documents still tell the truth?** They did
+      not, and this is the finding of the review. The change shipped a
+      user-visible feature — a log file, its location in the status bar, an
+      environment variable — and `README.md`, `docs/architecture.md` and
+      `docs/roadmap.md` said nothing about any of it. Fixed here: README's
+      "Working today" gains the log; architecture gains `diagnostics` in the
+      core map and a section on what is written and what may never be;
+      roadmap gains the change in the M1 table. This is the second time this
+      exact rule has caught this exact omission, which is an argument for the
+      documentation task living in `tasks.md` from the start rather than
+      being remembered at close-out.
+
+      **3. Did we leave rubbish?** No. No `TODO`, `FIXME`, `dbg!` or
+      `#[allow(dead_code)]` anywhere in `crates/`; `cargo clippy --workspace
+      --all-targets` is clean on this project's own code. Its one warning is
+      `block v0.1.6`, reached through `cocoa` → `gpui` at the pinned zed
+      commit — upstream, macOS-only, and movable only by bumping the UI
+      stack, which ADR-0001 makes a change of its own.
+
+      **4. What is asserted but not verified?** The headline gap: **no real
+      failure has ever been read back out of this log.** 4.3 explains why it
+      had not happened — the window open on this machine was a build older
+      than the logging code — but the check itself is still owed, and until
+      it is paid the claim that the log explains a failure rests on unit
+      tests and one success-path event. Also unverified: nothing exercises
+      the roll at 4 MiB against a file that actually reaches 4 MiB; the
+      Windows log location is asserted through `directories` rather than
+      observed, since CI builds on Windows but no test reads a path there.
+
+      **5. What is left, and where is it written?** The crash hook and the
+      SDK-verbosity redaction gap are both in `docs/requirements-status.md`
+      as the named remainder of two partial requirements. The live failure
+      read-back stays open as 4.3 in this file. The `block` future-rejection
+      warning goes to `docs/planned-changes.md` beside the UI-stack bump.
