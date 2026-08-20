@@ -41,6 +41,7 @@ pub mod outcome;
 pub mod probe;
 pub mod profiles;
 pub mod session;
+pub mod sso;
 pub mod store;
 pub(crate) mod tls;
 pub mod types;
@@ -50,11 +51,17 @@ pub use capability::{Capability, CapabilityStore, CredentialsId, Observation, Sc
 pub use connection::{Connection, ConnectionSource};
 pub use credentials::{CredentialSecret, StoredCredential};
 pub use diagnostics::{Diagnostics, LOG_LEVEL_ENV, LogProblem};
-pub use error::{ConnectionsProblem, CredentialStoreProblem, Error, Result, SessionProblem};
+pub use error::{
+    ConnectionsProblem, CredentialStoreProblem, Error, Result, SessionProblem, SignInProblem,
+};
 pub use outcome::{ActiveOutcome, Outcome, TaggedOutcome};
 pub use probe::{IN_FLIGHT_BUDGET, ProbeTarget};
 pub use profiles::{ConfigPaths, discover, sso_session};
 pub use session::Session;
+pub use sso::{
+    ClientRegistration, DeviceAuthorization, SignInLocation, SignInSecret, SsoSignIn, SsoToken,
+    TokenAnswer,
+};
 pub use store::ObjectStore;
 pub use tls::HttpStack;
 pub use types::{

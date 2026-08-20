@@ -22,6 +22,23 @@ pub enum SessionProblem {
     Invalid,
 }
 
+/// Why a sign-in ended without a session.
+///
+/// Only the two outcomes that belong to the *attempt* live here. A provider
+/// that could not be reached is [`Error::Network`] and a profile that does not
+/// say where to sign in is [`Error::MissingConfiguration`] — both already mean
+/// exactly that, and inventing sign-in-shaped copies of them would give the
+/// same condition two spellings for no one's benefit (`xonho-0011` task 2.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignInProblem {
+    /// The user was asked and said no.
+    Declined,
+    /// The attempt's own window closed before the user finished. Not a
+    /// credential problem and not a refusal — the offer simply went stale,
+    /// and the answer is another attempt.
+    Expired,
+}
+
 /// Why the operating system's credential store could not be used.
 ///
 /// A cause of its own, never folded into a generic failure and never into an
@@ -91,6 +108,34 @@ pub enum Error {
         sso_session: Option<String>,
         /// Why they were refused.
         problem: SessionProblem,
+    },
+
+    /// A sign-in attempt ended without producing a session.
+    ///
+    /// Distinct from [`Error::SessionRejected`], which is what a *credential*
+    /// gets when it is refused: nothing was rejected here, the attempt just
+    /// did not complete. Reporting one as the other would send someone to
+    /// check an access key over a browser tab they closed.
+    #[error("signing in to `{sso_session}` {}", match problem { SignInProblem::Declined => "was declined", SignInProblem::Expired => "expired before it was completed — try again" })]
+    SignIn {
+        /// The `sso_session` the attempt was for.
+        sso_session: String,
+        /// How the attempt ended.
+        problem: SignInProblem,
+    },
+
+    /// The session was obtained and then could not be saved.
+    ///
+    /// Its own cause because it is its own situation: the sign-in worked, the
+    /// user did nothing wrong, and nothing is broken except that none of it
+    /// will survive. Reporting it as a sign-in failure would send someone
+    /// back through a browser that is going to work again and change nothing.
+    #[error("signed in, but the session could not be saved to `{path}` — {detail}")]
+    TokenCacheNotWritable {
+        /// The file that could not be written.
+        path: String,
+        /// What the filesystem said, in the crate's own words.
+        detail: String,
     },
 
     /// The presented certificate chain is not trusted. Classified before the

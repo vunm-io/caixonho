@@ -855,6 +855,7 @@ mod tests {
     use crate::profiles::ConfigPaths;
     use crate::session::Session;
     use crate::tls::HttpStack;
+    use std::time::{Duration, SystemTime};
 
     /// The secret the tests put through the application. Not a real key — but
     /// it is treated as one everywhere below, which is the point.
@@ -1096,6 +1097,77 @@ mod tests {
             );
             assert_undisclosed(&log, secret, "the secret access key");
             assert_undisclosed(&log, token, "the session token");
+        }
+    }
+
+    #[test]
+    fn no_sign_in_secret_reaches_the_log_in_any_spelling() {
+        // `XONHO-0011` gives secrets a second home. An access token, a refresh
+        // token and a client secret are bearer material exactly like an access
+        // key, and the rule that covers one has to cover all of them — the
+        // three spellings included, since the awkward variants are the ones a
+        // readable-text search sails straight past.
+        for (access, refresh) in [(SECRET, TOKEN), (AWKWARD_SECRET, AWKWARD_TOKEN)] {
+            let fixture = Fixture::new("sign-in-secrets");
+            let (log, ()) = recording(everything(), || {
+                let at = crate::sso::SignInLocation {
+                    session_name: "corp".into(),
+                    start_url: "https://corp.awsapps.com/start".into(),
+                    region: "ap-southeast-1".into(),
+                    scopes: Vec::new(),
+                };
+                let obtained = crate::sso::ObtainedSession {
+                    token: crate::sso::SsoToken {
+                        access_token: crate::sso::SignInSecret::new(access),
+                        refresh_token: Some(crate::sso::SignInSecret::new(refresh)),
+                        expires_at: SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+                    },
+                    registration: crate::sso::ClientRegistration {
+                        client_id: "client-id-is-not-secret".into(),
+                        client_secret: crate::sso::SignInSecret::new(access),
+                        registration_expires_at: SystemTime::UNIX_EPOCH
+                            + Duration::from_secs(1_800_000_000),
+                    },
+                };
+
+                // The path that actually holds these secrets: writing them to
+                // the token cache. The file is allowed to carry them; the log
+                // is not.
+                let written = crate::sso::write_session(&fixture.dir, &at, &obtained)
+                    .expect("the session is written");
+                // In *some* spelling: the JSON writer escapes what the
+                // format requires, which is exactly why `disclosures` exists
+                // and why a readable-text search is not a check.
+                let body = std::fs::read_to_string(&written).expect("the file is there");
+                assert!(
+                    disclosures(access)
+                        .iter()
+                        .any(|spelling| body.contains(spelling)),
+                    "the cache file is the one place these may land, and it holds none of them"
+                );
+
+                // And the careless call sites: the whole session, and one
+                // secret on its own, handed straight to the logging layer at
+                // its most detailed level. Nothing in the crate does this. That
+                // it discloses nothing anyway is the property being asserted,
+                // and the hand-written Debug on `SignInSecret` is what holds it.
+                tracing::error!(session = ?obtained, "a call site that should not exist");
+                tracing::error!(
+                    secret = ?obtained.token.access_token,
+                    "another call site that should not exist"
+                );
+            });
+
+            assert!(
+                log.contains("a call site that should not exist"),
+                "the log has to hold the events these assertions are about:\n{log}"
+            );
+            assert!(
+                log.contains("client-id-is-not-secret"),
+                "the client id is public material and may be named:\n{log}"
+            );
+            assert_undisclosed(&log, access, "the access token, and the client secret");
+            assert_undisclosed(&log, refresh, "the refresh token");
         }
     }
 

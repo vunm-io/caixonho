@@ -3,7 +3,9 @@
 //! Both functions here map a cause to words. Neither touches the window, which
 //! is why they can be read — and tested — without one.
 
-use caixonho_core::{ConnectionsProblem, CredentialStoreProblem, Error, SessionProblem};
+use caixonho_core::{
+    ConnectionsProblem, CredentialStoreProblem, Error, SessionProblem, SignInProblem,
+};
 use gpui::SharedString;
 
 /// What to do about a failure. The advice belongs to the cause rather than
@@ -87,6 +89,22 @@ pub(crate) fn guidance_for(error: &Error) -> SharedString {
                      offer that request — nothing here is misconfigured."
                 )
                 .into(),
+                Error::SignIn { problem, .. } => match problem {
+                    SignInProblem::Declined => {
+                        "The sign-in was declined in the browser. Start it again to try once more."
+                            .into()
+                    }
+                    SignInProblem::Expired => {
+                        "The sign-in was not completed in time. Start it again — the code is only \
+                         good for a few minutes."
+                            .into()
+                    }
+                },
+                Error::TokenCacheNotWritable { path, .. } => format!(
+                    "Signed in, but the session could not be saved to {path}, so it will be asked \
+                     for again. Check that the folder exists and is writable."
+                )
+                .into(),
                 Error::Unexpected { .. } => "The call failed for an unrecognised reason.".into(),
     }
 }
@@ -116,7 +134,18 @@ pub(crate) fn unavailable_reason(error: &Error) -> Option<SharedString> {
         // Signing in worked; the endpoint simply does not offer that
         // request. Marking the connection would send the user to fix a
         // credential that is fine.
-        Error::Connections { .. }
+        // An attempt that was declined or ran out of time leaves the
+        // connection exactly as it was: still unusable, still for whatever
+        // reason it was unusable before. Marking it with the *attempt's*
+        // outcome would overwrite the cause with the symptom.
+        //
+        // A session that was obtained but could not be saved is the same
+        // story from the other side: the connection works right now, and will
+        // stop when the token lapses, which is not something to mark it with
+        // today.
+        Error::SignIn { .. }
+        | Error::TokenCacheNotWritable { .. }
+        | Error::Connections { .. }
         | Error::Network { .. }
         | Error::TlsTrust { .. }
         | Error::AccessDenied { .. }
