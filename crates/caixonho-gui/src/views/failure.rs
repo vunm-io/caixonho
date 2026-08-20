@@ -236,4 +236,157 @@ mod tests {
         assert_eq!(unavailable_reason(&network), None);
         assert_eq!(unavailable_reason(&trust), None);
     }
+
+    #[test]
+    fn a_failed_sign_in_or_unwritable_cache_does_not_make_the_connection_unusable() {
+        // An attempt that was declined or timed out does not change what the
+        // connection is, and a session that was obtained but could not be saved
+        // works right now — marking either would overwrite the real cause with
+        // a symptom.
+        let declined = Error::SignIn {
+            sso_session: "corp".into(),
+            problem: SignInProblem::Declined,
+        };
+        let expired = Error::SignIn {
+            sso_session: "corp".into(),
+            problem: SignInProblem::Expired,
+        };
+        let cache = Error::TokenCacheNotWritable {
+            path: "~/.aws/sso/cache/abc.json".into(),
+            detail: "permission denied".into(),
+        };
+
+        assert_eq!(unavailable_reason(&declined), None);
+        assert_eq!(unavailable_reason(&expired), None);
+        assert_eq!(unavailable_reason(&cache), None);
+    }
+
+    #[test]
+    fn a_sign_in_failure_or_unwritable_cache_offers_guidance() {
+        // A browser sign-in that was declined, one that timed out, and a
+        // session that could not be saved to disk have different next actions.
+        // Giving them the same message would leave the user repeating an
+        // action that cannot fix the problem.
+        let path = "~/.aws/sso/cache/abc.json";
+        let declined = Error::SignIn {
+            sso_session: "corp".into(),
+            problem: SignInProblem::Declined,
+        };
+        let expired = Error::SignIn {
+            sso_session: "corp".into(),
+            problem: SignInProblem::Expired,
+        };
+        let cache = Error::TokenCacheNotWritable {
+            path: path.into(),
+            detail: "permission denied".into(),
+        };
+
+        let declined_guidance = guidance_for(&declined);
+        let expired_guidance = guidance_for(&expired);
+        let cache_guidance = guidance_for(&cache);
+
+        assert_ne!(declined_guidance, expired_guidance);
+        assert_ne!(declined_guidance, cache_guidance);
+        assert_ne!(expired_guidance, cache_guidance);
+        assert!(cache_guidance.contains(path));
+    }
+
+    #[test]
+    fn a_rejected_session_offers_guidance_distinguishing_expired_invalid_and_sso() {
+        // An expired token, an invalid static key, and an SSO session require
+        // different remedies: signing in again, checking secret keys, or
+        // running the AWS SSO login command.
+        let expired = Error::SessionRejected {
+            profile: "work".into(),
+            sso_session: None,
+            problem: SessionProblem::Expired,
+        };
+        let invalid = Error::SessionRejected {
+            profile: "work".into(),
+            sso_session: None,
+            problem: SessionProblem::Invalid,
+        };
+        let sso = Error::SessionRejected {
+            profile: "work".into(),
+            sso_session: Some("corp".into()),
+            problem: SessionProblem::Expired,
+        };
+
+        let expired_guidance = guidance_for(&expired);
+        let invalid_guidance = guidance_for(&invalid);
+        let sso_guidance = guidance_for(&sso);
+
+        assert_ne!(expired_guidance, invalid_guidance);
+        assert_ne!(expired_guidance, sso_guidance);
+        assert_ne!(invalid_guidance, sso_guidance);
+        assert!(sso_guidance.contains("aws sso login --sso-session corp"));
+        assert!(expired_guidance.contains("work"));
+        assert!(invalid_guidance.contains("work"));
+    }
+
+    #[test]
+    fn a_credential_store_failure_distinguishes_locked_refused_and_absent_stores() {
+        // A locked keychain needs unlocking, a refused prompt was declined,
+        // and a missing keychain means using ~/.aws — confusing them sends the
+        // user to fix the wrong layer of the system.
+        let connection = "prod-db";
+        let locked = Error::CredentialStore {
+            connection: connection.into(),
+            problem: CredentialStoreProblem::Locked,
+        };
+        let refused = Error::CredentialStore {
+            connection: connection.into(),
+            problem: CredentialStoreProblem::Refused,
+        };
+        let absent = Error::CredentialStore {
+            connection: connection.into(),
+            problem: CredentialStoreProblem::Absent,
+        };
+
+        let locked_guidance = guidance_for(&locked);
+        let refused_guidance = guidance_for(&refused);
+        let absent_guidance = guidance_for(&absent);
+
+        assert_ne!(locked_guidance, refused_guidance);
+        assert_ne!(locked_guidance, absent_guidance);
+        assert_ne!(refused_guidance, absent_guidance);
+        assert!(locked_guidance.contains(connection));
+        assert!(refused_guidance.contains(connection));
+    }
+
+    #[test]
+    fn a_connections_file_failure_distinguishes_unreadable_malformed_and_unwritable() {
+        // Malformed files tell the user to repair or remove without overwriting,
+        // unwritable files explain a change was lost, and unreadable files
+        // note that ~/.aws remains intact.
+        let path = std::path::PathBuf::from("/home/user/.config/caixonho/connections.json");
+        let unreadable = Error::Connections {
+            problem: ConnectionsProblem::Unreadable,
+            path: Some(path.clone()),
+        };
+        let malformed = Error::Connections {
+            problem: ConnectionsProblem::Malformed,
+            path: Some(path.clone()),
+        };
+        let not_writable = Error::Connections {
+            problem: ConnectionsProblem::NotWritable,
+            path: Some(path.clone()),
+        };
+        let no_location = Error::Connections {
+            problem: ConnectionsProblem::NoLocation,
+            path: None,
+        };
+
+        let unreadable_guidance = guidance_for(&unreadable);
+        let malformed_guidance = guidance_for(&malformed);
+        let not_writable_guidance = guidance_for(&not_writable);
+        let no_location_guidance = guidance_for(&no_location);
+
+        assert_ne!(unreadable_guidance, malformed_guidance);
+        assert_ne!(unreadable_guidance, not_writable_guidance);
+        assert_ne!(unreadable_guidance, no_location_guidance);
+        assert_ne!(malformed_guidance, not_writable_guidance);
+        assert_ne!(malformed_guidance, no_location_guidance);
+        assert_ne!(not_writable_guidance, no_location_guidance);
+    }
 }
