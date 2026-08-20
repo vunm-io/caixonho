@@ -307,6 +307,25 @@ pub async fn sign_in(
     }
 }
 
+/// The waiter the application actually runs on.
+///
+/// Separate from the loop so the loop can be tested without spending the time
+/// it waits. This one spends it: `tokio::time::sleep` on the runtime the rest
+/// of the AWS work already uses.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RealTime;
+
+#[async_trait::async_trait]
+impl Waiter for RealTime {
+    fn now(&self) -> SystemTime {
+        SystemTime::now()
+    }
+
+    async fn wait(&self, how_long: Duration) {
+        tokio::time::sleep(how_long).await;
+    }
+}
+
 /// The home directory the AWS tooling reads its configuration from.
 ///
 /// Mirrors `aws_runtime::fs_util::home_dir` deliberately, including the

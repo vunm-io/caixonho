@@ -17,10 +17,12 @@ use crate::connection::{self, Connection, ConnectionSource};
 use crate::connections::{self, ConfigDirectory, ConnectionFile};
 use crate::credentials::{CredentialSecret, Keyring, SecretStore, StoredCredential};
 use crate::diagnostics;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::outcome::{Outcome, TaggedOutcome};
 use crate::probe::{ProbeScheduler, ProbeSink, ProbeTarget};
 use crate::profiles::ConfigPaths;
+use crate::sso::{Abandon, DeviceAuthorization, RealTime, SignInLocation, SignInOutcome};
+use crate::sso_adapter::SsoOidcSignIn;
 use crate::store::ObjectStore;
 use crate::tls::HttpStack;
 use crate::types::{ConnectionId, Cursor, Location, Page};
@@ -424,6 +426,47 @@ impl Session {
             // is no function in `diagnostics` it would fit into.
             diagnostics::credential_saved(credential.name(), saved.as_ref().map(|&()| ()));
             deliver(saved.map(|()| credential));
+        });
+    }
+
+    /// Sign in to an Identity Center session, off the caller's thread.
+    ///
+    /// Two callbacks and not one. `show` fires as soon as there is a code for
+    /// the user to read, which has to happen *while* they are being waited
+    /// for; `deliver` fires once, at the end, with the session, the fact that
+    /// it was abandoned, or the cause. A single callback at the end would
+    /// leave the window with nothing to display during the only part of this
+    /// that takes time (`sso-sign-in`: what is happening is visible while it
+    /// is happening).
+    ///
+    /// The obtained session is written to the token cache here rather than by
+    /// the caller: it is what makes the session usable, and a caller that
+    /// forgot would produce a sign-in that appeared to work and changed
+    /// nothing.
+    pub fn spawn_sign_in<S, F>(&self, at: SignInLocation, abandon: Abandon, show: S, deliver: F)
+    where
+        S: FnOnce(DeviceAuthorization) + Send + 'static,
+        F: FnOnce(Result<SignInOutcome>) + Send + 'static,
+    {
+        let port = SsoOidcSignIn::new(self.http.clone());
+        self.runtime.spawn(async move {
+            let outcome = crate::sso::sign_in(&port, &RealTime, &at, &abandon, |authorization| {
+                show(authorization.clone())
+            })
+            .await;
+            let outcome = match outcome {
+                Ok(SignInOutcome::Session(obtained)) => match crate::sso::home_dir() {
+                    Some(home) => crate::sso::write_session(&home, &at, &obtained)
+                        .map(|_| SignInOutcome::Session(obtained)),
+                    None => Err(Error::TokenCacheNotWritable {
+                        path: "~/.aws/sso/cache".to_owned(),
+                        detail: "this account has no home directory to write it in".to_owned(),
+                    }),
+                },
+                other => other,
+            };
+            diagnostics::sign_in_settled(&at.session_name, outcome.as_ref());
+            deliver(outcome);
         });
     }
 

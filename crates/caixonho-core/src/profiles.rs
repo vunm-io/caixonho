@@ -10,9 +10,11 @@
 //! the SDK's business; duplicating its precedence rules would be a second
 //! source of truth that drifts.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::error::Result;
+use crate::error::{Error, Result};
+use crate::sso::SignInLocation;
 use crate::types::Profile;
 
 /// Where the shared configuration lives.
@@ -113,6 +115,93 @@ pub fn sso_session(paths: &ConfigPaths, profile: &str) -> Option<String> {
     None
 }
 
+/// Where a profile signs in, read from the `[sso-session <name>]` section it
+/// points at.
+///
+/// Three fields are needed and none can be invented: the portal URL, the
+/// region the Identity Center instance lives in, and the session name itself,
+/// which is also what the token cache is keyed on. A profile missing any of
+/// them is reported as not saying where to sign in — a configuration cause, so
+/// the window can state it instead of offering a button that cannot work
+/// (`sso-sign-in` spec).
+///
+/// Deliberately reads only the profile's own section and the session it names.
+/// A legacy inline profile, or one reached through a `source_profile` chain,
+/// is out of scope for `XONHO-0011` and lands here as a missing declaration —
+/// visible, rather than silently wrong.
+pub fn sign_in_location(paths: &ConfigPaths, profile: &str) -> Result<SignInLocation> {
+    let missing = |detail: String| Error::MissingConfiguration {
+        profile: Some(profile.to_owned()),
+        detail,
+    };
+
+    let session_name = sso_session(paths, profile).ok_or_else(|| {
+        missing("it declares no `sso_session`, so there is nowhere to sign in".to_owned())
+    })?;
+
+    let path = paths
+        .config
+        .as_deref()
+        .ok_or_else(|| missing("there is no shared config file to read".to_owned()))?;
+    let contents = std::fs::read_to_string(path).map_err(|source| {
+        missing(format!(
+            "the shared config at `{}` could not be read: {source}",
+            path.display()
+        ))
+    })?;
+
+    let section = section_entries(&contents, &[format!("[sso-session {session_name}]")]);
+    let required = |key: &str| {
+        section.get(key).cloned().ok_or_else(|| {
+            missing(format!(
+                "the `[sso-session {session_name}]` section declares no `{key}`"
+            ))
+        })
+    };
+
+    Ok(SignInLocation {
+        start_url: required("sso_start_url")?,
+        region: required("sso_region")?,
+        // Optional, and the common configuration leaves it out. An empty list
+        // means none are sent, which is what the service treats as "the
+        // defaults for this instance".
+        scopes: section
+            .get("sso_registration_scopes")
+            .map(|declared| {
+                declared
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|scope| !scope.is_empty())
+                    .map(ToOwned::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        session_name,
+    })
+}
+
+/// Every `key = value` inside the first matching section.
+fn section_entries(contents: &str, headers: &[String]) -> HashMap<String, String> {
+    let mut entries = HashMap::new();
+    let mut inside = false;
+    for line in contents.lines().map(str::trim) {
+        if line.starts_with('[') {
+            inside = headers.iter().any(|header| line == header);
+            continue;
+        }
+        if !inside || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once('=') {
+            let value = value.trim();
+            if !value.is_empty() {
+                entries.insert(key.trim().to_owned(), value.to_owned());
+            }
+        }
+    }
+    entries
+}
+
 /// `config` writes `[profile foo]`; `credentials` writes `[foo]`.
 #[derive(Clone, Copy)]
 enum SectionStyle {
@@ -162,25 +251,25 @@ mod tests {
 
     use super::*;
 
-    struct Fixture {
+    pub(super) struct Fixture {
         dir: PathBuf,
     }
 
     impl Fixture {
-        fn new(name: &str) -> Self {
+        pub(super) fn new(name: &str) -> Self {
             let dir = std::env::temp_dir().join(format!("caixonho-profiles-{name}"));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).expect("fixture dir");
             Self { dir }
         }
 
-        fn write(&self, file: &str, contents: &str) -> PathBuf {
+        pub(super) fn write(&self, file: &str, contents: &str) -> PathBuf {
             let path = self.dir.join(file);
             std::fs::write(&path, contents).expect("write fixture");
             path
         }
 
-        fn missing(&self, file: &str) -> PathBuf {
+        pub(super) fn missing(&self, file: &str) -> PathBuf {
             self.dir.join(file)
         }
     }
@@ -283,5 +372,152 @@ mod tests {
         assert_eq!(profiles.len(), 1);
         assert_eq!(profiles[0].name, "from-env");
         assert!(!profiles[0].is_default);
+    }
+}
+
+#[cfg(test)]
+mod sign_in_location_tests {
+    //! `sso-sign-in` spec — "A session can be obtained from within the
+    //! application", and the half of it that matters most: what happens when
+    //! the profile does not say where.
+
+    use super::tests::Fixture;
+    use super::*;
+
+    /// A config with one fully declared session and one profile using it.
+    fn declared(fixture: &Fixture) -> ConfigPaths {
+        let config = fixture.write(
+            "config",
+            "[profile work]\nregion = us-east-1\nsso_session = corp\n\n\
+             [sso-session corp]\n\
+             sso_start_url = https://corp.awsapps.com/start\n\
+             sso_region = ap-southeast-1\n\
+             sso_registration_scopes = sso:account:access, sso:account:read\n",
+        );
+        ConfigPaths {
+            config: Some(config),
+            credentials: Some(fixture.missing("credentials")),
+        }
+    }
+
+    #[test]
+    fn a_declared_session_gives_every_field_the_flow_needs() {
+        let fixture = Fixture::new("sign-in-declared");
+
+        let at = sign_in_location(&declared(&fixture), "work").expect("the session is declared");
+
+        assert_eq!(at.session_name, "corp");
+        assert_eq!(at.start_url, "https://corp.awsapps.com/start");
+        // The session's region, not the profile's `us-east-1`: an Identity
+        // Center instance lives where it lives.
+        assert_eq!(at.region, "ap-southeast-1");
+        assert_eq!(at.scopes, ["sso:account:access", "sso:account:read"]);
+    }
+
+    #[test]
+    fn scopes_are_optional_and_their_absence_is_not_a_failure() {
+        let fixture = Fixture::new("sign-in-no-scopes");
+        let config = fixture.write(
+            "config",
+            "[profile work]\nsso_session = corp\n\n\
+             [sso-session corp]\n\
+             sso_start_url = https://corp.awsapps.com/start\n\
+             sso_region = ap-southeast-1\n",
+        );
+
+        let at = sign_in_location(
+            &ConfigPaths {
+                config: Some(config),
+                credentials: None,
+            },
+            "work",
+        )
+        .expect("scopes are not required");
+
+        assert!(at.scopes.is_empty());
+    }
+
+    #[test]
+    fn a_profile_with_no_sso_session_says_so_rather_than_failing_obscurely() {
+        // The case the window has to render as a cause instead of a button:
+        // there is nowhere to sign in, and no attempt could change that.
+        let fixture = Fixture::new("sign-in-none");
+        let config = fixture.write("config", "[profile work]\nregion = us-east-1\n");
+
+        let error = sign_in_location(
+            &ConfigPaths {
+                config: Some(config),
+                credentials: None,
+            },
+            "work",
+        )
+        .expect_err("nothing declares where to sign in");
+
+        match error {
+            Error::MissingConfiguration { profile, detail } => {
+                assert_eq!(profile.as_deref(), Some("work"));
+                assert!(detail.contains("sso_session"), "{detail}");
+            }
+            other => panic!("expected a configuration cause, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_session_missing_its_start_url_names_the_field_that_is_missing() {
+        // Half-declared is its own trap: the profile points at a session, so
+        // the name resolves, and the flow would then have nowhere to send the
+        // user. The message names the field so the fix is one line away.
+        let fixture = Fixture::new("sign-in-half");
+        let config = fixture.write(
+            "config",
+            "[profile work]\nsso_session = corp\n\n\
+             [sso-session corp]\nsso_region = ap-southeast-1\n",
+        );
+
+        let error = sign_in_location(
+            &ConfigPaths {
+                config: Some(config),
+                credentials: None,
+            },
+            "work",
+        )
+        .expect_err("the session is incomplete");
+
+        match error {
+            Error::MissingConfiguration { detail, .. } => {
+                assert!(detail.contains("sso_start_url"), "{detail}");
+                assert!(detail.contains("corp"), "{detail}");
+            }
+            other => panic!("expected a configuration cause, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn another_sessions_fields_are_not_borrowed() {
+        // Sections are read by name. A second session in the same file must
+        // not lend its start URL to the one being asked about.
+        let fixture = Fixture::new("sign-in-two-sessions");
+        let config = fixture.write(
+            "config",
+            "[profile work]\nsso_session = corp\n\n\
+             [sso-session other]\n\
+             sso_start_url = https://other.awsapps.com/start\n\
+             sso_region = eu-west-1\n\n\
+             [sso-session corp]\n\
+             sso_start_url = https://corp.awsapps.com/start\n\
+             sso_region = ap-southeast-1\n",
+        );
+
+        let at = sign_in_location(
+            &ConfigPaths {
+                config: Some(config),
+                credentials: None,
+            },
+            "work",
+        )
+        .expect("the named session is found");
+
+        assert_eq!(at.start_url, "https://corp.awsapps.com/start");
+        assert_eq!(at.region, "ap-southeast-1");
     }
 }

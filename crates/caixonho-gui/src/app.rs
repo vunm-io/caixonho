@@ -1,7 +1,7 @@
 use caixonho_core::{
-    ActiveOutcome, Bucket, ConfigPaths, ConnectionId, ConnectionSource, Cursor, Diagnostics, Error,
-    HttpStack, Location, Outcome, Page, Prefix, Profile, RegionChoice, Scope, Session,
-    StoredCredential, TaggedOutcome, region_choices,
+    Abandon, ActiveOutcome, Bucket, ConfigPaths, ConnectionId, ConnectionSource, Cursor,
+    DeviceAuthorization, Diagnostics, Error, HttpStack, Location, Outcome, Page, Prefix, Profile,
+    RegionChoice, Scope, Session, SignInOutcome, StoredCredential, TaggedOutcome, region_choices,
 };
 use gpui::{
     AnyElement, App, AppContext, Context, Entity, InteractiveElement, IntoElement, ParentElement,
@@ -21,9 +21,9 @@ use gpui_component::{
     v_flex,
 };
 
-use crate::components::{empty_state, inline_message, skeleton_rows};
+use crate::components::{empty_state, icon_tile, inline_message, skeleton_rows};
 use crate::scroll::{self, ScrollAccel};
-use crate::theme::space;
+use crate::theme::{space, tile};
 use crate::views::buckets::{BucketsDelegate, RegionSelect, region_label};
 use crate::views::credential_form::CredentialForm;
 use crate::views::failure::{guidance_for, unavailable_reason};
@@ -97,6 +97,40 @@ pub(crate) struct CaixonhoApp {
     path: Entity<InputState>,
     /// Whether the trail has been turned into an editable path.
     editing_path: bool,
+    /// Set while a sign-in the user asked for is running.
+    ///
+    /// A panel rather than a modal, decided 2026-08-20: a sign-in is a state
+    /// the connection is in, not an interruption to something else, and the
+    /// code the user has to read belongs where they were already looking.
+    signing_in: Option<SignInAttempt>,
+    /// Where a sign-in reports what it is doing and how it ended.
+    sign_ins: flume::Sender<SignInEvent>,
+}
+
+/// A sign-in in progress, as the window needs to render it.
+struct SignInAttempt {
+    /// The session being signed in to, named while it happens.
+    session_name: SharedString,
+    /// `None` until the provider answers with something to show. The gap is
+    /// short and real, and rendering "waiting for the browser" before there
+    /// is anything to open would be a lie about which step we are on.
+    shown: Option<Shown>,
+    /// The user's way out. Held here so abandoning works from the button.
+    abandon: Abandon,
+}
+
+/// What the user reads and copies while the browser is being waited on.
+struct Shown {
+    user_code: SharedString,
+    verification_uri: SharedString,
+}
+
+/// What crosses back from a sign-in running on a runtime thread.
+enum SignInEvent {
+    /// There is a code to show. Arrives before any waiting.
+    Started(DeviceAuthorization),
+    /// It ended, one way or another.
+    Settled(Result<SignInOutcome, Error>),
 }
 
 /// How reading the current location is going.
@@ -265,6 +299,19 @@ impl CaixonhoApp {
         })
         .detach();
 
+        // A third channel, for the one operation that reports twice: once when
+        // there is a code to put on screen, and once when it is over.
+        let (sign_ins, signing) = flume::unbounded::<SignInEvent>();
+        cx.spawn_in(window, async move |this, cx| {
+            while let Ok(event) = signing.recv_async().await {
+                let applied = this.update_in(cx, |app, _, cx| app.apply_sign_in(event, cx));
+                if applied.is_err() {
+                    break; // The window is gone.
+                }
+            }
+        })
+        .detach();
+
         let app = Self {
             _runtime: runtime,
             session,
@@ -293,6 +340,8 @@ impl CaixonhoApp {
             fetching: false,
             path,
             editing_path: false,
+            signing_in: None,
+            sign_ins,
         };
 
         // Nothing is contacted until a connection is chosen. Opening on a
@@ -973,23 +1022,217 @@ impl CaixonhoApp {
         )
     }
 
+    /// Begin a sign-in the user asked for.
+    ///
+    /// Nothing here happens on its own: no connection opens a browser because
+    /// it was selected, and none does at startup (`sso-sign-in`, "Signing in
+    /// is something the user asks for").
+    fn sign_in(&mut self, profile: String, cx: &mut Context<Self>) {
+        let Some(session) = &self.session else { return };
+
+        // Where to sign in comes from the profile, and a profile that does
+        // not say is reported as exactly that rather than as an attempt that
+        // failed. No request is made.
+        let at = match caixonho_core::sign_in_location(session.paths(), &profile) {
+            Ok(at) => at,
+            Err(error) => {
+                self.outcome.accept(TaggedOutcome {
+                    connection: self.outcome.active(),
+                    outcome: Outcome::Failed(error),
+                });
+                cx.notify();
+                return;
+            }
+        };
+
+        let abandon = Abandon::default();
+        self.signing_in = Some(SignInAttempt {
+            session_name: at.session_name.clone().into(),
+            shown: None,
+            abandon: abandon.clone(),
+        });
+
+        let (started, settled) = (self.sign_ins.clone(), self.sign_ins.clone());
+        session.spawn_sign_in(
+            at,
+            abandon,
+            move |authorization| {
+                let _ = started.send(SignInEvent::Started(authorization));
+            },
+            move |outcome| {
+                let _ = settled.send(SignInEvent::Settled(outcome));
+            },
+        );
+        cx.notify();
+    }
+
+    /// Apply what a running sign-in reported.
+    fn apply_sign_in(&mut self, event: SignInEvent, cx: &mut Context<Self>) {
+        match event {
+            SignInEvent::Started(authorization) => {
+                if let Some(attempt) = &mut self.signing_in {
+                    attempt.shown = Some(Shown {
+                        user_code: authorization.user_code.into(),
+                        verification_uri: authorization.verification_uri.into(),
+                    });
+                }
+            }
+            SignInEvent::Settled(outcome) => {
+                self.signing_in = None;
+                match outcome {
+                    // The session is already in the token cache by the time
+                    // this arrives. Retrying is what turns it into a listing,
+                    // and doing it here means the user does not have to.
+                    Ok(SignInOutcome::Session(_)) => self.retry(cx),
+                    // Abandoning was deliberate. Saying anything about it
+                    // would be telling the user what they just did.
+                    Ok(SignInOutcome::Abandoned) => {}
+                    Err(error) => {
+                        self.outcome.accept(TaggedOutcome {
+                            connection: self.outcome.active(),
+                            outcome: Outcome::Failed(error),
+                        });
+                    }
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// The panel shown while a sign-in is running.
+    ///
+    /// Everything the spec requires to be visible is here rather than only in
+    /// the browser: the code, the address it belongs to, that we are waiting,
+    /// and the way out. A browser that did not open leaves this usable.
+    fn sign_in_panel(&self, attempt: &SignInAttempt, cx: &mut Context<Self>) -> AnyElement {
+        let waiting = match &attempt.shown {
+            None => v_flex()
+                .gap(space::TIGHT)
+                .child(
+                    div()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child("Starting the sign-in…"),
+                )
+                .into_any_element(),
+            Some(shown) => v_flex()
+                .gap(space::ROW)
+                .items_center()
+                .child(
+                    div()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child("Finish signing in, in your browser"),
+                )
+                .child(
+                    div()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(shown.verification_uri.clone()),
+                )
+                // The code, big enough to read off the screen and onto
+                // another device. This is the whole reason the panel exists.
+                .child(
+                    div()
+                        .px_3()
+                        .py_2()
+                        .rounded(px(8.))
+                        .bg(cx.theme().muted)
+                        .text_2xl()
+                        .font_weight(gpui::FontWeight::BOLD)
+                        .child(shown.user_code.clone()),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Waiting for you to approve it there."),
+                )
+                .into_any_element(),
+        };
+
+        v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .gap(space::ROW)
+            .p(space::SECTION)
+            .debug_selector(|| "sign-in-panel".into())
+            .child(icon_tile(
+                IconName::Globe,
+                tile::LG,
+                cx.theme().primary,
+                false,
+            ))
+            .child(
+                div()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(format!("Signing in to {}", attempt.session_name)),
+            )
+            .child(waiting)
+            .child(
+                Button::new("abandon-sign-in")
+                    .label("Cancel")
+                    .outline()
+                    .on_click(cx.listener(|app, _, _, cx| {
+                        if let Some(attempt) = &app.signing_in {
+                            attempt.abandon.now();
+                        }
+                        // The flow answers with `Abandoned` and clears the
+                        // panel; nothing is torn down from here, so a sign-in
+                        // that completes in the same instant still lands.
+                        cx.notify();
+                    })),
+            )
+            .into_any_element()
+    }
+
     /// What to say about a failure, and what the user can do about it.
     ///
     /// Each cause gets its own next action, which is the whole reason the
     /// error type keeps them apart.
     fn failure_panel(&self, error: &Error, cx: &mut Context<Self>) -> impl IntoElement {
         let guidance = guidance_for(error);
+        let retry = Button::new("retry")
+            .label("Retry")
+            .outline()
+            .on_click(cx.listener(|app, _, _, cx| app.retry(cx)));
+
+        // The offer, where the cause is already stated — and only when it
+        // could succeed. A profile that declares no `sso_session` has nowhere
+        // to sign in, and a button that cannot work is worse than no button:
+        // it moves the failure from the message to the click.
+        let offer = self.offerable_sign_in(error).map(|profile| {
+            Button::new("sign-in")
+                .label("Sign in")
+                .primary()
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    app.sign_in(profile.clone(), cx);
+                }))
+        });
+
         inline_message(
             IconName::TriangleAlert,
             SharedString::from(error.to_string()),
             guidance,
             cx.theme().danger,
-            Button::new("retry")
-                .label("Retry")
-                .outline()
-                .on_click(cx.listener(|app, _, _, cx| app.retry(cx))),
+            h_flex().gap(space::TIGHT).children(offer).child(retry),
             cx,
         )
+    }
+
+    /// The profile a sign-in would be for, when one is worth offering.
+    ///
+    /// Two conditions, both required. The cause has to be one a sign-in would
+    /// actually change — an expired or missing session, never a denial or a
+    /// dead network — and the profile has to declare where to sign in.
+    fn offerable_sign_in(&self, error: &Error) -> Option<String> {
+        let session = self.session.as_ref()?;
+        let profile = match error {
+            Error::SessionRejected { profile, .. } => profile.clone(),
+            Error::NoCredentials { profile } => profile.clone(),
+            _ => return None,
+        };
+        caixonho_core::sign_in_location(session.paths(), &profile)
+            .ok()
+            .map(|_| profile)
     }
 
     /// The trail from the bucket down to here, and the path bar beside it.
@@ -1176,6 +1419,13 @@ impl CaixonhoApp {
 
     /// The body: whatever the active connection's latest outcome deserves.
     fn body(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        // Before anything else a connection could be showing: a sign-in the
+        // user asked for is the state this pane is in until it resolves.
+        if let Some(attempt) = self.signing_in.take() {
+            let panel = self.sign_in_panel(&attempt, cx);
+            self.signing_in = Some(attempt);
+            return v_flex().size_full().child(panel).into_any_element();
+        }
         if let Some(error) = &self.startup_error {
             return v_flex()
                 .child(self.failure_panel(error, cx))

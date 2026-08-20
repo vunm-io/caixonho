@@ -220,6 +220,14 @@
 ## 4. The window
 
 - [ ] 4.1 Offer signing in where the cause is stated [dispatch: main]
+      - Dispatched: main (2026-08-20) — **built, not yet verified**. The code
+        is in and the workspace is green (233 core + 21 window, clippy clean),
+        and the application launches and draws its first frame without
+        panicking. That is not what this task's verification asks for: it asks
+        for a run against a profile of each kind, which needs a real account.
+        Left unticked deliberately — this change already carries one lesson
+        about a window that compiled, passed 218 tests, and drew a white
+        screen. It closes with task 5.3.
   - Paths: `crates/caixonho-gui/src/views/failure.rs`,
     `crates/caixonho-gui/src/app.rs`
   - Done criteria: a connection unavailable for an expired or absent session,
@@ -230,6 +238,14 @@
     names the cause in both
 
 - [ ] 4.2 Show the attempt while it runs [dispatch: main]
+      - Dispatched: main (2026-08-20) — **built, not yet verified**. The code
+        is in and the workspace is green (233 core + 21 window, clippy clean),
+        and the application launches and draws its first frame without
+        panicking. That is not what this task's verification asks for: it asks
+        for a run against a profile of each kind, which needs a real account.
+        Left unticked deliberately — this change already carries one lesson
+        about a window that compiled, passed 218 tests, and drew a white
+        screen. It closes with task 5.3.
   - Paths: `crates/caixonho-gui/src/views/`, `crates/caixonho-gui/src/app.rs`
   - Done criteria: user code and verification address readable and selectable,
     a statement that the browser is being waited on, and a way to abandon.

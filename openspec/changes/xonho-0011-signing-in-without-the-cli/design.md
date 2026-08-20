@@ -158,10 +158,13 @@ already look.
 
 ## Open Questions
 
-- **Where the in-progress surface lives** — a panel in place of the connection
-  body, or a modal over it. The spec fixes what must be visible and that it can
-  be abandoned; the shape is a `docs/design-language.md` decision, and one the
-  owner should see rendered before it is settled.
+- ~~**Where the in-progress surface lives**~~ — **settled 2026-08-20 by the
+  owner: a panel, in place of the connection body.** Not a modal. A sign-in is
+  a state the connection is in, not an interruption to something else: the user
+  asked for it, nothing else in the window is worth doing until it resolves,
+  and the code they have to read belongs where they were already looking. A
+  modal would also have to answer what happens to the window behind it, which
+  is a question a panel never asks.
 - **Whether a scope list is ever needed.** `sso_session` declares scopes; the
   common configuration leaves them implicit. Registration will pass through
   what the profile declares and nothing more until a real account shows a need.

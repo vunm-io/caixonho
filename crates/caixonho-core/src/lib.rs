@@ -57,11 +57,11 @@ pub use error::{
 };
 pub use outcome::{ActiveOutcome, Outcome, TaggedOutcome};
 pub use probe::{IN_FLIGHT_BUDGET, ProbeTarget};
-pub use profiles::{ConfigPaths, discover, sso_session};
+pub use profiles::{ConfigPaths, discover, sign_in_location, sso_session};
 pub use session::Session;
 pub use sso::{
-    ClientRegistration, DeviceAuthorization, SignInLocation, SignInSecret, SsoSignIn, SsoToken,
-    TokenAnswer,
+    Abandon, ClientRegistration, DeviceAuthorization, ObtainedSession, RealTime, SignInLocation,
+    SignInOutcome, SignInSecret, SsoSignIn, SsoToken, TokenAnswer,
 };
 pub use sso_adapter::SsoOidcSignIn;
 pub use store::ObjectStore;

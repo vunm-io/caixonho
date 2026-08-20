@@ -443,6 +443,22 @@ pub(crate) fn probe_settled(scope: &Scope, observation: Observation) {
 ///
 /// The name and nothing else. What was saved is in the operating system's
 /// credential store, which is the only place it exists.
+pub(crate) fn sign_in_settled(sso_session: &str, settled: Settled<'_, &crate::sso::SignInOutcome>) {
+    // By session name and outcome only. Everything else this flow touches —
+    // the access token, the refresh token, the client secret, the device code
+    // — is bearer material, and there is no signature here that would accept
+    // one.
+    match settled {
+        Ok(crate::sso::SignInOutcome::Session(_)) => {
+            tracing::info!(sso_session, "signed in");
+        }
+        Ok(crate::sso::SignInOutcome::Abandoned) => {
+            tracing::info!(sso_session, "sign-in abandoned");
+        }
+        Err(error) => tracing::warn!(sso_session, cause = %error, "sign-in failed"),
+    }
+}
+
 pub(crate) fn credential_saved(connection: &str, settled: Settled<'_, ()>) {
     match settled {
         Ok(()) => tracing::info!(connection, "credential saved"),
