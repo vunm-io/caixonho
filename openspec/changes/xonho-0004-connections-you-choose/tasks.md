@@ -201,7 +201,10 @@
 - [x] 6.1 [dispatch: main] `cargo fmt --all`, `cargo clippy --workspace
       --all-targets -- -D warnings`, `cargo test --workspace` green.
       - All three exit 0 on 2026-08-20: 155 core tests, 7 GUI tests.
-- [ ] 6.2 [dispatch: main] CI green on both targets.
+- [x] 6.2 [dispatch: main] CI green on both targets.
+      - Verified 2026-08-20: runs `32283761285` and `32284158017` (the two the
+        session left running) and `32317769510` (the amended HEAD `493bba6`)
+        all completed green.
 - [x] 6.3 [dispatch: main] Live: enter a real key, list with it, forget it, and
       confirm the secret is in the keychain and in no file the app wrote.
       - Exercised by the owner on 2026-08-20. A credential entered in the window
