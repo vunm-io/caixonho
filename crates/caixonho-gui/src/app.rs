@@ -95,6 +95,8 @@ pub(crate) struct CaixonhoApp {
     /// The path bar's text, which is also how a bucket is opened by name in
     /// an account whose buckets cannot be listed.
     path: Entity<InputState>,
+    /// Whether the trail has been turned into an editable path.
+    editing_path: bool,
 }
 
 /// How reading the current location is going.
@@ -290,6 +292,7 @@ impl CaixonhoApp {
             more: None,
             fetching: false,
             path,
+            editing_path: false,
         };
 
         // Nothing is contacted until a connection is chosen. Opening on a
@@ -847,10 +850,44 @@ impl CaixonhoApp {
                         self.profiles.len()..self.profiles.len() + self.stored.len(),
                         cx,
                     ),
+                    self.bucket_group(cx),
                 ]
                 .into_iter()
                 .flatten(),
             )
+    }
+
+    /// The buckets of the connection in use, under it.
+    ///
+    /// Flat: a bucket is a place to go, and the sidebar does not expand into
+    /// prefixes. Walking a bucket happens in the panel, with one trail, so
+    /// there is never a second navigation surface to keep in step
+    /// (`design.md`, "Navigation lives in the main panel").
+    ///
+    /// Its purpose is that entering a bucket no longer costs sight of the
+    /// others — the main panel gives itself over to the contents, and without
+    /// this the account disappears while you are inside one of its buckets.
+    fn bucket_group(&self, cx: &mut Context<Self>) -> Option<SidebarGroup<SidebarMenu>> {
+        self.active_profile?;
+        let names = self.table.read(cx).delegate().shown_names();
+        if names.is_empty() {
+            return None;
+        }
+        let here = self.location.as_ref().map(|at| at.bucket.clone());
+
+        Some(
+            SidebarGroup::new("Buckets").child(SidebarMenu::new().children(names.into_iter().map(
+                |name| {
+                    let active = here.as_deref() == Some(name.as_str());
+                    SidebarMenuItem::new(name.clone())
+                        .icon(IconName::Folder)
+                        .active(active)
+                        .on_click(cx.listener(move |app, _, window, cx| {
+                            app.go_to(Location::bucket(name.clone()), window, cx);
+                        }))
+                },
+            ))),
+        )
     }
 
     /// One group of the sidebar, over a slice of [`Self::connections`].
@@ -959,7 +996,7 @@ impl CaixonhoApp {
     ///
     /// The trail is *read* from the location — `Prefix::segments` — rather
     /// than stored, so it cannot drift from where the user actually is.
-    fn path_bar(&self, location: &Location, cx: &mut Context<Self>) -> impl IntoElement {
+    fn path_bar(&self, location: &Location, cx: &mut Context<Self>) -> AnyElement {
         let steps: Vec<String> = location.prefix.segments().map(ToOwned::to_owned).collect();
 
         let mut trail = h_flex().items_center().gap(space::TIGHT).child(
@@ -1000,19 +1037,49 @@ impl CaixonhoApp {
                 );
         }
 
-        v_flex().w_full().gap(space::TIGHT).child(trail).child(
-            h_flex()
+        // One row, not two. The trail and the path say the same thing, and
+        // showing both permanently is a second answer to a question already
+        // answered — so the path bar is a *mode* the trail turns into, the way
+        // every file manager does it.
+        if !self.editing_path {
+            return h_flex()
                 .w_full()
-                .gap(space::TIGHT)
                 .items_center()
-                .child(div().flex_1().child(Input::new(&self.path)))
+                .gap(space::TIGHT)
+                .child(div().flex_1().child(trail))
                 .child(
-                    Button::new("go")
-                        .label("Go")
-                        .outline()
-                        .on_click(cx.listener(|app, _, window, cx| app.go_typed(window, cx))),
-                ),
-        )
+                    Button::new("edit-path")
+                        .label("Type a location")
+                        .ghost()
+                        .on_click(cx.listener(|app, _, _, cx| {
+                            app.editing_path = true;
+                            cx.notify();
+                        })),
+                )
+                .into_any_element();
+        }
+
+        h_flex()
+            .w_full()
+            .gap(space::TIGHT)
+            .items_center()
+            .child(div().flex_1().child(Input::new(&self.path)))
+            .child(
+                Button::new("go")
+                    .label("Go")
+                    .primary()
+                    .on_click(cx.listener(|app, _, window, cx| app.go_typed(window, cx))),
+            )
+            .child(
+                Button::new("cancel-path")
+                    .label("Cancel")
+                    .ghost()
+                    .on_click(cx.listener(|app, _, _, cx| {
+                        app.editing_path = false;
+                        cx.notify();
+                    })),
+            )
+            .into_any_element()
     }
 
     /// Go where the path bar says, or say that it says nowhere.
@@ -1021,7 +1088,10 @@ impl CaixonhoApp {
         match Location::parse(&typed) {
             // This is also how a bucket is opened in an account whose buckets
             // cannot be listed: typing its name needs no listing first.
-            Some(location) => self.go_to(location, window, cx),
+            Some(location) => {
+                self.editing_path = false;
+                self.go_to(location, window, cx);
+            }
             None => {
                 self.listing = Listing::Failed(Error::MissingConfiguration {
                     profile: None,

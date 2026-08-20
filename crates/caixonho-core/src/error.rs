@@ -171,6 +171,22 @@ pub enum Error {
         path: Option<std::path::PathBuf>,
     },
 
+    /// The endpoint does not implement what was asked of it.
+    ///
+    /// Its own cause, and not [`Self::Unexpected`], because it has a precise
+    /// meaning and a precise remedy: this service is not that service. S3 is a
+    /// protocol several vendors implement to differing extents, so a client
+    /// that reports "something unexpected happened" when told plainly "I do
+    /// not implement that" is failing at the one thing this project promises —
+    /// telling causes apart.
+    #[error("{endpoint} does not implement {operation}")]
+    NotImplemented {
+        /// What was asked for, as the service named it.
+        operation: String,
+        /// Which endpoint said so.
+        endpoint: String,
+    },
+
     /// Anything the classifier could not attribute to a specific cause.
     /// Deliberately last: growth here is a signal the classifier needs work.
     #[error("unexpected error: {detail}")]

@@ -81,6 +81,12 @@ pub(crate) fn guidance_for(error: &Error) -> SharedString {
                         }
                     }
                 }
+                Error::NotImplemented { operation, endpoint } => format!(
+                    "{endpoint} does not implement {operation}. This is an \
+                     S3-compatible service rather than S3 itself, and it does not \
+                     offer that request — nothing here is misconfigured."
+                )
+                .into(),
                 Error::Unexpected { .. } => "The call failed for an unrecognised reason.".into(),
     }
 }
@@ -107,11 +113,15 @@ pub(crate) fn unavailable_reason(error: &Error) -> Option<SharedString> {
         }),
         // A configuration file that will not parse says nothing about whether
         // any particular credential works, so it marks no connection.
+        // Signing in worked; the endpoint simply does not offer that
+        // request. Marking the connection would send the user to fix a
+        // credential that is fine.
         Error::Connections { .. }
         | Error::Network { .. }
         | Error::TlsTrust { .. }
         | Error::AccessDenied { .. }
         | Error::MissingConfiguration { .. }
+        | Error::NotImplemented { .. }
         | Error::Unexpected { .. } => None,
     }
 }

@@ -88,6 +88,14 @@ impl BucketsDelegate {
         }
     }
 
+    /// Every bucket the current region choice admits, in listing order.
+    pub(crate) fn shown_names(&self) -> Vec<String> {
+        self.shown
+            .iter()
+            .map(|index| self.rows[*index].name.clone())
+            .collect()
+    }
+
     /// The bucket a shown row names.
     ///
     /// Through `shown` rather than `rows`: the row the user clicked is a row

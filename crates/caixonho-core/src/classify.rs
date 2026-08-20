@@ -164,6 +164,14 @@ const INVALID_CREDENTIAL_CODES: &[&str] = &[
 ];
 
 /// Codes that mean the service refused on authorization grounds.
+/// What an endpoint answers when it does not implement the request.
+///
+/// `NotImplemented` is the S3 code; R2 returns it for parameters it does not
+/// define, which is how this list came to exist —
+/// `ListBuckets search parameter max-buckets not implemented`.
+/// `MethodNotAllowed` is what some implementations answer instead.
+const NOT_IMPLEMENTED_CODES: &[&str] = &["notimplemented", "methodnotallowed"];
+
 const DENIED_CODES: &[&str] = &[
     "accessdenied",
     "accessdeniedexception",
@@ -333,14 +341,30 @@ pub(crate) fn classify(failure: &SdkFailure, call: &CallContext<'_>) -> Error {
         };
     }
 
-    // 5. Nothing to sign with.
+    // 5. The endpoint does not implement this. Distinct from every failure
+    //    above and from `Unexpected` below: S3 is a protocol with several
+    //    implementations, and one of them saying "I do not do that" is a
+    //    fact with a remedy rather than a mystery. Placed after the
+    //    authorization checks so a service that answers `NotImplemented` to
+    //    something it merely will not let *you* do is still read as a denial.
+    if failure.code_is(NOT_IMPLEMENTED_CODES) {
+        return Error::NotImplemented {
+            operation: failure
+                .code
+                .clone()
+                .unwrap_or_else(|| "that request".to_owned()),
+            endpoint: call.endpoint.to_owned(),
+        };
+    }
+
+    // 6. Nothing to sign with.
     if failure.chain_has(NO_CREDENTIALS_MARKERS) {
         return Error::NoCredentials {
             profile: call.profile.to_owned(),
         };
     }
 
-    // 6. Present but incomplete configuration.
+    // 7. Present but incomplete configuration.
     if failure.chain_has(CONFIGURATION_MARKERS) || failure.kind == FailureKind::Construction {
         return Error::MissingConfiguration {
             profile: Some(call.profile.to_owned()),
@@ -348,7 +372,7 @@ pub(crate) fn classify(failure: &SdkFailure, call: &CallContext<'_>) -> Error {
         };
     }
 
-    // 7. Unattributed. Growth here means the classifier needs work, so the
+    // 8. Unattributed. Growth here means the classifier needs work, so the
     //    detail carries the two facts that make the next case diagnosable.
     Error::Unexpected {
         detail: match (failure.code.as_deref(), failure.status) {
@@ -748,5 +772,41 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn an_endpoint_that_does_not_implement_something_says_so_rather_than_puzzling() {
+        // R2 answers this to `max-buckets`, a parameter it does not define.
+        // Reported as `Unexpected` it read as "the app has no idea", about a
+        // condition with a precise cause and a precise remedy.
+        let failure = SdkFailure::new(FailureKind::Service)
+            .with_status(501)
+            .with_code("NotImplemented");
+
+        match classify(&failure, &call()) {
+            Error::NotImplemented {
+                operation,
+                endpoint,
+            } => {
+                assert_eq!(operation, "NotImplemented");
+                assert_eq!(endpoint, "s3.ap-southeast-1.amazonaws.com");
+            }
+            other => panic!("expected NotImplemented, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_refusal_stays_a_refusal_even_from_an_endpoint_that_says_not_implemented() {
+        // Ordering matters: a service answering `NotImplemented` to something
+        // it merely will not let *this caller* do must still read as denied,
+        // or the user is sent to change endpoints over a policy problem.
+        let denied = SdkFailure::new(FailureKind::Service)
+            .with_status(403)
+            .with_code("AccessDenied");
+
+        assert!(matches!(
+            classify(&denied, &call()),
+            Error::AccessDenied { .. }
+        ));
     }
 }

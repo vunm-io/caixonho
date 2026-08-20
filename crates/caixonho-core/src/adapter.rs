@@ -21,7 +21,7 @@ use aws_sdk_s3::types::Object as SdkObject;
 use crate::capability::Scope;
 use crate::classify::{CallContext, SdkFailure, classify};
 use crate::connection::Connection;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::listing;
 use crate::store::ObjectStore;
 use crate::types::{Bucket, Cursor, Location, Object, Page, Region};
@@ -166,24 +166,16 @@ impl S3ObjectStore {
 #[async_trait]
 impl ObjectStore for S3ObjectStore {
     async fn list_buckets(&self) -> Result<Vec<Bucket>> {
-        // Paginated: an account past the service's page size would otherwise
-        // be silently truncated, which reads exactly like a smaller account.
-        // The page size travels with every page the paginator asks for, so
-        // regions come back on all of them, not just the first.
-        let mut pages = list_buckets_request(&self.client).into_paginator().send();
-        let mut buckets = Vec::new();
-
-        while let Some(page) = pages.next().await {
-            let page = page.map_err(|error| {
-                classify(
-                    &SdkFailure::from_sdk(&error),
-                    &self.call(LIST_BUCKETS_ACTION, &self.endpoint),
-                )
-            })?;
-            buckets.extend(page.buckets().iter().map(map_bucket));
+        match self.buckets_with_page_size(true).await {
+            // The page size is an optimisation for one implementation, and
+            // one that another rejects outright. Asked, refused, asked again
+            // without it — which is finding out what an endpoint implements
+            // by asking, exactly as `ADR-0002` finds out what a credential
+            // may do. Branching on which vendor the endpoint belongs to
+            // would be the same mistake one layer down.
+            Err(Error::NotImplemented { .. }) => self.buckets_with_page_size(false).await,
+            other => other,
         }
-
-        Ok(buckets)
     }
 
     async fn probe_list(&self, scope: &Scope, region: &Region) -> Result<()> {
@@ -278,6 +270,40 @@ fn object_from(object: &SdkObject) -> Object {
             .storage_class()
             .map(|class| class.as_str().to_owned()),
         etag: object.e_tag().map(ToOwned::to_owned),
+    }
+}
+
+impl S3ObjectStore {
+    /// Every bucket, optionally asking for a page size.
+    ///
+    /// `paged` buys AWS's per-bucket regions, and costs a round trip against
+    /// an endpoint that does not define the parameter. Without it a listing
+    /// still works everywhere and simply reports no region, which
+    /// `Region::Unknown` was written to carry.
+    async fn buckets_with_page_size(&self, paged: bool) -> Result<Vec<Bucket>> {
+        // Paginated: an account past the service's page size would otherwise
+        // be silently truncated, which reads exactly like a smaller account.
+        // The page size travels with every page the paginator asks for, so
+        // regions come back on all of them, not just the first.
+        let request = if paged {
+            list_buckets_request(&self.client)
+        } else {
+            self.client.list_buckets()
+        };
+        let mut pages = request.into_paginator().send();
+        let mut buckets = Vec::new();
+
+        while let Some(page) = pages.next().await {
+            let page = page.map_err(|error| {
+                classify(
+                    &SdkFailure::from_sdk(&error),
+                    &self.call(LIST_BUCKETS_ACTION, &self.endpoint),
+                )
+            })?;
+            buckets.extend(page.buckets().iter().map(map_bucket));
+        }
+
+        Ok(buckets)
     }
 }
 
