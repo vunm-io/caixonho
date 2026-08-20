@@ -49,6 +49,23 @@ targets — Windows is the primary daily driver and must never be the lagging po
   `THUNG-0002` remain in commit history and are never reused, but no work
   continues under them — the in-flight change was renumbered to `XONHO-0003`
   rather than closing under its old ID. Every task uses `XONHO-NNNN`.
+- **A commit is a decision, not a keystroke.** Written after 2026-08-20, when
+  this repository took **24 documentation commits against 12 of code** in one
+  day — twice as many commits *about* the work as commits *doing* it — with
+  twelve touching `docs/planned-changes.md` and six of those inside 37 minutes.
+  Three of the six were one investigation: a prediction, its correction, and
+  its correction again, because the guess was committed before the command was
+  run. That is thinking out loud into git, and the small commits are the
+  symptom rather than the disease.
+  - **Code**: one commit per slice that compiles, passes and could be reverted
+    on its own. That granularity is right and is not what changed here.
+  - **Notes and planning**: **one commit per discussion**, written when the
+    discussion has reached a conclusion — not one per finding as it arrives.
+    A reader of this history wants the conclusion, not the path to it.
+  - **Measure before recording.** A prediction that a command could have
+    settled does not belong in a commit at all. Run it, then write once.
+  - Fear of losing work in a long session is not a reason: the working tree
+    holds it, and a handoff log records it.
 - AI provenance trailers on commits are allowed (owner decision 2026-08-20,
   aligning this repo with the workspace-wide policy): `Co-Authored-By:
   Claude <model>`, `AI-Assisted-By:`, `AI-Reviewed-By:` — use them when the

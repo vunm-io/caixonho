@@ -1096,7 +1096,12 @@ impl CaixonhoApp {
             .size_full()
             .gap(space::TIGHT)
             .child(self.path_bar(&location, cx))
-            .child(div().min_h_0().flex_1().child(body))
+            // `v_flex`, not a bare `div`: the states below size themselves
+            // with `size_full`, which resolves against a parent that is a
+            // flex container with a height. A plain div here left the empty
+            // state with nowhere to be and drew nothing at all — the same
+            // family of bug as the `h_flex` one in `design-language.md`.
+            .child(v_flex().flex_1().min_h_0().child(body))
     }
 
     /// The body: whatever the active connection's latest outcome deserves.

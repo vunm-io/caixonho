@@ -219,6 +219,19 @@
 
 - [x] 4.5 [dispatch: main] Say when more is still coming, and tell an empty
       location from a refused one on sight.
+      - **The owner found this broken on first review, and the log named it
+        in one line**: `listed a location … folders=0 objects=0 more=false` —
+        read successfully, genuinely empty, and the window drew nothing at
+        all. `empty_state` sizes itself with `size_full`, which resolves
+        against a flex parent with a height, and a bare `div()` had been put
+        between them. Same family as the `h_flex` trap in
+        `docs/design-language.md`; `v_flex()` is `.flex().flex_col()` and a
+        plain `div()` is neither.
+      - Worth naming: the failure made an **empty** location look exactly
+        like one **still loading** — the confusion this project exists to
+        prevent — and 218 green tests said nothing, because no view in this
+        window is testable. That is the debt already recorded in
+        `docs/planned-changes.md`, now with a defect attached to it.
   - Paths: `crates/caixonho-gui/src/views/`
   - Done criteria: a truncated listing states that more remains; an empty
     location reads as empty; a refused location reads as refused with its
