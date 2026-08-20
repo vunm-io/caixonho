@@ -207,16 +207,24 @@ R2 names the same idea differently. Its `ListBuckets` takes the `ListObjectsV2`
 search parameters — `prefix`, `start-after`, `continuation-token` and
 **`max-keys`** — with `cf-`-prefixed header equivalents, and a default and
 maximum of 1000. There is no `max-buckets`. So the parameter the application
-sends is one R2 does not define, the trick it was sent for buys nothing there,
-and R2 has no per-bucket region to report in the first place because every
-bucket is `auto`.
+sends is one R2 does not define, and the trick it was sent for buys nothing
+there.
 
-The expected consequences, to be confirmed against the running application
-rather than assumed: the listing still works, because the page size R2 ignores
-is also the default it would have used and `continuation-token` is common to
-both; and every R2 bucket arrives with no region, landing in
-`RegionChoice::Unstated` — the branch that exists so such buckets do not vanish
-from every filter, and which no real service had exercised until now.
+**What a bucket's region then is, is an open question rather than "none".** An
+earlier draft of this note assumed R2 would report no region because the S3
+region for R2 is `auto`. That is wrong, or at least not the whole story:
+`HeadBucket` against `caixonho-test` answers `BucketRegion: APAC`, a location
+hint rather than an S3 region name. Whether `ListBuckets` says the same thing —
+which is what the application actually reads, and what the region column and
+the region filter are built on — is untested, because the token available while
+this was written cannot call it.
+
+So the consequences to confirm against the running application are: whether the
+listing works at all with a page-size parameter R2 does not define; and what
+lands in the region column — `APAC`, nothing, or something else again. If it is
+nothing, `RegionChoice::Unstated` gets its first exercise by a real service. If
+it is `APAC`, the region *filter* acquires a value that is not an AWS region and
+never was, which is worth looking at before it is shown to anyone.
 
 ### R2 tokens hand out exactly the shape this project is about
 
