@@ -325,6 +325,93 @@ requirements it delivers and which it steps over, per the planning gate in
 `AGENTS.md` — the argument for it being that a second implementation is what
 finds the AWS assumptions, and one has already been found without connecting.
 
+## What a real account did to the bucket list
+
+Recorded 2026-08-20, the first time the list ran against an account of any
+size instead of three test buckets. Roughly two dozen buckets, most of them
+refused. Two things follow, and neither could have been seen before.
+
+**The few openable buckets are buried among the refused ones.** The status
+vocabulary is right — refused rows carry the badge, openable rows carry none —
+but nothing acts on it, so finding somewhere to work means reading every row.
+The obvious fix is to sort or group by access, and the obvious fix is wrong on
+its own: **access is discovered asynchronously**, viewport-first and debounced,
+so a list that orders itself by access would reorder itself under the user's
+hands as probes settle. Rows moving while being read is a worse defect than the
+one being fixed.
+
+Two shapes that do not have that problem:
+
+- **A filter rather than a reorder** — "only what I can open" — which changes
+  what is present without moving what stays. It composes with the region filter
+  already there, and it must say what it is doing, exactly as the region filter
+  does, because a filter that hides refused buckets while probes are still
+  settling is hiding rows whose status is *not yet known* rather than known-bad.
+- **An explicit sort the user asks for**, applied once on request rather than
+  maintained live, with the not-yet-probed in a group of their own instead of
+  being guessed into one end.
+
+Either way the honest thing is the same: **unknown is not a third shade of
+denied**, and whichever ordering exists must keep it visible as its own state.
+
+## Where the bucket list should live
+
+Asked 2026-08-20, together with the observation that clicking a bucket does
+nothing: should buckets stay in the main panel, should they move left, and
+should the connection list move elsewhere.
+
+It is not a separate question from `XONHO-0006`. The moment a bucket can be
+opened, the main panel has to show what is inside it, and the bucket list
+cannot also be there. So browsing forces the layout decision rather than
+following it, and deciding it inside `XONHO-0006` is cheaper than deciding it
+twice.
+
+The arrangement a file-explorer-grade client converges on, and the brief does
+use that phrase:
+
+- **Left, one column, two levels**: the connections, and under the chosen one
+  its buckets — a bucket becoming a place you navigate into rather than a row
+  in a table. This is where the grouping problem above actually bites, because
+  two dozen entries in a sidebar is a scroll rather than a glance.
+- **Main panel**: the contents of wherever you are, with a breadcrumb path
+  above it and an editable path bar — both already `[M]` in §4.2.
+- The bucket *table*, with created date, region and access, stops being the
+  home screen and becomes what the main panel shows when a connection is
+  selected but no bucket is — which is also the only place those columns have
+  room to stay.
+
+What this costs: `XONHO-0009` built the shell around a sidebar that holds
+connections only, so this extends that shell rather than replacing it. What it
+buys: every later feature — prefix navigation, transfers, object operations —
+has somewhere to live that does not need rearranging again.
+
+## A requirement the brief does not have: caching what has been read
+
+Asked for 2026-08-20, alongside browsing: listings and already-viewed files
+should be kept so that going back somewhere is fast rather than fetched again.
+
+`PROJECT_BRIEF.md` has nothing of the sort. §4.6 offers "persistent
+per-connection state: last prefix, sort, column widths" `[S]`, which is where
+the window was, not what it held; §4.3 caches *capability* per
+`(profile, bucket, prefix)`. Nothing caches a listing or an object. So this is
+a gap in the requirements rather than a change waiting to be cut, and it should
+be added to the brief before it is planned — the brief is what
+`requirements-status.md` is diffed against, and a requirement that never
+entered it is one nothing will ever check.
+
+Two things to settle when it is written, because they decide the shape:
+
+- **What invalidates it.** A listing is a snapshot of a mutable store, and this
+  project's whole posture is refusing to show something as true when it is not
+  known to be. A cache that quietly serves a stale directory is that same lie
+  with better latency. Time-based expiry, explicit refresh, and saying when
+  what is shown was read are all defensible; silently serving old data is not.
+- **Where a cached object may live.** An object's bytes are the user's data,
+  and writing them to disk to make a second view fast puts them somewhere the
+  user did not choose and may not know about. In memory for the session is a
+  different promise from on disk between runs, and §8's security posture means
+  the difference has to be decided rather than defaulted.
+
 ## Smaller things, found at close-out and not yet cut into changes
 
 Recorded 2026-08-20, closing out `XONHO-0004` and `XONHO-0012`. None of these

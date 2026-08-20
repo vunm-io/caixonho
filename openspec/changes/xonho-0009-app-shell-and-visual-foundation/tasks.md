@@ -43,8 +43,30 @@
       account that genuinely holds no buckets.
 - [x] 4.3 [dispatch: main] Error: an inline message carrying the cause and one
       action, sized to its content. The full-width Retry button goes.
-- [ ] 4.4 [dispatch: main] Check every state against a profile that fails, one
+- [x] 4.4 [dispatch: main] Check every state against a profile that fails, one
       that is denied, and one that succeeds.
+      - **Succeeds**: a stored connection listed its account and the rows
+        rendered as designed.
+      - **Fails**: a stored connection whose secret the credential store
+        refused produced the inline error carrying the cause and one action,
+        and the log recorded the same cause — `connection refused … the
+        credential store refused the request`.
+      - **Denied**: done at last, and by a real account rather than a rig.
+        Roughly two dozen buckets came back from one credential, most of them
+        refused and a minority openable, and the refused ones carried the
+        badge while the openable ones carried none. **This is the first time
+        the headline feature of §4.3 has been seen against anything real** —
+        every earlier sighting was a test double. It reads correctly: the
+        cause is a genuine authorisation boundary, nothing is misreported as
+        denied, and no bucket vanished from the list for being refused.
+      - The account is not this project's to describe, so no names, regions or
+        counts from it belong in this repository. What is recorded here is
+        the behaviour, which is the part that is ours.
+      - **One defect the real data exposed, invisible on a list of three test
+        buckets**: when most rows are refused, the few that are not are buried
+        among them, and the list offers no way to bring them together. The
+        status vocabulary is right; what is missing is anything that acts on
+        it. Recorded in `docs/planned-changes.md`.
 
 ## 5. Status vocabulary
 
