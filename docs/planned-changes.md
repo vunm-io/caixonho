@@ -126,6 +126,61 @@ ran into: permission to work inside a bucket, none to enumerate the account.
 Without this the app is a dead end for those keys — it can only offer a
 listing the credential is not allowed to make.
 
+## What `XONHO-0006` has to decide: S3 has no folders
+
+Recorded 2026-08-20, while putting a test fixture together. `ListObjectsV2`
+with `delimiter=/` answers in two separate fields — `CommonPrefixes` are the
+folders and `Contents` are the objects — so the application never has to guess
+which a row is. What it does have to decide is what to show when the two
+disagree, and they disagree in ways that are ordinary rather than exotic:
+
+- **A folder that is also an object.** "Create folder" in the AWS console, and
+  most other clients, writes a zero-byte object whose key ends in `/`. It comes
+  back in `CommonPrefixes` *and* in `Contents`. Showing both is a folder with a
+  mysterious 0-byte file inside it that the user did not create and cannot
+  explain.
+- **A folder that is no object at all.** A single key `photos/cat.jpg` makes
+  `photos/` appear as a prefix with nothing behind it. It cannot be selected,
+  has no size, no last-modified, no storage class and no ETag — so every column
+  the brief asks for is empty for it, and that emptiness is the honest answer
+  rather than a gap to fill with placeholders.
+- **An object and a prefix sharing a name.** `notes` and `notes/meeting.md` can
+  both exist. Two rows called `notes`, one openable and one not.
+- **A folder that is empty.** Only visible at all because a marker object was
+  written for it; delete the marker and the folder ceases to exist.
+
+This is the same principle as the sort and filter honesty the brief already
+asks for, applied to hierarchy: the folders are inferred, and the UI should not
+pretend they are a thing S3 stores.
+
+A fixture covering all four, plus deep nesting, a multi-megabyte object for
+size formatting and a key with spaces and non-ASCII characters, lives in the
+R2 bucket `caixonho-test` (see the endpoint note below). It is deliberately
+richer than the three S3 test buckets, which are empty.
+
+## Testing against something that is not AWS
+
+R2 is reachable **today on the profile path and not on the stored-credential
+path**, which is worth knowing before anyone plans work around it.
+
+`adapter.rs` already honours a configured endpoint over any region, and both
+connection paths build their SDK config through `aws_config::defaults`, which
+reads `endpoint_url` from the profile and `AWS_ENDPOINT_URL` from the
+environment. So a profile in `~/.aws/config` with an `endpoint_url` and
+`region = auto` connects to R2 with no code change at all.
+
+A connection *typed into the app* cannot: `connections.toml` holds a name, a
+region and an access key id, and has nowhere to put an endpoint — so an R2 key
+entered in the app is sent to AWS. Giving it somewhere is the same shape of
+work as `XONHO-0013` and the session-token field above: three separate reasons
+now to widen that file, which argues for widening it once, deliberately.
+
+Worth doing early rather than at M5, where "S3-compatible endpoints" currently
+sits: a second implementation is the cheapest way to find every place the code
+assumed AWS rather than S3, and R2's free tier (10 GB, 1M class A operations
+and 10M class B per month, no egress charge) covers this project's testing
+without a bill.
+
 ## Smaller things, found at close-out and not yet cut into changes
 
 Recorded 2026-08-20, closing out `XONHO-0004` and `XONHO-0012`. None of these
