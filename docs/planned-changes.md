@@ -432,6 +432,32 @@ available to test against, which is rarer than it sounds, and the brief calls
 supporting them "a real differentiator" precisely because almost no GUI client
 does.
 
+## The window's views are methods, and that is why they cannot be tested
+
+Found 2026-08-20 while splitting `app.rs` for `XONHO-0006`. Everything that
+renders in that file is a method on `CaixonhoApp` reading its private fields —
+72 uses of `self.`. Two consequences, and the second is the interesting one.
+
+It cannot be moved to another module without either `pub(crate)` on some
+eighteen fields or a parameter list per function, so the split stopped at the
+two functions that touch no state. That is a line-count problem and a small
+one.
+
+The real cost is that **a view that reads `self` can only be exercised by
+building the whole application**. `views/failure.rs` has five tests precisely
+because its two functions take an error and return words; nothing else in the
+window has that shape, so nothing else in the window is tested. Every rendering
+defect this project has found — the table with no height, the full-width Retry
+button, the empty Access cell — was found by a person looking at a screen.
+
+The change worth making is therefore not "split the file" but "give the views
+inputs": functions that take what they need and return an element, with the
+application assembling them. Testability is the point and the smaller file is
+a side effect, which is the opposite of how it was framed the first time.
+
+Worth doing after `XONHO-0006` rather than before: browsing will add views, and
+converting a set that is about to grow is cheaper once it has stopped growing.
+
 ## Smaller things, found at close-out and not yet cut into changes
 
 Recorded 2026-08-20, closing out `XONHO-0004` and `XONHO-0012`. None of these
