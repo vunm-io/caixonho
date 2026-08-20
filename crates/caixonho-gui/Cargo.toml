@@ -16,3 +16,12 @@ gpui-component-assets.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
 flume.workspace = true
+
+# GPUI's own test support — what turns on `#[gpui::test]`, `TestAppContext`,
+# `debug_selector`/`debug_bounds` and `capture_screenshot`, none of which exist
+# without it. The spec is the workspace one, so ADR-0001's byte-identical rule
+# is untouched: a feature is not a different source. It adds proptest and seven
+# of its dependencies to the lockfile, and builds gpui a second time under the
+# test profile — measured at 31 seconds, against tests that run in 0.01.
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
