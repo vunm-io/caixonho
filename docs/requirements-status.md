@@ -31,10 +31,10 @@ gap is named. **none** — not started.
 | Requirement | State | Notes |
 |---|---|---|
 | Bucket list with region and creation date | done | `XONHO-0005` |
-| Prefix navigation as folders (`ListObjectsV2`, `delimiter=/`), paginated and lazy | none | `XONHO-0006`. The app cannot open a bucket |
-| Virtualized table, 100k+ rows at ~60fps | partial | The table is virtualized and was measured on a synthetic feed in M0. It has never rendered a real listing longer than three rows |
-| Columns name, size, last modified, storage class, ETag; sortable, resizable, persisted | none | Bucket columns only; nothing is sortable, resizable or persisted |
-| Breadcrumbs plus an editable path bar | none | |
+| Prefix navigation as folders (`ListObjectsV2`, `delimiter=/`), paginated and lazy | done | `XONHO-0006`. A page at a time, the next fetched on reaching the end; an empty location and a refused one are never drawn alike |
+| Virtualized table, 100k+ rows at ~60fps | partial | Virtualized, measured once on a synthetic feed in M0, and now rendering real listings — but never a long one. The claim stands unmeasured |
+| Columns name, size, last modified, storage class, ETag; sortable, resizable, persisted | partial | `XONHO-0006` renders name, size and last modified, and carries storage class and ETag across the port unrendered. Nothing is sortable, resizable or persisted |
+| Breadcrumbs plus an editable path bar | done | `XONHO-0006`. The trail is read from the location rather than stored; the path bar is the mode it turns into, and is also how a bucket is opened when the account cannot be listed |
 | Client-side filter of loaded rows **and** server-side prefix search, saying which is happening | partial | Region narrowing exists. No name filter, no prefix search |
 | Sort honesty — say when a sort covers only loaded rows | none | Nothing sorts yet, so nothing lies yet |
 
@@ -46,7 +46,7 @@ gap is named. **none** — not started.
 | Cheap non-destructive probes | done | `ListObjectsV2` for one key |
 | Never auto-probe write | done | Enforced by the model |
 | Probe budget: viewport-only, debounced, bounded | done | |
-| Dimming at bucket/prefix granularity, never per object | partial | Buckets only; there are no prefixes yet |
+| Dimming at bucket/prefix granularity, never per object | partial | Prefixes now exist and `Scope::at` gives each one its own question, so the model reaches them. The rendering of a dimmed prefix is not built |
 | Never render "denied" for a different cause | done | Allowlist mapping; a live misreport was fixed 2026-08-19 |
 | KMS denial distinguished from an S3 denial | none | No object reads yet |
 | Cache per `(profile, bucket, prefix)` with TTL | partial | Cached and invalidated on credential change; no TTL |
@@ -69,16 +69,20 @@ are not started. They are M2+ and are not late.
 
 ## The count
 
-Of the 24 `[M]` requirements in the three M1 areas: **9 done, 8 partial, 7 not
-started** — §4.1 has 2 done, 4 partial, 2 not started; §4.2 has 1, 2 and 4;
+Of the 24 `[M]` requirements in the three M1 areas: **11 done, 9 partial, 4 not
+started** — §4.1 has 2 done, 4 partial, 2 not started; §4.2 has 3, 3 and 1;
 §4.3, the headline, has 6, 2 and 1. Outside M1, §7–8 stands at 1 done, 3
 partial and 1 not started.
 
-The nearest gaps are signing in to IAM Identity Center from the app, and
-opening a bucket. Entering a credential closed on 2026-08-20.
+The nearest gap is signing in to IAM Identity Center from the app — mandatory,
+unbuilt, and stepped over by three changes running. Entering a credential and
+opening a bucket both closed on 2026-08-20.
 
-Counted from the tables above on 2026-08-20, after this line had drifted from
-them: it read "10 done, 7 partial" while the rows said otherwise. A summary
-that disagrees with what it summarises is worse than no summary, in a file
-whose whole purpose is to be diffed against reality — so it now names the
-per-section figures, which cannot drift without the drift being visible.
+Counted from the tables above rather than written from memory. That distinction
+is not pedantry: this line has now drifted **twice** in one day — first reading
+"10 done, 7 partial" against rows that said 9 and 8, and then, an hour after
+being corrected, being rewritten by hand as "11, 8, 5" against rows that said
+11, 9 and 4. Both times the total stayed right and the split went wrong, which
+is exactly how it survives review. **Count it with a script.** A summary that
+disagrees with what it summarises is worse than no summary, in a file whose
+whole purpose is to be diffed against reality.

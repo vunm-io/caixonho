@@ -33,7 +33,7 @@ that each own a subsystem and land on their own:
 | `XONHO-0004` | Entering credentials in the app, storing them in the OS keychain, and connecting only when asked | landed |
 | `XONHO-0012` | A log on disk that says what the app decided and why, and never holds a secret | landed |
 | `XONHO-0009` | The app shell, the palette, and loading, empty and error states that were improvised before | in progress |
-| `XONHO-0006` | Opening a bucket and browsing objects by prefix, including reaching a bucket by name when the account listing is denied | next |
+| `XONHO-0006` | Opening a bucket and browsing objects by prefix, including reaching a bucket by name when the account listing is denied | landed |
 | `XONHO-0011` | Signing in to IAM Identity Center from the app, via the OIDC device flow | after browsing |
 | `XONHO-0013` | Editing a saved connection: its region, its key, and renaming it | after browsing |
 

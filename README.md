@@ -6,8 +6,8 @@ A fast, native, cross-platform S3 client. GPU-rendered with [GPUI](https://gpui.
 (the framework behind Zed), written in Rust, built to feel instant: cold start under
 half a second, buttery scrolling through prefixes with 100k+ objects, keyboard-first.
 
-**Status: pre-alpha, milestone M1.** The app connects and reads; it does not yet
-open anything. Watch the repo if you want to follow along.
+**Status: pre-alpha, milestone M1.** The app connects, lists and browses; it
+does not yet transfer anything. Watch the repo if you want to follow along.
 
 Working today:
 
@@ -26,14 +26,20 @@ Working today:
 - Tells failure causes apart — an expired session, rejected credentials, a
   network failure and a trust failure are each reported as themselves, with the
   action that fixes them, and none of them is ever reported as "access denied".
+- Opens a bucket and walks its prefixes as folders, a page at a time, with a
+  trail back out and a path you can type into. Typing a bucket's name opens it
+  even when the credentials may not list the account — an ordinary way to be
+  given access, and one most clients treat as a dead end.
+- Never draws an empty folder and a refused one the same way, one level below
+  where it already does that for buckets.
 - Writes down what it decided and why, in your platform's own log location, and
   shows you that location in the status bar so a report can carry evidence
   instead of a description. The file is bounded and rolls daily; `CAIXONHO_LOG`
   turns the detail up for an investigation. No secret is ever written to it.
 
-Not there yet: opening a bucket and browsing its objects, transfers, and signing
-in to IAM Identity Center from the app rather than through the AWS CLI. Those
-are the next changes — see [`docs/planned-changes.md`](docs/planned-changes.md),
+Not there yet: transfers, previewing an object, sorting or searching a listing,
+and signing in to IAM Identity Center from the app rather than through the AWS
+CLI. Those are the next changes — see [`docs/planned-changes.md`](docs/planned-changes.md),
 and [`docs/requirements-status.md`](docs/requirements-status.md) for every
 requirement and whether it is actually built.
 
@@ -70,8 +76,9 @@ on its own the first time you build.
 cargo run -p caixonho-gui
 ```
 
-It opens on a profile from `~/.aws` and lists its buckets. With no profiles
-configured it says so and does nothing else — it never invents credentials.
+It opens on the connections it can find and contacts none of them until you
+choose one. With nothing configured it says so and does nothing else — it never
+invents credentials.
 
 ## Documentation
 

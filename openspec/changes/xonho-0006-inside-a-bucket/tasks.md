@@ -190,7 +190,7 @@
     the location.
   - Verification: `cargo test --workspace`
 
-- [ ] 4.2 [dispatch: main] Move buckets into the sidebar beneath their
+- [x] 4.2 [dispatch: main] Move buckets into the sidebar beneath their
       connection, flat.
   - Paths: `crates/caixonho-gui/src/app.rs`,
     `crates/caixonho-gui/src/views/`
@@ -240,7 +240,7 @@
 
 ## 5. Close-out
 
-- [ ] 5.1 [dispatch: main] `cargo fmt --all`, `cargo clippy --workspace
+- [x] 5.1 [dispatch: main] `cargo fmt --all`, `cargo clippy --workspace
       --all-targets -- -D warnings`, `cargo test --workspace` green.
   - Paths: whole workspace
   - Done criteria: all three commands exit zero
@@ -263,8 +263,19 @@
   - Verification: the log in the platform's log directory names each location
     and the cause of each failure
 
-- [ ] 5.4 [dispatch: main] Update the reader-facing documents in this change,
+- [x] 5.4 [dispatch: main] Update the reader-facing documents in this change,
       not after it.
+      - README says a bucket opens and what that means; roadmap moves
+        `XONHO-0006` to landed; `requirements-status.md` marks prefix
+        navigation and the path bar **done**, columns **partial** with sorting,
+        resizing and persistence named as the gap, and the virtualized-table
+        claim still **partial** because a real listing is not a long one.
+      - **The count line drifted a second time, in the same day.** It was
+        corrected in the morning from "10 done, 7 partial" to 9 and 8, and
+        then rewritten by hand here as "11, 8, 5" against rows that said 11, 9
+        and 4. Both times the total stayed right while the split went wrong,
+        which is precisely why review does not catch it. It is now counted
+        with a script and the file says so.
   - Paths: `README.md`, `docs/architecture.md`, `docs/roadmap.md`,
     `docs/requirements-status.md`, `docs/design-language.md`
   - Done criteria: README's "Working today" says a bucket can be opened;
@@ -274,8 +285,50 @@
     sorting, resizing and persistence as what is missing.
   - Verification: `grep -n "open" README.md` and read the four documents
 
-- [ ] 5.5 [dispatch: main] Run the close-out review in `AGENTS.md` and write
+- [x] 5.5 [dispatch: main] Run the close-out review in `AGENTS.md` and write
       the five answers down here.
+
+      **1. What was asked, or what was convenient?** What was asked. A bucket
+      opens, prefixes are folders, pages arrive lazily, the trail says where
+      you are and the path bar takes you anywhere — including a bucket in an
+      account whose buckets cannot be listed, which cost nothing extra because
+      the path bar was already required. One thing arrived that the proposal
+      did not name: buckets in the sidebar. It is not scope creep but a
+      consequence discovered by using the result — the main panel gives itself
+      over to the contents, so entering a bucket used to cost sight of the
+      account entirely.
+
+      **2. Do the reader-facing documents still tell the truth?** Now, yes,
+      and 5.4 records what it took. Worth carrying forward: this is the third
+      change running where the documentation was correct only because the task
+      list forced it, which is the rule working rather than the habit working.
+
+      **3. Did we leave rubbish?** No `TODO`, `FIXME`, `dbg!` or
+      `#[allow(dead_code)]`; clippy clean at `-D warnings` across the
+      workspace and all targets.
+
+      **4. What is asserted but not verified?** The honest list, and it is
+      long. **No view in the window is tested**, and this change proved the
+      cost twice: an empty location rendered as blank nothing, and a redundant
+      path bar shipped, both found by the owner in the first minutes of
+      looking while 218 tests stayed green. **Paging has never been exercised
+      against a truncated listing** — no fixture here holds more than a
+      page, so `read_more`, the "more to come" line and `extend` are
+      implemented and unproven. **A refused prefix has never been seen**: the
+      spec's fifth requirement, the one this change most easily gets wrong, is
+      held up by unit tests over a double and nothing else. **The virtualized
+      table has still never rendered a long listing.**
+
+      **5. What is left, and where is it written?** Sorting, resizing and
+      persisting columns, filtering and prefix search, and sort honesty are
+      `[M]` in §4.2 and named as stepped over in the proposal.
+      `docs/planned-changes.md` holds the rest: the integration rig that would
+      turn three of the four gaps above into tests that run on every push, the
+      view-testability refactor that is the root cause of the fourth, the
+      access filter for the bucket list, and caching, which is a gap in the
+      brief rather than a change waiting to be cut. `XONHO-0011` is stepped
+      over for the third change running and is now the nearest mandatory
+      gap in M1.
   - Paths: this file
   - Done criteria: all five questions answered in writing, including what is
     asserted but not verified

@@ -178,7 +178,8 @@ impl TableDelegate for ObjectsDelegate {
                 1 => readable(object.size).into(),
                 2 => object
                     .last_modified
-                    .clone()
+                    .as_deref()
+                    .map(crate::views::format::timestamp)
                     .unwrap_or_else(|| "—".to_owned())
                     .into(),
                 _ => "".into(),

@@ -221,7 +221,12 @@ impl TableDelegate for BucketsDelegate {
 
         let text: SharedString = match col_ix {
             0 => row.name.clone().into(),
-            1 => row.created.clone().unwrap_or_else(|| "—".into()).into(),
+            1 => row
+                .created
+                .as_deref()
+                .map(crate::views::format::timestamp)
+                .unwrap_or_else(|| "—".to_owned())
+                .into(),
             2 => match &row.region {
                 Region::Known(region) => region.clone().into(),
                 Region::Unknown => UNKNOWN_REGION.into(),
