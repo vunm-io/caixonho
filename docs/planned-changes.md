@@ -244,6 +244,61 @@ So the useful arrangement is two tokens, not one fixed token: an **Admin Read
 only** token for browsing, and the object-scoped one kept deliberately as the
 denied fixture.
 
+## Choosing what kind of service a connection points at
+
+Asked on 2026-08-20: the connection form should let the user pick AWS S3 or
+Cloudflare R2, with more added later. Yes — with one boundary that has to hold,
+because the idea sits right next to a decision this project has already made.
+
+**A preset declares configuration. It must never declare capability.**
+`ADR-0002` says capability is observed and never declared, and that stands: what
+a credential may do is found out by trying, not by knowing which company runs
+the endpoint. Configuration is the opposite kind of fact — an endpoint cannot be
+discovered, the user has to say it — so declaring *that* is not a retreat from
+the ADR, it is the other half of it.
+
+The failure mode to design against is the dropdown quietly becoming a place
+where behaviour branches: `if provider == R2 { … }`. That is capability by
+brand, it is wrong on its own terms — a token's permissions vary far more than
+its provider does — and it rots, because what a service supports changes and a
+match arm does not.
+
+The `max-buckets` difference above is the worked example of both fixes:
+
+- **Wrong**: stop sending the parameter when the provider is R2.
+- **Right**: notice it is an optimisation for AWS whose absence costs nothing
+  anywhere, keep sending it, and let a bucket with no region be `Unstated` —
+  which the code already does, for a branch written before R2 was in the
+  picture.
+
+So the shape is: **a preset fills in fields, and then gets out of the way.**
+Picking "Cloudflare R2" writes an endpoint template, `region = auto` and an
+addressing style into an ordinary form the user can see and edit. What is
+stored is those fields. The provider may be kept as a label — an icon, a way to
+group the sidebar — but it must not be load-bearing at connect time: a
+connection has to remain openable from its own fields alone, or a preset
+edited in some later version silently redirects connections already saved.
+
+Two consequences worth stating now:
+
+- **"S3-compatible (custom endpoint)" is the general case, and the named
+  providers are shortcuts to it** — not the other way around. Otherwise every
+  new service is a code change, and MinIO, Backblaze, Wasabi and Ceph queue up
+  behind a release. It also hands M1 the MinIO rig it has been missing for
+  free.
+- This is the **fourth** reason to widen `connections.toml`, after the
+  session-token flag, `XONHO-0013`'s editing, and the endpoint: addressing
+  style, and possibly a provider label. Four reasons is no longer an argument
+  for widening it — it is an argument for deciding its schema once, deliberately,
+  and only then writing any of them.
+
+Where it goes in the plan is a real question, not a formality: `roadmap.md`
+puts "S3-compatible endpoints as a supported configuration" at **M5**, and this
+pulls a piece of it into M1. That needs a proposal saying which `[M]`
+requirements it delivers and which it steps over, per the planning gate in
+`AGENTS.md` — the argument for it being that a second implementation is what
+finds the AWS assumptions, and one has already been found without connecting.
+
 ## Smaller things, found at close-out and not yet cut into changes
 
 Recorded 2026-08-20, closing out `XONHO-0004` and `XONHO-0012`. None of these
