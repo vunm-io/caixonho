@@ -58,13 +58,27 @@
         `build (windows-latest)` success, `build (macos-latest)` success,
         `rustfmt` success. The two commits of this change were each green on
         both targets when pushed (`32284158017`, `32317769510`).
-- [ ] 4.3 [dispatch: main] Live: run the app, make it fail, read the log, and
+- [x] 4.3 [dispatch: main] Live: run the app, make it fail, read the log, and
       confirm it explains the failure and holds no secret.
-      - **Un-ticked on 2026-08-20.** It was carrying "Partly" and a paragraph
-        saying the failure had never been read, which is a box that reports
-        done while the change's central check has not happened — and with it
-        ticked the change reads 11/11 and archivable. The honest state is
-        that everything except the live failure is finished.
+      - **Done 2026-08-20, on a current build, both paths.** The success path
+        first: choosing a stored connection wrote `connection opened … source=
+        "stored credential"`, then `listed the account … buckets=3`, then three
+        `probe settled … observation=Allowed`. Then the failure, from the
+        connection that had never been explicable:
+
+            WARN connection refused connection=… id=2 source="stored credential"
+                 cause=the credential store refused the request — allow caixonho
+                 to use it and try again (connection `…`)
+            WARN listing failed connection=… id=2 cause=the credential store
+                 refused the request — …
+
+        The log explains the failure in a sentence that names what to do about
+        it, distinguishes a store that refused from a credential that was
+        rejected, and carries no secret in any of the three spellings. This is
+        the case the change was written for, and it now works.
+      - It was **un-ticked earlier the same day** before being earned: it had
+        been carrying "Partly" over a paragraph saying the failure had never
+        been read, which reports done while the central check has not happened.
       - The file is created at startup and this machine's log holds a
         real event: `INFO connection opened connection=… source="profile"
         region="ap-southeast-1"`. Starting the app writes nothing further, which

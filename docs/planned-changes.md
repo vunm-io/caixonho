@@ -142,6 +142,25 @@ be lost if they stay in a session log.
   the same access key id and only one works, so the difference is in the
   keychain rather than in anything the app does. It was not diagnosable when
   it appeared; it is now, and it is the natural first case for the log.
+- **Opening one stored connection asks the keychain twice.** `credentials::load`
+  reads two separate items — `caixonho secret access key` and then
+  `caixonho session token` — and each is its own macOS authorization subject,
+  so each raises its own password dialog. A static credential has no session
+  token, so the second read is asking for something the user never stored. The
+  fix is to know from the connection's own configuration whether a session
+  token exists and not to go looking when it does not; it needs a field in
+  `connections.toml`, which is why it is a change rather than an edit.
+  Observed on 2026-08-20 by a user who answered the dialog and got it again.
+  - Worth checking while doing it: if a `caixonho session token` entry exists
+    for a connection that was saved without one, the delete-on-save path at
+    `credentials.rs` is leaving residue — and a stale entry beside a current
+    key is a candidate explanation for the refused connection above.
+- **The macOS bundle is unsigned**, which `scripts/mac-app.sh` says plainly.
+  A keychain ACL is granted to a code identity, so an unsigned binary that is
+  rebuilt is a new applicant every time: "Always Allow" cannot stick, and every
+  run re-asks. It is dev-convenience packaging and real signing is its own
+  milestone — but it means keychain prompt behaviour seen today is not the
+  behaviour a shipped build will have, and neither is evidence about the other.
 - **`block v0.1.6` will be rejected by a future Rust.** It arrives through
   `cocoa` → `gpui` at the pinned zed commit, so it is macOS-only, upstream,
   and movable only by bumping the UI stack — which `ADR-0001` already makes a
