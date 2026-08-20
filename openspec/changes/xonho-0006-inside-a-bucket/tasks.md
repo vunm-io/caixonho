@@ -159,8 +159,20 @@
     already being fetched is not fetched twice.
   - Verification: `cargo test --workspace`
 
-- [ ] 3.3 [dispatch: main] Probe prefixes through the machinery that already
+- [x] 3.3 [dispatch: main] Probe prefixes through the machinery that already
       exists.
+      - **No capability model changed, and no spec did either** — which is what
+        the task predicted and what `XONHO-0005` had already paid for.
+        `Scope::prefix` existed, with the reasoning already written down: a
+        policy may grant a prefix where the bucket root is denied, and neither
+        is evidence about the other.
+      - What was added is one conversion, `Scope::at(&Location)`, and it exists
+        because of a trap: a bucket's root is `Scope::bucket`, **not**
+        `Scope::prefix` with an empty string. Those are different scopes and
+        they hash differently, so a frontend building the second by hand would
+        file an observation the bucket list could never find again — leaving
+        the row at "checking…" over an answer that had already arrived. Doing
+        it in one place with a test is what stops that ever being written.
   - Paths: `crates/caixonho-core/src/probe.rs`
   - Done criteria: a prefix is a `Scope` with its prefix set — no new
     capability model, no change to `openspec/specs/capability-awareness/`. The

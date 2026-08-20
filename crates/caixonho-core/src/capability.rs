@@ -14,6 +14,7 @@
 use std::collections::HashMap;
 
 use crate::error::{Error, Result};
+use crate::types::Location;
 
 /// What we currently know about one operation on one scope
 /// (a bucket or a prefix), for one set of credentials.
@@ -129,6 +130,22 @@ impl Scope {
     pub fn key_prefix(&self) -> Option<&str> {
         self.prefix.as_deref()
     }
+
+    /// What a location asks about.
+    ///
+    /// The one place the conversion happens, because it has a trap in it: a
+    /// bucket's root is [`Self::bucket`] and **not** [`Self::prefix`] with an
+    /// empty string. Those are different scopes, they hash differently, and a
+    /// frontend that built the second by hand would record an observation the
+    /// bucket list could never find again — the row would sit at "checking…"
+    /// over an answer that had already arrived.
+    pub fn at(location: &Location) -> Self {
+        if location.prefix.is_root() {
+            Self::bucket(location.bucket.clone())
+        } else {
+            Self::prefix(location.bucket.clone(), location.prefix.as_str())
+        }
+    }
 }
 
 /// What has been observed, per set of credentials and per scope.
@@ -241,6 +258,7 @@ mod tests {
 
     use super::*;
     use crate::error::{Error, Result, SessionProblem};
+    use crate::types::Prefix;
 
     #[test]
     fn a_completed_list_is_evidence_that_listing_is_allowed() {
@@ -569,5 +587,50 @@ mod tests {
         );
         assert_eq!(capability.read, Observation::Unknown);
         assert_eq!(capability.delete, Observation::Unknown);
+    }
+
+    #[test]
+    fn a_bucket_root_is_the_bucket_scope_and_not_an_empty_prefix() {
+        // The trap this conversion exists to close. They are different
+        // scopes, they hash differently, and a frontend that built the second
+        // by hand would file an observation the bucket list could never find
+        // again — leaving the row at "checking…" over an answer that had
+        // already arrived.
+        let root = Scope::at(&Location::bucket("holiday"));
+
+        assert_eq!(root, Scope::bucket("holiday"));
+        assert_eq!(root.key_prefix(), None);
+        assert_ne!(root, Scope::prefix("holiday", ""));
+    }
+
+    #[test]
+    fn a_location_inside_a_bucket_asks_about_that_prefix() {
+        let inside = Scope::at(&Location::at("holiday", Prefix::parse("photos/vacation")));
+
+        assert_eq!(inside.bucket_name(), "holiday");
+        assert_eq!(
+            inside.key_prefix(),
+            Some("photos/vacation/"),
+            "normalised once, in Prefix, so every scope names the same place \
+             the request will"
+        );
+    }
+
+    #[test]
+    fn a_prefix_is_its_own_question_and_the_bucket_answers_nothing_for_it() {
+        // `capability-awareness` already says this; what is new is that
+        // prefixes now exist to say it about.
+        let mut store = CapabilityStore::new();
+        let credentials = store.credentials_changed("work");
+        let bucket = Scope::at(&Location::bucket("holiday"));
+        let inside = Scope::at(&Location::at("holiday", Prefix::parse("photos")));
+
+        store.observe_list(&credentials, bucket.clone(), Observation::Allowed);
+
+        assert_eq!(
+            store.capability(&credentials, &inside).list,
+            Observation::Unknown,
+            "a policy may deny a prefix inside a bucket it grants"
+        );
     }
 }
