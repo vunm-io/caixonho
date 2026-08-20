@@ -49,9 +49,11 @@ targets — Windows is the primary daily driver and must never be the lagging po
   `THUNG-0002` remain in commit history and are never reused, but no work
   continues under them — the in-flight change was renumbered to `XONHO-0003`
   rather than closing under its old ID. Every task uses `XONHO-NNNN`.
-- No AI co-author trailers on commits (`Co-Authored-By: Claude ...`,
-  `Generated with ...` are not used in this repo). Optional light provenance
-  trailers `AI-Assisted-By:` / `AI-Reviewed-By:` are allowed when material.
+- AI provenance trailers on commits are allowed (owner decision 2026-08-20,
+  aligning this repo with the workspace-wide policy): `Co-Authored-By:
+  Claude <model>`, `AI-Assisted-By:`, `AI-Reviewed-By:` — use them when the
+  involvement is material. The author of record stays Vu Nguyen; a self
+  `Co-authored-by: Vu Nguyen` adds nothing and is not used.
 - Branches: `<type>/xonho-NNNN-short-description`; merge to `main`.
 - ADR for every irreversible choice, in `docs/adr/NNNN-title.md`.
 - Change management from M1 onward: **OpenSpec** (`openspec/`, `/opsx:*`
