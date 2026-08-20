@@ -409,6 +409,27 @@ pub(crate) fn listing_settled(id: ConnectionId, connection: &str, settled: Settl
 }
 
 /// A capability probe settled, and what it turned out to be evidence of.
+/// What reading one location came to.
+///
+/// The location is named by bucket and prefix — never by what it contains, and
+/// never by an object's key. A key is the user's own data, and a log they may
+/// send to a stranger has no business carrying an inventory of it; counts
+/// answer "did it work and how much came back" without disclosing anything.
+pub(crate) fn location_settled(
+    bucket: &str,
+    prefix: &str,
+    settled: Settled<'_, (usize, usize, bool)>,
+) {
+    match settled {
+        Ok((folders, objects, more)) => {
+            tracing::info!(bucket, prefix, folders, objects, more, "listed a location")
+        }
+        Err(error) => {
+            tracing::warn!(bucket, prefix, cause = %error, "listing a location failed")
+        }
+    }
+}
+
 pub(crate) fn probe_settled(scope: &Scope, observation: Observation) {
     tracing::info!(
         bucket = scope.bucket_name(),

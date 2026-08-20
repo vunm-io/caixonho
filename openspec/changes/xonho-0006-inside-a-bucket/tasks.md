@@ -127,7 +127,22 @@
 
 ## 3. Reading a location, without blocking the window
 
-- [ ] 3.1 [dispatch: main] Carry the listing across the session bridge.
+- [x] 3.1 [dispatch: main] Carry the listing across the session bridge.
+      - **The session now keeps the open connection's store**, installed
+        alongside the probe scheduler so the two can never come from different
+        connections, and cleared together when a connection opens or fails to.
+        Without it every folder entered would re-open the connection and
+        re-resolve its credentials — seven seconds on this machine, twenty-six
+        on the first run of a day, both measured. `XONHO-0004` took that wait
+        out of startup; browsing must not put it back once per folder.
+      - **Reading before choosing a connection is a mistake, not an empty
+        folder.** It returns `MissingConfiguration`, and a test holds it there:
+        this is the same distinction the whole project turns on, at the one
+        place where returning an empty page would have been easiest.
+      - `diagnostics::location_settled` names the bucket and prefix and counts
+        what came back — **never a key**. A key is the user's own data, and a
+        log they may send to a stranger has no business carrying an inventory
+        of it.
   - Paths: `crates/caixonho-core/src/session.rs`
   - Done criteria: a location is requested on the tokio runtime and its page
     returned over the channel, as bucket listing already is; nothing

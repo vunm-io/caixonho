@@ -23,7 +23,7 @@ use crate::probe::{ProbeScheduler, ProbeSink, ProbeTarget};
 use crate::profiles::ConfigPaths;
 use crate::store::ObjectStore;
 use crate::tls::HttpStack;
-use crate::types::ConnectionId;
+use crate::types::{ConnectionId, Cursor, Location, Page};
 
 /// The long-lived context every request runs in.
 #[derive(Clone)]
@@ -58,6 +58,20 @@ pub struct Session {
     /// running on the runtime's. Replaced when a connection opens, so a
     /// scheduler never outlives the store it probes through.
     scheduler: Arc<Mutex<Option<ProbeScheduler>>>,
+    /// The store for the connection currently open, if one is.
+    ///
+    /// Kept because a listing is not a one-off. Reading a location, then
+    /// walking into a folder, then asking for its next page are three
+    /// requests against the same connection, and re-opening it for each would
+    /// re-resolve its credentials each time — seven seconds on this machine,
+    /// twenty-six on the first run of a day, both measured. `XONHO-0004`
+    /// removed that wait from startup; browsing must not put it back, once
+    /// per folder.
+    ///
+    /// Shared by every clone and replaced when a connection opens, exactly
+    /// like the scheduler above, so a store never outlives the connection it
+    /// speaks for.
+    store: Arc<Mutex<Option<Arc<dyn ObjectStore>>>>,
     /// Where settled probes are announced, once a frontend has asked to hear
     /// about them. Shared, and read when a scheduler is installed, so
     /// registering once covers every connection opened afterwards.
@@ -86,6 +100,7 @@ impl Session {
             connections: Arc::new(ConfigDirectory),
             capabilities: Arc::new(Mutex::new(CapabilityStore::new())),
             scheduler: Arc::default(),
+            store: Arc::default(),
             settled: Arc::default(),
         }
     }
@@ -231,6 +246,15 @@ impl Session {
         self.scheduler_slot().clone()
     }
 
+    /// Whether a connection is open to read locations through.
+    #[cfg(test)]
+    fn store_slot(&self) -> Option<Arc<dyn ObjectStore>> {
+        self.store
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
     fn scheduler_slot(&self) -> MutexGuard<'_, Option<ProbeScheduler>> {
         self.scheduler
             .lock()
@@ -243,6 +267,10 @@ impl Session {
     /// Its own function so a test can put a double where the S3 adapter goes,
     /// through the same door production uses.
     fn install_scheduler(&self, store: Arc<dyn ObjectStore>, credentials: CredentialsId) {
+        // Parked here rather than at the call site so the scheduler and the
+        // store can never come from different connections: one function
+        // installs both, or neither.
+        *self.store.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::clone(&store));
         let settled = self
             .settled
             .lock()
@@ -303,6 +331,53 @@ impl Session {
                 }
             };
             deliver(TaggedOutcome::new(id, outcome));
+        });
+    }
+
+    /// Read one page of a location, off the caller's thread.
+    ///
+    /// Through the store the open connection already built, not a new one:
+    /// re-opening would re-resolve credentials for every folder entered, and
+    /// on a machine whose credentials come from an external process that is
+    /// seconds each time. A caller with no connection open gets
+    /// [`Error::MissingConfiguration`] rather than a silent empty page —
+    /// asking to browse before choosing where is a mistake, not a location
+    /// that holds nothing.
+    ///
+    /// `deliver` is called exactly once, on a runtime thread, so a frontend
+    /// should do nothing in it but hand the result to its own executor — the
+    /// same rule as [`Self::spawn_listing`].
+    pub fn spawn_objects<F>(&self, location: Location, cursor: Option<Cursor>, deliver: F)
+    where
+        F: FnOnce(Result<Page>) + Send + 'static,
+    {
+        let store = self
+            .store
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+
+        self.runtime.spawn(async move {
+            let outcome = match store {
+                Some(store) => store.list_objects(&location, cursor.as_ref()).await,
+                None => Err(crate::error::Error::MissingConfiguration {
+                    profile: None,
+                    detail: "no connection is open to read a location through".into(),
+                }),
+            };
+
+            // Recorded where the outcome is settled, for the same reason the
+            // bucket listing is: a log that disagrees with the screen is
+            // worse than no log at all.
+            diagnostics::location_settled(
+                &location.bucket,
+                location.prefix.as_str(),
+                outcome
+                    .as_ref()
+                    .map(|page| (page.folders.len(), page.objects.len(), page.is_truncated())),
+            );
+
+            deliver(outcome);
         });
     }
 
@@ -399,6 +474,7 @@ impl Session {
         let source = source.into();
         let credentials = self.credentials_changed(source.name());
         *self.scheduler_slot() = None;
+        *self.store.lock().unwrap_or_else(PoisonError::into_inner) = None;
 
         let connection =
             connection::open(id, &source, &self.paths, &self.http, self.secrets.as_ref()).await?;
@@ -615,6 +691,68 @@ mod tests {
         assert!(
             session.scheduler().is_some(),
             "a connection that comes up is one a viewport can be probed against"
+        );
+    }
+
+    #[tokio::test]
+    async fn opening_a_connection_also_gives_the_session_something_to_read_through() {
+        // The store and the scheduler are installed together, so they can
+        // never come from different connections.
+        let fixture = Fixture::new("readable");
+        let session = fixture.session("work");
+        assert!(session.store_slot().is_none());
+
+        session
+            .open(ConnectionId(1), "work")
+            .await
+            .expect("the fixture profile declares a region");
+
+        assert!(
+            session.store_slot().is_some(),
+            "a connection that comes up is one a location can be read through"
+        );
+    }
+
+    #[tokio::test]
+    async fn reading_a_location_before_choosing_a_connection_is_a_mistake_not_an_empty_folder() {
+        // The distinction this project exists to keep. Nothing is open, so
+        // there is nothing to read — which is not the same as a location that
+        // holds nothing, and must not arrive looking like one.
+        let fixture = Fixture::new("unopened");
+        let session = fixture.session("work");
+        let (tell, heard) = tokio::sync::oneshot::channel();
+
+        session.spawn_objects(Location::bucket("holiday"), None, move |outcome| {
+            let _ = tell.send(outcome);
+        });
+
+        match heard.await.expect("the callback runs once") {
+            Err(Error::MissingConfiguration { detail, .. }) => {
+                assert!(detail.contains("no connection"), "{detail}");
+            }
+            other => panic!("expected MissingConfiguration, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_switch_takes_away_what_the_previous_connection_was_read_through() {
+        // A store outliving its connection would read the next location with
+        // the last account's credentials, which is the same class of mistake
+        // as attributing an observation to credentials that replaced it.
+        let fixture = Fixture::new("switched");
+        let session = fixture.session("work");
+
+        session
+            .open(ConnectionId(1), "work")
+            .await
+            .expect("the fixture profile declares a region");
+        assert!(session.store_slot().is_some());
+
+        let _ = session.open(ConnectionId(2), "nowhere").await;
+
+        assert!(
+            session.store_slot().is_none(),
+            "a connection that failed to open leaves nothing to read through"
         );
     }
 
