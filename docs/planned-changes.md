@@ -412,6 +412,26 @@ Two things to settle when it is written, because they decide the shape:
   different promise from on disk between runs, and §8's security posture means
   the difference has to be decided rather than defaulted.
 
+## Directory buckets are absent by design, not by defect
+
+Reported 2026-08-20 as a bug: connecting with a static key listed no directory
+buckets. It is not one. S3 Express One Zone directory buckets are **not
+returned by `ListBuckets` at all** — they have their own operation,
+`ListDirectoryBuckets`, against their own endpoint
+(`s3express-control.<region>.amazonaws.com`, path-style only). An application
+that calls `ListBuckets` and shows what comes back is behaving correctly.
+
+`PROJECT_BRIEF.md` §4.2 already carries it as `[S]` at **M5**, and already
+names the four parts: the listing operation, zonal endpoints, `CreateSession`
+with silent refresh, and the `<name>--<az-id>--x-s3` naming. So this is
+scheduled work rather than a gap — recorded here only so the next person to
+notice it does not diagnose it a second time.
+
+Worth knowing while it waits: an account holding directory buckets is now
+available to test against, which is rarer than it sounds, and the brief calls
+supporting them "a real differentiator" precisely because almost no GUI client
+does.
+
 ## Smaller things, found at close-out and not yet cut into changes
 
 Recorded 2026-08-20, closing out `XONHO-0004` and `XONHO-0012`. None of these
