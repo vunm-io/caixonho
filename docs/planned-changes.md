@@ -458,6 +458,61 @@ a side effect, which is the opposite of how it was framed the first time.
 Worth doing after `XONHO-0006` rather than before: browsing will add views, and
 converting a set that is about to grow is cheaper once it has stopped growing.
 
+## What a local server can and cannot be asked to prove
+
+Asked 2026-08-20: could connecting, and directory buckets, be covered by tests
+rather than by someone opening the application?
+
+Partly, and the boundary is worth stating because getting it wrong buys a
+feeling of safety about exactly the failures it does not cover.
+
+**A double only knows what it was told.** This project has the definitive
+example twice over: a real failure that 105 green tests said nothing about,
+and then, on the day this was asked, 201 green tests beside an application
+that could not list a single R2 bucket. No double had ever answered
+`NotImplemented`, so no test could have.
+
+**A fake server tests you against the fake, not against every real service.**
+MinIO would in all likelihood have accepted or ignored the `max-buckets`
+parameter, so a MinIO rig would *not* have caught the R2 defect. Only R2
+catches R2. A rig that is mistaken for coverage of "S3-compatible services" is
+worse than no rig.
+
+**Which is not an argument against one — the argument for it is different.**
+A local server's value here is that it fails *on demand*. It enforces bucket
+policies, so it can produce, deterministically and in CI, four things neither
+of this project's real accounts can:
+
+- a **refused** bucket, and a refused **prefix** — the headline feature's own
+  case, and the part of `XONHO-0006` easiest to get wrong;
+- an account holding **no buckets at all**, so the empty state stops being
+  a rendering nobody has seen;
+- a listing of **100k objects**, against which the virtualised table's claim
+  can finally be measured rather than asserted from a synthetic feed in M0.
+
+That turns four one-off manual checks into regression tests, which is a
+different and better thing than fidelity.
+
+**Directory buckets have no local option at all.** LocalStack lists S3 Express
+directory bucket support as a backlog feature request — triaged, not being
+worked on. The reason is structural rather than incidental: directory buckets
+need a regional endpoint for `ListDirectoryBuckets`, zonal endpoints for object
+operations, and `CreateSession` tokens that live five minutes and must be
+refreshed silently. MinIO's commercial AIStor line documents an "S3 Express
+mode" whose control-plane coverage has **not** been verified here, and should
+not be planned against until it has been.
+
+So `[S]` at M5 stays testable only against real AWS. Worth knowing before M5 is
+planned, not during it.
+
+Mechanically, when the rig is built: the repository already has a convention
+for tests that touch this machine — `#[ignore = "<reason>"]`, used twice — and
+integration tests extend it rather than inventing something. `testcontainers`
+in `dev-dependencies` starts the server per run. There is no `tests/` directory
+yet, so this would be the first, and it is its own change. **After
+`XONHO-0006`**: browsing is what produces the listings worth testing, and
+building the rig first means writing fixtures for code that does not exist.
+
 ## Smaller things, found at close-out and not yet cut into changes
 
 Recorded 2026-08-20, closing out `XONHO-0004` and `XONHO-0012`. None of these
