@@ -195,6 +195,29 @@ assumed AWS rather than S3, and R2's free tier (10 GB, 1M class A operations
 and 10M class B per month, no egress charge) covers this project's testing
 without a bill.
 
+### The first AWS assumption it found, before a single connection was made
+
+`adapter.rs` sends `ListBuckets` with `max_buckets(1000)`, and the constant's
+comment explains why: AWS reports each bucket's `BucketRegion` only when the
+request carries at least one valid parameter, so the page size is what buys the
+regions inside a call already being made. That was established live against AWS
+in `XONHO-0005`, and it is true of AWS.
+
+R2 names the same idea differently. Its `ListBuckets` takes the `ListObjectsV2`
+search parameters — `prefix`, `start-after`, `continuation-token` and
+**`max-keys`** — with `cf-`-prefixed header equivalents, and a default and
+maximum of 1000. There is no `max-buckets`. So the parameter the application
+sends is one R2 does not define, the trick it was sent for buys nothing there,
+and R2 has no per-bucket region to report in the first place because every
+bucket is `auto`.
+
+The expected consequences, to be confirmed against the running application
+rather than assumed: the listing still works, because the page size R2 ignores
+is also the default it would have used and `continuation-token` is common to
+both; and every R2 bucket arrives with no region, landing in
+`RegionChoice::Unstated` — the branch that exists so such buckets do not vanish
+from every filter, and which no real service had exercised until now.
+
 ### R2 tokens hand out exactly the shape this project is about
 
 R2's token permissions split along the same line the application does. An
