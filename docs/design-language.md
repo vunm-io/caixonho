@@ -31,6 +31,12 @@ nothing. **Never hard-code a colour.** Every colour comes from `cx.theme()`;
 anything the theme lacks is added to this document first and to the app's own
 token module second.
 
+**Mind the toolkit's defaults.** `h_flex()` sets `items_center`, which sizes
+children to their content height — right for a toolbar row, wrong for a row
+that owns the layout: it has already collapsed the connections table to zero
+height once (fixed in `925f121`). A row whose children must fill the cross
+axis takes `.items_stretch()` explicitly.
+
 ## Tokens
 
 Sizes come from the reference, which uses a 2pt-based scale. The toolkit's
