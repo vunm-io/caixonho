@@ -63,7 +63,10 @@
 
 - [x] 6.1 [dispatch: main] `cargo fmt --all`, `cargo clippy --workspace
       --all-targets -- -D warnings`, `cargo test --workspace` green.
-- [ ] 6.2 [dispatch: main] CI green on both targets.
+- [x] 6.2 [dispatch: main] CI green on both targets.
+      - Run `32333149778` on `e57015c`: `build (windows-latest)` success,
+        `build (macos-latest)` success, `rustfmt` success. The shell commits
+        were green when pushed; `32322529073` is the most recent of them.
 - [ ] 6.3 [dispatch: main] Screenshots of every state for the owner to judge
       against `docs/design-language.md`, and the blurred-window comparison the
       design deferred.
