@@ -55,7 +55,7 @@
     design.md, "The port gains one operation".
   - Verification: `cargo build -p caixonho-core`
 
-- [ ] 2.2 [dispatch: main] Write the folder-inference rules as pure functions,
+- [x] 2.2 [dispatch: main] Write the folder-inference rules as pure functions,
       test-first, before any adapter calls them.
   - Paths: `crates/caixonho-core/src/` (beside the adapter)
   - Done criteria: three rules hold, each with its own test — an entry whose
@@ -64,8 +64,12 @@
     a prefix sharing a name both survive. Fixtures mirror the real cases
     recorded in `docs/planned-changes.md`.
   - Verification: `cargo test -p caixonho-core`
+      - Proved the tests can fail before trusting them: removing the marker
+        rule turns `a_folder_marker_is_the_folder_rather_than_an_entry_inside_
+        itself` red with exactly the defect it guards — `photos/` listed among
+        the children of `photos/`. Restored, and green.
 
-- [ ] 2.3 [dispatch: main] Extend the `ObjectStore` port with the listing
+- [x] 2.3 [dispatch: main] Extend the `ObjectStore` port with the listing
       operation and give the test double a canned implementation.
   - Paths: `crates/caixonho-core/src/store.rs`
   - Done criteria: the trait gains one operation taking a location and an
@@ -73,7 +77,7 @@
     return a page, a truncated page, and each failure cause.
   - Verification: `cargo test -p caixonho-core`
 
-- [ ] 2.4 [dispatch: main] Implement it in the adapter over `ListObjectsV2`.
+- [x] 2.4 [dispatch: main] Implement it in the adapter over `ListObjectsV2`.
   - Paths: `crates/caixonho-core/src/adapter.rs`
   - Done criteria: `delimiter=/`, the prefix, and the continuation token are
     sent; common prefixes become folders and contents become objects, with 2.2

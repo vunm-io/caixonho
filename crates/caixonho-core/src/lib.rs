@@ -36,6 +36,7 @@ pub(crate) mod connections;
 pub mod credentials;
 pub mod diagnostics;
 pub mod error;
+pub(crate) mod listing;
 pub mod outcome;
 pub mod probe;
 pub mod profiles;

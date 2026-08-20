@@ -9,7 +9,7 @@
 
 use crate::capability::Scope;
 use crate::error::Result;
-use crate::types::{Bucket, Region};
+use crate::types::{Bucket, Cursor, Location, Page, Region};
 
 /// Object-storage operations behind one object-safe async trait.
 ///
@@ -43,6 +43,24 @@ pub trait ObjectStore: Send + Sync {
     /// [`Region::Unknown`] leaves the choice to the implementation — the real
     /// one falls back to the connection's own client.
     async fn probe_list(&self, scope: &Scope, region: &Region) -> Result<()>;
+
+    /// Read one page of what `location` holds.
+    ///
+    /// The prefixes directly beneath it and the objects directly within it,
+    /// grouped by the service rather than filtered here — an object store has
+    /// no directories, and the folders a user sees are the groupings it
+    /// reports (`object-browsing`, "Folders are inferred").
+    ///
+    /// `cursor` continues a listing the service said was incomplete. Whether
+    /// more remains travels back in the page rather than being hidden inside
+    /// the fetching, because the interface has to be able to say so: a listing
+    /// that quietly stops early reads exactly like a small folder.
+    ///
+    /// A location the credentials may not read is an `Err` carrying that
+    /// cause, and never an empty page. The distinction is the point of the
+    /// whole project — an empty folder and a refused one must never be the
+    /// same answer.
+    async fn list_objects(&self, location: &Location, cursor: Option<&Cursor>) -> Result<Page>;
 }
 
 #[cfg(test)]
@@ -53,11 +71,15 @@ pub(crate) mod double {
     use super::ObjectStore;
     use crate::capability::Scope;
     use crate::error::{Error, Result};
-    use crate::types::{Bucket, Region};
+    use crate::types::{Bucket, Cursor, Location, Page, Region};
 
     /// A canned [`ObjectStore`] for tests.
     pub(crate) struct StoreDouble {
         outcome: Outcome,
+        /// What a listing answers with when the canned outcome succeeds.
+        /// Empty unless a test says otherwise, so every existing constructor
+        /// keeps meaning what it meant.
+        page: Page,
     }
 
     enum Outcome {
@@ -70,7 +92,15 @@ pub(crate) mod double {
         pub(crate) fn with_buckets(buckets: Vec<Bucket>) -> Self {
             Self {
                 outcome: Outcome::Buckets(buckets),
+                page: Page::default(),
             }
+        }
+
+        /// The page a listing answers with. Chained onto any succeeding
+        /// constructor: `StoreDouble::allows_listing().listing(page)`.
+        pub(crate) fn listing(mut self, page: Page) -> Self {
+            self.page = page;
+            self
         }
 
         /// Succeeds with an empty account.
@@ -177,6 +207,7 @@ pub(crate) mod double {
         fn failing(make: fn() -> Error) -> Self {
             Self {
                 outcome: Outcome::Fail(make),
+                page: Page::default(),
             }
         }
     }
@@ -198,6 +229,20 @@ pub(crate) mod double {
                 Outcome::Fail(make) => Err(make()),
             }
         }
+
+        /// And to the listing: a double that can read answers with its page,
+        /// a double that fails fails the same way. A refusal is therefore an
+        /// `Err` here too, never an empty page.
+        async fn list_objects(
+            &self,
+            _location: &Location,
+            _cursor: Option<&Cursor>,
+        ) -> Result<Page> {
+            match &self.outcome {
+                Outcome::Buckets(_) => Ok(self.page.clone()),
+                Outcome::Fail(make) => Err(make()),
+            }
+        }
     }
 }
 
@@ -213,7 +258,7 @@ mod tests {
     use super::double::StoreDouble;
     use crate::capability::{CapabilityStore, Observation, Scope, observation_for};
     use crate::error::Error;
-    use crate::types::{Bucket, Region};
+    use crate::types::{Bucket, Cursor, Folder, Location, Object, Page, Prefix, Region};
 
     fn bucket(name: &str, created: Option<&str>) -> Bucket {
         Bucket {
@@ -410,6 +455,89 @@ mod tests {
                 assert_eq!(iam_action, "s3:ListAllMyBuckets");
             }
             other => panic!("expected AccessDenied, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_location_crosses_the_port_as_folders_and_objects() {
+        let store: Box<dyn ObjectStore> = Box::new(StoreDouble::allows_listing().listing(Page {
+            folders: vec![Folder {
+                prefix: Prefix::parse("photos/vacation/"),
+            }],
+            objects: vec![Object {
+                key: "photos/cat.jpg".to_owned(),
+                size: 1_024,
+                last_modified: None,
+                storage_class: None,
+                etag: None,
+            }],
+            more: None,
+        }));
+
+        let page = store
+            .list_objects(&Location::at("holiday", Prefix::parse("photos")), None)
+            .await
+            .expect("a readable location");
+
+        assert_eq!(page.folders[0].name(), "vacation");
+        assert_eq!(page.objects[0].key, "photos/cat.jpg");
+        assert!(!page.is_truncated(), "the service said this was all of it");
+    }
+
+    #[tokio::test]
+    async fn a_truncated_page_says_so_rather_than_looking_like_a_small_folder() {
+        let store: Box<dyn ObjectStore> = Box::new(StoreDouble::allows_listing().listing(Page {
+            more: Some(Cursor("next".to_owned())),
+            ..Page::default()
+        }));
+
+        let page = store
+            .list_objects(&Location::bucket("holiday"), None)
+            .await
+            .expect("a readable location");
+
+        assert!(
+            page.is_truncated(),
+            "a listing that stops early without saying so is indistinguishable \
+             from one that has ended"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_location_is_an_error_and_never_an_empty_page() {
+        // The distinction the whole project turns on, one level below the
+        // bucket list: emptiness is a fact about a location that was read.
+        // A refusal is not a location that holds nothing.
+        let store: Box<dyn ObjectStore> = Box::new(StoreDouble::bucket_access_denied());
+
+        match store.list_objects(&Location::bucket("holiday"), None).await {
+            Err(Error::AccessDenied { iam_action }) => assert_eq!(iam_action, "s3:ListBucket"),
+            other => panic!("expected AccessDenied, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn every_other_cause_stays_itself_across_the_port_too() {
+        // None of these is a refusal, and none of them is emptiness. A window
+        // that collapsed them would send the user to fix the wrong thing.
+        let cases: [(StoreDouble, &str); 3] = [
+            (StoreDouble::expired_session(), "SessionRejected"),
+            (StoreDouble::network(), "Network"),
+            (StoreDouble::tls_trust(), "TlsTrust"),
+        ];
+
+        for (double, expected) in cases {
+            let store: Box<dyn ObjectStore> = Box::new(double);
+            let outcome = store.list_objects(&Location::bucket("holiday"), None).await;
+
+            let error = outcome.expect_err("this double fails");
+            let named = match error {
+                Error::SessionRejected { .. } => "SessionRejected",
+                Error::Network { .. } => "Network",
+                Error::TlsTrust { .. } => "TlsTrust",
+                other => panic!("unexpected cause: {other:?}"),
+            };
+            assert_eq!(named, expected);
         }
     }
 }

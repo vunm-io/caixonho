@@ -16,13 +16,15 @@ use aws_sdk_s3::operation::list_buckets::builders::ListBucketsFluentBuilder;
 use aws_sdk_s3::operation::list_objects_v2::builders::ListObjectsV2FluentBuilder;
 use aws_sdk_s3::primitives::DateTimeFormat;
 use aws_sdk_s3::types::Bucket as SdkBucket;
+use aws_sdk_s3::types::Object as SdkObject;
 
 use crate::capability::Scope;
 use crate::classify::{CallContext, SdkFailure, classify};
 use crate::connection::Connection;
 use crate::error::Result;
+use crate::listing;
 use crate::store::ObjectStore;
-use crate::types::{Bucket, Region};
+use crate::types::{Bucket, Cursor, Location, Object, Page, Region};
 
 /// The IAM action a bucket listing needs, named in denial messages.
 const LIST_BUCKETS_ACTION: &str = "s3:ListAllMyBuckets";
@@ -204,6 +206,79 @@ impl ObjectStore for S3ObjectStore {
 
         Ok(())
     }
+
+    async fn list_objects(&self, location: &Location, cursor: Option<&Cursor>) -> Result<Page> {
+        // The connection's own client: a location is reached through the
+        // endpoint the connection was opened against, and this change does not
+        // yet follow a bucket to a region of its own.
+        let answer = list_objects_request(&self.client, location, cursor)
+            .send()
+            .await
+            .map_err(|error| {
+                classify(
+                    &SdkFailure::from_sdk(&error),
+                    &self.call(LIST_BUCKET_ACTION, &self.endpoint),
+                )
+            })?;
+
+        // Every rule about what a listing shows is applied in `listing`, over
+        // the service's own answer — the adapter's job is to hand that answer
+        // over unaltered, which is what keeps the rules testable without one.
+        Ok(listing::page_at(
+            &location.prefix,
+            answer
+                .common_prefixes()
+                .iter()
+                .filter_map(|group| group.prefix().map(ToOwned::to_owned))
+                .collect(),
+            answer.contents().iter().map(object_from).collect(),
+            answer
+                .next_continuation_token()
+                .map(|token| Cursor(token.to_owned())),
+        ))
+    }
+}
+
+/// The request for one page of a location's contents.
+///
+/// Kept apart from sending it for the same reason the bucket listing is: a
+/// fluent builder can be read back in a test and a sent request cannot.
+///
+/// `delimiter` is what makes folders exist at all — without it the service
+/// returns every key beneath the prefix, however deep, and there is nothing to
+/// infer a hierarchy from.
+fn list_objects_request(
+    client: &Client,
+    location: &Location,
+    cursor: Option<&Cursor>,
+) -> ListObjectsV2FluentBuilder {
+    let request = client
+        .list_objects_v2()
+        .bucket(&location.bucket)
+        .delimiter("/")
+        .prefix(location.prefix.as_str());
+    match cursor {
+        Some(Cursor(token)) => request.continuation_token(token),
+        None => request,
+    }
+}
+
+/// Map one SDK object to the domain type.
+fn object_from(object: &SdkObject) -> Object {
+    Object {
+        key: object.key().unwrap_or_default().to_owned(),
+        // A key the service reported no size for is reported as zero rather
+        // than guessed at: the only objects this happens to are the
+        // zero-length ones anyway.
+        size: object.size().unwrap_or(0).max(0) as u64,
+        last_modified: object
+            .last_modified()
+            .and_then(|at| at.fmt(DateTimeFormat::DateTimeWithOffset).ok()),
+        storage_class: object
+            .storage_class()
+            .map(|class| class.as_str().to_owned()),
+        etag: object.e_tag().map(ToOwned::to_owned),
+    }
 }
 
 /// The listing request, shaped so the service reports regions.
@@ -291,6 +366,7 @@ mod tests {
     use super::*;
     use crate::capability::Scope;
     use crate::tls::HttpStack;
+    use crate::types::Prefix;
     use aws_config::SdkConfig;
     use aws_sdk_s3::config::{
         AppName, BehaviorVersion, ConfigBag, Credentials, IdentityCache, Region as SdkRegion,
@@ -606,6 +682,74 @@ mod tests {
             (1..=10_000).contains(&LIST_BUCKETS_PAGE_SIZE),
             "the service accepts 1..=10000 buckets per page, not {LIST_BUCKETS_PAGE_SIZE}"
         );
+    }
+
+    #[test]
+    fn a_listing_of_a_location_asks_the_service_to_group_by_separator() {
+        // `delimiter` is what makes folders exist. Without it the service
+        // returns every key beneath the prefix however deep, and there is no
+        // hierarchy to infer — the listing would be one flat pour of keys.
+        let here = Location::at("photos-bucket", Prefix::parse("holidays/2026"));
+
+        let request = list_objects_request(&client(), &here, None);
+
+        assert_eq!(request.get_delimiter(), &Some("/".to_owned()));
+        assert_eq!(request.get_prefix(), &Some("holidays/2026/".to_owned()));
+        assert_eq!(request.get_bucket(), &Some("photos-bucket".to_owned()));
+        assert_eq!(
+            request.get_continuation_token(),
+            &None,
+            "a first page continues nothing"
+        );
+    }
+
+    #[test]
+    fn continuing_a_listing_hands_the_service_its_own_token_back() {
+        let here = Location::bucket("photos-bucket");
+        let cursor = Cursor("opaque-token".to_owned());
+
+        let request = list_objects_request(&client(), &here, Some(&cursor));
+
+        assert_eq!(
+            request.get_continuation_token(),
+            &Some("opaque-token".to_owned())
+        );
+        assert_eq!(
+            request.get_prefix(),
+            &Some(String::new()),
+            "the bucket root narrows nothing"
+        );
+    }
+
+    #[test]
+    fn an_object_crosses_the_port_with_what_the_service_said_about_it() {
+        let object = SdkObject::builder()
+            .key("holidays/2026/beach.jpg")
+            .size(2_048)
+            .storage_class(aws_sdk_s3::types::ObjectStorageClass::Standard)
+            .e_tag("\"d41d8cd98f00b204e9800998ecf8427e\"")
+            .build();
+
+        let mapped = object_from(&object);
+
+        assert_eq!(mapped.key, "holidays/2026/beach.jpg");
+        assert_eq!(mapped.size, 2_048);
+        assert_eq!(mapped.storage_class.as_deref(), Some("STANDARD"));
+        assert_eq!(
+            mapped.etag.as_deref(),
+            Some("\"d41d8cd98f00b204e9800998ecf8427e\""),
+            "carried although nothing renders it yet, so the port need not \
+             change when the remaining columns arrive"
+        );
+    }
+
+    #[test]
+    fn an_object_the_service_gave_no_size_for_is_zero_rather_than_a_guess() {
+        let mapped = object_from(&SdkObject::builder().key("marker/").build());
+
+        assert_eq!(mapped.size, 0);
+        assert_eq!(mapped.last_modified, None);
+        assert_eq!(mapped.storage_class, None);
     }
 
     #[test]

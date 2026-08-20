@@ -428,6 +428,16 @@ pub(crate) mod double {
             self.end();
             (self.answer)()
         }
+
+        /// This double exists to hold probes open and count them; nothing here
+        /// lists a location, so it answers with nothing rather than pretending.
+        async fn list_objects(
+            &self,
+            _location: &crate::types::Location,
+            _cursor: Option<&crate::types::Cursor>,
+        ) -> Result<crate::types::Page> {
+            Ok(crate::types::Page::default())
+        }
     }
 
     /// Wait for `condition`, failing loudly rather than hanging if it never
