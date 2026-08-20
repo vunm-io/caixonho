@@ -210,21 +210,39 @@ maximum of 1000. There is no `max-buckets`. So the parameter the application
 sends is one R2 does not define, and the trick it was sent for buys nothing
 there.
 
-**What a bucket's region then is, is an open question rather than "none".** An
-earlier draft of this note assumed R2 would report no region because the S3
-region for R2 is `auto`. That is wrong, or at least not the whole story:
-`HeadBucket` against `caixonho-test` answers `BucketRegion: APAC`, a location
-hint rather than an S3 region name. Whether `ListBuckets` says the same thing —
-which is what the application actually reads, and what the region column and
-the region filter are built on — is untested, because the token available while
-this was written cannot call it.
+**This is not a harmless difference. It is a defect, and it blocks R2
+entirely.** Two earlier drafts of this note guessed that R2 would ignore an
+unknown parameter, as services usually do. Measured on 2026-08-20, it does not:
 
-So the consequences to confirm against the running application are: whether the
-listing works at all with a page-size parameter R2 does not define; and what
-lands in the region column — `APAC`, nothing, or something else again. If it is
-nothing, `RegionChoice::Unstated` gets its first exercise by a real service. If
-it is `APAC`, the region *filter* acquires a value that is not an AWS region and
-never was, which is worth looking at before it is shown to anyone.
+    aws s3api list-buckets --max-buckets 1000    (against R2)
+    NotImplemented: ListBuckets search parameter max-buckets not implemented
+
+The same call against AWS returns `BucketRegion` for every bucket, which is
+exactly what `XONHO-0005` established and why the parameter is sent. So the
+first call this application makes on opening any R2 connection fails, and it
+fails in the worst available way: `NotImplemented` is a cause `classify.rs`
+does not know, so it lands in `FailureKind::Other` and reaches the user as
+`Error::Unexpected` — the app saying it has no idea, about a condition that has
+a precise cause and a precise fix. That is the same failure shape that was
+already fixed once, for a rejected SSO session, and it is the thing §4.3 exists
+to prevent.
+
+Without the parameter R2 lists buckets fine, and reports **no region at all** —
+only a name and a creation date. `HeadBucket` does answer `BucketRegion: APAC`,
+a Cloudflare location hint rather than an S3 region name, so the region is
+knowable per bucket but not from the listing. `RegionChoice::Unstated`
+therefore gets its first exercise by a real service, which is the branch
+working as designed.
+
+**The fix should observe rather than declare.** Send the parameter, and on
+`NotImplemented` retry without it — one extra round trip, only against services
+that reject it, and the regions keep arriving from the ones that do not. The
+alternative, branching on the provider chosen in the connection form, is the
+anti-pattern described below under connection types: `ADR-0002`'s reasoning
+about capability applies to API features word for word, because what an
+endpoint implements is found out by asking it, not by knowing whose it is.
+`NotImplemented` also needs a cause of its own in the classifier either way —
+"this service does not implement that" is not "something unexpected happened".
 
 ### R2 tokens hand out exactly the shape this project is about
 
