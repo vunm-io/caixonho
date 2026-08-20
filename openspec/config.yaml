@@ -1,32 +1,16 @@
-schema: spec-driven
+schema: passdown
 
-# Project context (optional)
-# This is shown to AI when creating artifacts.
-# Add your tech stack, conventions, style guides, domain knowledge, etc.
-# Example:
-#   context: |
-#     Tech stack: TypeScript, React, Node.js
-#     We use conventional commits
-#     Domain: e-commerce platform
-
-# Per-artifact rules (optional)
-# Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always include a "Non-goals" section
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
-
-# Per-operation guidance (optional)
-# Add advisory guidance for how apply and archive work should be conducted.
-# This is separate from artifact rules above.
-# Example:
-#   operations:
-#     apply:
-#       guidance:
-#         - Keep test summaries concise
-#     archive:
-#       guidance:
-#         - Summarize the archive outcome before finishing
+context: |
+  caixonho — a fast, native, cross-platform S3 client (Rust + GPUI), public
+  open source. Requirements live in docs/PROJECT_BRIEF.md, the visual reference
+  in docs/design-language.md, irreversible decisions in docs/adr/.
+  Conventions:
+  - Every commit scope carries a task ID (e.g. "feat(XONHO-0004): ..."), and
+    change directory names embed the lowercase ID (xonho-0004-...). Policy:
+    vunm-knowledge-base/docs/task-id-policy.md (workspace-level).
+  - A proposal must pass the planning gate in AGENTS.md (declare which [M]
+    requirements it delivers and which it steps over), and a change is done
+    only after the close-out review there.
+  - tasks.md is the single source of task state and carries passdown dispatch
+    tags ([dispatch: main] etc.); session handoff logs live in the workspace
+    meta-repo, not here.
