@@ -135,10 +135,6 @@ pub fn sign_in_location(paths: &ConfigPaths, profile: &str) -> Result<SignInLoca
         detail,
     };
 
-    let session_name = sso_session(paths, profile).ok_or_else(|| {
-        missing("it declares no `sso_session`, so there is nowhere to sign in".to_owned())
-    })?;
-
     let path = paths
         .config
         .as_deref()
@@ -150,21 +146,39 @@ pub fn sign_in_location(paths: &ConfigPaths, profile: &str) -> Result<SignInLoca
         ))
     })?;
 
-    let section = section_entries(&contents, &[format!("[sso-session {session_name}]")]);
-    let required = |key: &str| {
-        section.get(key).cloned().ok_or_else(|| {
-            missing(format!(
-                "the `[sso-session {session_name}]` section declares no `{key}`"
-            ))
-        })
+    // Two declared shapes, and both are ordinary. A profile either points at
+    // an `[sso-session]` section, or carries `sso_start_url` and `sso_region`
+    // in its own section — the older form, still what the quick-start
+    // produces, and the only form present on the machine this first ran on.
+    let own = section_entries(
+        &contents,
+        &[format!("[profile {profile}]"), format!("[{profile}]")],
+    );
+    let session_name = own.get("sso_session").cloned();
+    let (section, where_from) = match &session_name {
+        Some(name) => (
+            section_entries(&contents, &[format!("[sso-session {name}]")]),
+            format!("the `[sso-session {name}]` section"),
+        ),
+        None => (own, format!("the `[profile {profile}]` section")),
     };
 
+    let required = |key: &str| {
+        section
+            .get(key)
+            .cloned()
+            .ok_or_else(|| missing(format!("{where_from} declares no `{key}`")))
+    };
+
+    let start_url = required("sso_start_url")?;
+    let region = required("sso_region")?;
+
     Ok(SignInLocation {
-        start_url: required("sso_start_url")?,
-        region: required("sso_region")?,
+        start_url,
+        region,
         // Optional, and the common configuration leaves it out. An empty list
-        // means none are sent, which is what the service treats as "the
-        // defaults for this instance".
+        // means none are sent, which the service treats as this instance's
+        // defaults.
         scopes: section
             .get("sso_registration_scopes")
             .map(|declared| {
@@ -406,7 +420,7 @@ mod sign_in_location_tests {
 
         let at = sign_in_location(&declared(&fixture), "work").expect("the session is declared");
 
-        assert_eq!(at.session_name, "corp");
+        assert_eq!(at.session_name.as_deref(), Some("corp"));
         assert_eq!(at.start_url, "https://corp.awsapps.com/start");
         // The session's region, not the profile's `us-east-1`: an Identity
         // Center instance lives where it lives.
@@ -456,7 +470,7 @@ mod sign_in_location_tests {
         match error {
             Error::MissingConfiguration { profile, detail } => {
                 assert_eq!(profile.as_deref(), Some("work"));
-                assert!(detail.contains("sso_session"), "{detail}");
+                assert!(detail.contains("sso_start_url"), "{detail}");
             }
             other => panic!("expected a configuration cause, got {other:?}"),
         }
@@ -519,5 +533,163 @@ mod sign_in_location_tests {
 
         assert_eq!(at.start_url, "https://corp.awsapps.com/start");
         assert_eq!(at.region, "ap-southeast-1");
+    }
+}
+
+#[cfg(test)]
+mod legacy_sso_tests {
+    //! The older declared shape: `sso_start_url` and `sso_region` in the
+    //! profile's own section, with no `[sso-session]` anywhere.
+    //!
+    //! Excluded from `XONHO-0011` at first, on the argument that it was a
+    //! parsing problem rather than a sign-in one. Then the window was run
+    //! against a real account and offered no sign-in at all, because this is
+    //! the only shape that machine had. The exclusion is withdrawn and these
+    //! tests are what it cost.
+
+    use super::tests::Fixture;
+    use super::*;
+
+    fn legacy(fixture: &Fixture) -> ConfigPaths {
+        let config = fixture.write(
+            "config",
+            "[profile work]\n\
+             sso_start_url = https://corp.awsapps.com/start\n\
+             sso_region = ap-southeast-1\n\
+             sso_account_id = 111122223333\n\
+             sso_role_name = ReadOnly\n\
+             region = us-east-1\n",
+        );
+        ConfigPaths {
+            config: Some(config),
+            credentials: None,
+        }
+    }
+
+    #[test]
+    fn a_profile_declaring_sso_itself_needs_no_session_section() {
+        let fixture = Fixture::new("legacy-inline");
+
+        let at = sign_in_location(&legacy(&fixture), "work").expect("the profile declares it all");
+
+        assert_eq!(at.session_name, None);
+        assert_eq!(at.start_url, "https://corp.awsapps.com/start");
+        // The SSO region, not the profile's `us-east-1` region for S3.
+        assert_eq!(at.region, "ap-southeast-1");
+    }
+
+    #[test]
+    fn a_legacy_profile_is_cached_under_its_start_url() {
+        // The whole reason the distinction is modelled rather than smoothed
+        // over. `aws-config` resolves a legacy profile through its credentials
+        // provider, which hashes the start URL; hashing a session name that
+        // does not exist would write a file nothing ever opens.
+        let fixture = Fixture::new("legacy-cache-key");
+        let at = sign_in_location(&legacy(&fixture), "work").expect("declared");
+
+        assert_eq!(at.cache_identity(), "https://corp.awsapps.com/start");
+        assert_eq!(at.label(), "https://corp.awsapps.com/start");
+    }
+
+    #[test]
+    fn a_session_backed_profile_is_still_cached_under_its_session_name() {
+        let fixture = Fixture::new("session-cache-key");
+        let config = fixture.write(
+            "config",
+            "[profile work]\nsso_session = corp\n\n\
+             [sso-session corp]\n\
+             sso_start_url = https://corp.awsapps.com/start\n\
+             sso_region = ap-southeast-1\n",
+        );
+
+        let at = sign_in_location(
+            &ConfigPaths {
+                config: Some(config),
+                credentials: None,
+            },
+            "work",
+        )
+        .expect("declared");
+
+        assert_eq!(at.cache_identity(), "corp");
+    }
+
+    #[test]
+    fn a_profile_declaring_neither_shape_says_what_it_lacks() {
+        let fixture = Fixture::new("legacy-none");
+        let config = fixture.write("config", "[profile work]\nregion = us-east-1\n");
+
+        let error = sign_in_location(
+            &ConfigPaths {
+                config: Some(config),
+                credentials: None,
+            },
+            "work",
+        )
+        .expect_err("nothing declares where to sign in");
+
+        match error {
+            Error::MissingConfiguration { detail, .. } => {
+                assert!(detail.contains("sso_start_url"), "{detail}");
+                assert!(detail.contains("[profile work]"), "{detail}");
+            }
+            other => panic!("expected a configuration cause, got {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod this_machine {
+    use super::*;
+
+    /// Resolve a sign-in location out of this machine's own `~/.aws/config`.
+    ///
+    /// Opt-in and named by the environment, so no profile of anyone's is
+    /// written into this repository:
+    ///
+    /// ```text
+    /// CAIXONHO_SSO_PROFILE=<name> cargo test -p caixonho-core \
+    ///     this_machine -- --ignored --nocapture
+    /// ```
+    ///
+    /// It exists because a fixture proves the parser and nothing else. The
+    /// shape a fixture does not have is the shape that breaks: this change
+    /// shipped a window with no sign-in button on it because every test it had
+    /// described a config that machine did not.
+    #[test]
+    #[ignore = "reads this machine's own ~/.aws/config; needs CAIXONHO_SSO_PROFILE"]
+    fn a_profile_on_this_machine_resolves() {
+        let Ok(profile) = std::env::var("CAIXONHO_SSO_PROFILE") else {
+            panic!("set CAIXONHO_SSO_PROFILE to the profile to resolve");
+        };
+
+        match sign_in_location(&ConfigPaths::from_env(), &profile) {
+            Ok(at) => {
+                // Deliberately prints the shape, not the values: which of the
+                // two forms it is, and whether the fields are there at all.
+                println!(
+                    "resolved: session_name={}, start_url={}, region={}, scopes={}",
+                    if at.session_name.is_some() {
+                        "declared"
+                    } else {
+                        "none (legacy inline)"
+                    },
+                    if at.start_url.is_empty() {
+                        "MISSING"
+                    } else {
+                        "present"
+                    },
+                    if at.region.is_empty() {
+                        "MISSING"
+                    } else {
+                        "present"
+                    },
+                    at.scopes.len()
+                );
+                assert!(!at.start_url.is_empty(), "a start URL is required");
+                assert!(!at.region.is_empty(), "a region is required");
+            }
+            Err(error) => panic!("{profile} does not resolve: {error}"),
+        }
     }
 }

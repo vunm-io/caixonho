@@ -59,10 +59,15 @@ impl fmt::Debug for SignInSecret {
 /// application").
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignInLocation {
-    /// The `sso_session` name. Also the identity the token cache is keyed on —
-    /// see [`crate::sso`]'s cache writer, where using the start URL instead
-    /// produces a file nothing reads.
-    pub session_name: String,
+    /// The `[sso-session]` name, when the profile points at one.
+    ///
+    /// `None` for a legacy profile that carries `sso_start_url` and
+    /// `sso_region` in its own section — a shape that predates
+    /// `[sso-session]`, is still what the AWS documentation's own quick-start
+    /// produces, and is what the machine this was first run on had. Which of
+    /// the two it is decides what the token cache is keyed on: see
+    /// [`SignInLocation::cache_identity`].
+    pub session_name: Option<String>,
     /// The Identity Center portal URL.
     pub start_url: String,
     /// The region the Identity Center instance lives in, which is not
@@ -71,6 +76,28 @@ pub struct SignInLocation {
     /// The scopes the profile declares, in the order it declares them. Empty
     /// means the profile declared none, and none are sent.
     pub scopes: Vec<String>,
+}
+
+impl SignInLocation {
+    /// What the token cache is keyed on for this profile.
+    ///
+    /// The session name when there is one, the start URL when there is not —
+    /// and that is not a fallback, it is the rule. `aws-config` hashes the
+    /// session name for its *token* provider and the start URL for its
+    /// *credentials* provider (`aws-config-1.10.1/src/sso/cache.rs`,
+    /// `cached_token_path`), and a legacy profile is resolved by the second.
+    /// Writing under the other one produces a valid file that nothing opens.
+    pub fn cache_identity(&self) -> &str {
+        self.session_name.as_deref().unwrap_or(&self.start_url)
+    }
+
+    /// What to call this session where a person will read it.
+    ///
+    /// A legacy profile has no name of its own, so it is named by where it
+    /// signs in — which is the thing a user would recognise anyway.
+    pub fn label(&self) -> &str {
+        self.session_name.as_deref().unwrap_or(&self.start_url)
+    }
 }
 
 /// A client registration, as the provider issued it.
@@ -272,7 +299,7 @@ pub async fn sign_in(
         // watching a spinner that cannot succeed.
         if waiter.now() >= authorization.expires_at {
             return Err(crate::error::Error::SignIn {
-                sso_session: at.session_name.clone(),
+                sso_session: at.label().to_owned(),
                 problem: crate::error::SignInProblem::Expired,
             });
         }
@@ -289,7 +316,7 @@ pub async fn sign_in(
         // attempt's own expiry).
         if waiter.now() >= authorization.expires_at {
             return Err(crate::error::Error::SignIn {
-                sso_session: at.session_name.clone(),
+                sso_session: at.label().to_owned(),
                 problem: crate::error::SignInProblem::Expired,
             });
         }
@@ -389,7 +416,7 @@ pub fn write_session(
     use aws_smithy_types::DateTime;
     use aws_smithy_types::date_time::Format;
 
-    let path = cache_path(home, &at.session_name);
+    let path = cache_path(home, at.cache_identity());
     let directory = path.parent().expect("the cache path always has a parent");
 
     let rendered = |time: SystemTime| -> Result<String> {
@@ -726,7 +753,7 @@ mod tests {
 
     fn somewhere() -> SignInLocation {
         SignInLocation {
-            session_name: "corp".into(),
+            session_name: Some("corp".into()),
             start_url: "https://corp.awsapps.com/start".into(),
             region: "ap-southeast-1".into(),
             scopes: vec!["sso:account:access".into()],

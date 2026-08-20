@@ -83,10 +83,10 @@ impl SsoOidcSignIn {
     /// ever reached.
     fn call<'a>(&self, at: &'a SignInLocation) -> CallContext<'a> {
         CallContext {
-            profile: &at.session_name,
+            profile: at.label(),
             endpoint: &at.start_url,
             iam_action: "",
-            sso_session: Some(&at.session_name),
+            sso_session: at.session_name.as_deref(),
         }
     }
 
@@ -106,7 +106,7 @@ impl SsoOidcSignIn {
     /// The attempt ended, and the provider is the one saying so.
     fn ended(at: &SignInLocation, problem: SignInProblem) -> Error {
         Error::SignIn {
-            sso_session: at.session_name.clone(),
+            sso_session: at.label().to_owned(),
             problem,
         }
     }
@@ -120,7 +120,7 @@ impl SsoOidcSignIn {
         Error::Unexpected {
             detail: format!(
                 "the sign-in service answered for `{}` without `{field}`",
-                at.session_name
+                at.label()
             ),
         }
     }
@@ -265,7 +265,7 @@ mod tests {
 
     fn somewhere() -> SignInLocation {
         SignInLocation {
-            session_name: "corp".into(),
+            session_name: Some("corp".into()),
             start_url: "https://corp.awsapps.com/start".into(),
             region: "ap-southeast-1".into(),
             scopes: Vec::new(),

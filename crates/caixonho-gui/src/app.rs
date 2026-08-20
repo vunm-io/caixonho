@@ -1047,7 +1047,7 @@ impl CaixonhoApp {
 
         let abandon = Abandon::default();
         self.signing_in = Some(SignInAttempt {
-            session_name: at.session_name.clone().into(),
+            session_name: at.label().to_owned().into(),
             shown: None,
             abandon: abandon.clone(),
         });

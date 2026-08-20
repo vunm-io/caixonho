@@ -1127,7 +1127,7 @@ mod tests {
             let fixture = Fixture::new("sign-in-secrets");
             let (log, ()) = recording(everything(), || {
                 let at = crate::sso::SignInLocation {
-                    session_name: "corp".into(),
+                    session_name: Some("corp".into()),
                     start_url: "https://corp.awsapps.com/start".into(),
                     region: "ap-southeast-1".into(),
                     scopes: Vec::new(),

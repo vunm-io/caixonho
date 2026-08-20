@@ -43,21 +43,26 @@ From `PROJECT_BRIEF.md` §4.1, recorded in `docs/requirements-status.md`:
   *partial*: detecting landed on 2026-08-19, the offer is still prose. This
   delivers the offer, which is the half that was missing.
 - **IAM Identity Center (SSO), including `[sso-session]` profiles** — currently
-  *partial*. This moves it forward without closing it: a profile that declares
-  its own `sso_session` can now sign in, while a legacy inline profile or a
-  `source_profile` chain still loses the session name. That gap is named below
-  rather than fixed here.
+  *partial*. Both declared shapes can now sign in: a profile pointing at an
+  `[sso-session]` section, and a legacy profile carrying `sso_start_url` and
+  `sso_region` itself. `source_profile` chains still lose the session, so this
+  moves the row forward without closing it.
 
 ## Requirements it steps over, deliberately
 
 Still unbuilt and mandatory, from `docs/requirements-status.md`:
 
-- **`sso_session` resolution for legacy inline profiles and `source_profile`
-  chains.** Deliberately excluded: it is a config-parsing problem, not a
-  sign-in problem, and folding it in would put a parser rewrite inside a change
-  whose risk already lies in a network protocol. A profile it affects reports
-  the missing session name as a cause rather than failing obscurely, so the gap
-  is visible rather than silent.
+- ~~**`sso_session` resolution for legacy inline profiles**~~ — **the
+  exclusion was wrong, and is withdrawn (2026-08-20).** It was argued on shape:
+  a config-parsing problem does not belong inside a change whose risk is a
+  network protocol. What it was never checked against was a real machine. The
+  owner ran the finished window against their own account and there was no
+  sign-in button, because their only Identity Center profile declares
+  `sso_start_url` and `sso_region` inline and the config file has no
+  `[sso-session]` section at all. Excluding the legacy shape meant excluding
+  the only shape present, and the change delivered nothing where it was meant
+  to. Legacy inline profiles are therefore in scope. `source_profile` chains
+  stay out — a different problem, and no profile here has one.
 - **Region handling that follows `x-amz-bucket-region`** and **MFA prompting**
   remain untouched, as they were before this change.
 - **Sortable, resizable and persisted columns**, **filter and prefix search**,

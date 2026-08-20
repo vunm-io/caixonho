@@ -465,7 +465,7 @@ impl Session {
                 },
                 other => other,
             };
-            diagnostics::sign_in_settled(&at.session_name, outcome.as_ref());
+            diagnostics::sign_in_settled(at.label(), outcome.as_ref());
             deliver(outcome);
         });
     }
