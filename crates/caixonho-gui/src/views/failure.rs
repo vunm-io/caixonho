@@ -10,7 +10,23 @@ use gpui::SharedString;
 
 /// What to do about a failure. The advice belongs to the cause rather than
 /// to the panel that happens to show it, now that two surfaces need it.
-pub(crate) fn guidance_for(error: &Error) -> SharedString {
+///
+/// `sign_in_offered` is whether the surface showing this is also showing a
+/// sign-in button. It changes the advice for exactly the causes a sign-in
+/// fixes, and it has to be passed in because the same cause deserves
+/// different words depending on whether the fix is one click away or somewhere
+/// else entirely. Telling someone to run `aws sso login` beside a button that
+/// does it for them is how the CLI stays a dependency in practice after it has
+/// stopped being one in code.
+pub(crate) fn guidance_for(error: &Error, sign_in_offered: bool) -> SharedString {
+    if sign_in_offered
+        && matches!(
+            error,
+            Error::SessionRejected { .. } | Error::NoCredentials { .. }
+        )
+    {
+        return "Sign in to continue. The listing runs again by itself once you have.".into();
+    }
     match error {
                 Error::Network { .. } => "The endpoint could not be reached. Check the connection and try again.".into(),
                 Error::SessionRejected { profile, sso_session, problem } => match (problem, sso_session) {
@@ -281,14 +297,63 @@ mod tests {
             detail: "permission denied".into(),
         };
 
-        let declined_guidance = guidance_for(&declined);
-        let expired_guidance = guidance_for(&expired);
-        let cache_guidance = guidance_for(&cache);
+        let declined_guidance = guidance_for(&declined, false);
+        let expired_guidance = guidance_for(&expired, false);
+        let cache_guidance = guidance_for(&cache, false);
 
         assert_ne!(declined_guidance, expired_guidance);
         assert_ne!(declined_guidance, cache_guidance);
         assert_ne!(expired_guidance, cache_guidance);
         assert!(cache_guidance.contains(path));
+    }
+
+    #[test]
+    fn when_signing_in_is_one_click_away_the_advice_stops_naming_a_command() {
+        // The regression this guards is subtle and was shipped: the button
+        // arrived and the sentence beside it still told the user to go and run
+        // `aws sso login`, which is the dependency this whole change exists to
+        // remove. A CLI named next to a button that does the same thing keeps
+        // the CLI required in practice.
+        let expired = Error::SessionRejected {
+            profile: "work".into(),
+            sso_session: Some("corp".into()),
+            problem: SessionProblem::Expired,
+        };
+
+        let offered = guidance_for(&expired, true);
+        let alone = guidance_for(&expired, false);
+
+        assert!(!offered.contains("aws sso"), "{offered}");
+        assert!(!offered.contains("retry"), "{offered}");
+        // And the other way: a surface with no button to offer still tells the
+        // user where to go, because there the command is the only way.
+        assert!(alone.contains("aws sso login"), "{alone}");
+    }
+
+    #[test]
+    fn a_profile_with_no_credentials_gets_the_same_treatment() {
+        let none = Error::NoCredentials {
+            profile: "work".into(),
+        };
+
+        assert_ne!(guidance_for(&none, true), guidance_for(&none, false));
+    }
+
+    #[test]
+    fn causes_a_sign_in_would_not_fix_read_the_same_either_way() {
+        // The flag changes the advice for the two causes signing in fixes, and
+        // for nothing else. A denial is a denial whether or not a button
+        // happens to be on screen.
+        for error in [
+            Error::AccessDenied {
+                iam_action: "s3:ListAllMyBuckets",
+            },
+            Error::Network {
+                detail: "connect timed out".into(),
+            },
+        ] {
+            assert_eq!(guidance_for(&error, true), guidance_for(&error, false));
+        }
     }
 
     #[test]
@@ -312,9 +377,9 @@ mod tests {
             problem: SessionProblem::Expired,
         };
 
-        let expired_guidance = guidance_for(&expired);
-        let invalid_guidance = guidance_for(&invalid);
-        let sso_guidance = guidance_for(&sso);
+        let expired_guidance = guidance_for(&expired, false);
+        let invalid_guidance = guidance_for(&invalid, false);
+        let sso_guidance = guidance_for(&sso, false);
 
         assert_ne!(expired_guidance, invalid_guidance);
         assert_ne!(expired_guidance, sso_guidance);
@@ -343,9 +408,9 @@ mod tests {
             problem: CredentialStoreProblem::Absent,
         };
 
-        let locked_guidance = guidance_for(&locked);
-        let refused_guidance = guidance_for(&refused);
-        let absent_guidance = guidance_for(&absent);
+        let locked_guidance = guidance_for(&locked, false);
+        let refused_guidance = guidance_for(&refused, false);
+        let absent_guidance = guidance_for(&absent, false);
 
         assert_ne!(locked_guidance, refused_guidance);
         assert_ne!(locked_guidance, absent_guidance);
@@ -377,10 +442,10 @@ mod tests {
             path: None,
         };
 
-        let unreadable_guidance = guidance_for(&unreadable);
-        let malformed_guidance = guidance_for(&malformed);
-        let not_writable_guidance = guidance_for(&not_writable);
-        let no_location_guidance = guidance_for(&no_location);
+        let unreadable_guidance = guidance_for(&unreadable, false);
+        let malformed_guidance = guidance_for(&malformed, false);
+        let not_writable_guidance = guidance_for(&not_writable, false);
+        let no_location_guidance = guidance_for(&no_location, false);
 
         assert_ne!(unreadable_guidance, malformed_guidance);
         assert_ne!(unreadable_guidance, not_writable_guidance);

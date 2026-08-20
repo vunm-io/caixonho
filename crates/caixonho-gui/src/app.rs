@@ -1211,7 +1211,8 @@ impl CaixonhoApp {
     /// Each cause gets its own next action, which is the whole reason the
     /// error type keeps them apart.
     fn failure_panel(&self, error: &Error, cx: &mut Context<Self>) -> impl IntoElement {
-        let guidance = guidance_for(error);
+        let offerable = self.offerable_sign_in(error);
+        let guidance = guidance_for(error, offerable.is_some());
         let retry = Button::new("retry")
             .label("Retry")
             .outline()
@@ -1596,7 +1597,7 @@ impl Render for CaixonhoApp {
                                         inline_message(
                                             IconName::TriangleAlert,
                                             "Saved connections could not be read",
-                                            guidance_for(error),
+                                            guidance_for(error, false),
                                             cx.theme().warning,
                                             div(),
                                             cx,
