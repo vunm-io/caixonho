@@ -104,7 +104,27 @@
   - Verification: `cargo test -p caixonho-core sso::` — every case above named
     in a test
 
-- [ ] 2.3 Real adapter over `aws-sdk-ssooidc` [dispatch: main]
+- [x] 2.3 Real adapter over `aws-sdk-ssooidc` [dispatch: main]
+      - Dispatched: main (2026-08-20) — done; verified: `cargo test -p
+        caixonho-core sso_adapter` — the client carries the shared HTTP stack
+        and its region is the `sso_session`'s, which are the two done criteria
+        stated as assertions rather than as intentions.
+      - Landed in `crates/caixonho-core/src/sso_adapter.rs`, a sibling of
+        `adapter.rs` rather than inside it: that file's own doc calls itself
+        "the one module that names an `aws-sdk-s3` type", and this one names
+        `aws-sdk-ssooidc` types instead.
+      - **This is also where task 2.1's classifier half landed.** The four
+        protocol outcomes are matched on the SDK's typed variants —
+        `AuthorizationPendingException`, `SlowDownException`,
+        `AccessDeniedException`, `ExpiredTokenException` — and everything else
+        goes through `classify()` like any other call. Matching types rather
+        than error-code strings is what makes it survive a wording change
+        upstream.
+      - **These three calls carry no credentials**, because they are how
+        credentials are obtained. The client is built with
+        `allow_no_auth()` — the service's own answer to the same circularity,
+        read out of `aws-sdk-ssooidc-1.108.0/src/config.rs` rather than
+        guessed.
   - Paths: `crates/caixonho-core/src/adapter.rs` (or a sibling module beside
     it), `crates/caixonho-core/src/sso.rs`
   - Done criteria: the three calls go through the shared `HttpStack`, so

@@ -42,6 +42,7 @@ pub mod probe;
 pub mod profiles;
 pub mod session;
 pub mod sso;
+pub mod sso_adapter;
 pub mod store;
 pub(crate) mod tls;
 pub mod types;
@@ -62,6 +63,7 @@ pub use sso::{
     ClientRegistration, DeviceAuthorization, SignInLocation, SignInSecret, SsoSignIn, SsoToken,
     TokenAnswer,
 };
+pub use sso_adapter::SsoOidcSignIn;
 pub use store::ObjectStore;
 pub use tls::HttpStack;
 pub use types::{
