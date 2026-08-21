@@ -250,7 +250,74 @@
     went wrong, which is exactly what review does not catch.
   - Verification: the counted totals match the table rows
 
-- [ ] 4.5 Close-out review per `AGENTS.md` [dispatch: main]
+- [x] 4.5 Close-out review per `AGENTS.md` [dispatch: main]
+      - Done in `main` (2026-08-21). The five answers:
+
+      **1. Did we build what was asked, or what was convenient?** What was
+      asked. Every scenario in the two delta specs has a test that would fail
+      without it: *the bucket is in another region*, *the named region
+      redirects in turn*, *a second read of the same bucket*
+      (`adapter::tests`, over `StaticReplayClient`); *the service redirects
+      without naming a region* (`classify::tests`); *a later call contradicts
+      the listing* (`buckets::tests`); and *being redirected is not evidence
+      about permission* (`capability::tests`). One departure, written down
+      rather than silent: the proposal and task 4.4 both say the
+      `requirements-status` row moves to **done**, and it moved to
+      **partial** — see 4.4 for the argument. It moves to done when 4.3
+      passes.
+
+      **2. Do the reader-facing documents still tell the truth?** Yes, and two
+      needed work to keep doing so. `README.md` gained the behaviour, since it
+      is user-visible and most clients do not do it. `docs/roadmap.md` gained
+      a row — the M1 table said these changes each land on their own and did
+      not list this one. `docs/architecture.md` needed nothing, but for a
+      reason worth stating: its claim that "a wrong region keeps its own
+      cause" was **aspirational when written** — a wrong region became
+      `Unexpected`, which is the absence of a cause — and this change is what
+      made it literally true. `docs/design-language.md` is untouched; no
+      surface changed shape, only the words in one cause and the value in one
+      cell.
+
+      **3. Did we leave rubbish?** No. Clippy is clean at `-D warnings`, which
+      is what caught the one candidate: `redirect_region()` sat unused between
+      1.1 and 2.2, and rather than silencing it the tasks were finished in the
+      order that made it live — which is also why §1 and §2 landed in one
+      commit instead of a commit that would not have compiled clean. Nothing
+      is commented out, no `TODO` was added, and the counting script is not
+      throwaway: it is the tool `requirements-status.md` already told its
+      readers to use.
+
+      **4. What is asserted but not verified?**
+      - **The whole follow, against a real service.** Every test here replays
+        a 301 this repository wrote. No local rig emits a real region
+        redirect, so the header name, the status, and the SDK's behaviour on
+        a genuine redirect are asserted from the crate sources and from
+        canned exchanges — not observed. This is 4.3, and it is where the
+        change is actually accepted.
+      - **The window wiring.** `correct_region` is tested; that `apply_page`
+        calls it with the right bucket is not, because driving the window in
+        a test needs the seam `XONHO-0015` owes. The same wall
+        `XONHO-0009` 6.3 is stopped at.
+      - **Retries.** The replaying config disables them so request counts mean
+        what they say. Whether the real retry policy would interact with a 301
+        differently is not tested — it should not, since 301 is not a
+        retryable status, but that is read from the SDK's classifier rather
+        than observed.
+      - **Concurrency.** The `elsewhere` map is exercised only from single
+        sequential reads. Two reads of the same unknown bucket racing would
+        both follow and both record the same region — harmless, and
+        untested.
+
+      **5. What is left, and where is it written?**
+      - 4.3, live acceptance — the only task left in this change, owner's to
+        run. `requirements-status.md` moves to **done** on its result.
+      - The `served_from`-only-on-the-follow limit, in task 2.1: a bucket list
+        replaced by a fresh listing can restate the old region with nothing
+        arriving to correct it. A decision, not a detail, so it is recorded
+        rather than quietly widened.
+      - The fixture-staleness finding, in `docs/planned-changes.md`, with the
+        two habits that make it findable at any future close-out that adds a
+        cause.
   - Paths: none
   - Done criteria: the five questions answered in writing here, including what
     is asserted but not verified — at minimum, that the follow is proven only
