@@ -1924,4 +1924,63 @@ mod tests {
             "a page for a screen nobody is on changes nothing"
         );
     }
+
+    /// A real view, rendered to an image — `XONHO-0009` task 6.3.
+    ///
+    /// macOS only, and not by preference. `gpui_platform::current_headless_renderer`
+    /// returns `Some` on `target_os = "macos"` and `None` everywhere else
+    /// (`gpui_platform.rs:85`), so there is no image to capture on Windows —
+    /// which `AGENTS.md` calls this project's primary daily driver. A green
+    /// suite is therefore **not** evidence about what Windows draws;
+    /// `debug_bounds`, which needs no renderer, is what covers both.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_real_view_renders_to_an_image() {
+        use gpui::{HeadlessAppContext, NoopTextSystem, px, size};
+
+        const WIDTH: u32 = 1280;
+        const HEIGHT: u32 = 800;
+
+        let store: Arc<dyn caixonho_core::ObjectStore> = Arc::new(StoreDouble::allows_listing());
+        let mut cx = HeadlessAppContext::with_platform(
+            Arc::new(NoopTextSystem::new()),
+            Arc::new(gpui_component_assets::Assets),
+            gpui_platform::current_headless_renderer,
+        );
+        cx.update(gpui_component::init);
+
+        let window = cx
+            .open_window(size(px(WIDTH as f32), px(HEIGHT as f32)), |window, cx| {
+                cx.new(|cx| {
+                    CaixonhoApp::new(
+                        Diagnostics::without_a_log(),
+                        World::scripted(store),
+                        window,
+                        cx,
+                    )
+                })
+            })
+            .expect("a headless window opens");
+        cx.run_until_parked();
+
+        let image = cx
+            .capture_screenshot(window.into())
+            .expect("the renderer produced an image");
+
+        // Device pixels, not logical ones: on a 2x display a 1280x800 window
+        // comes back as 2560x1600. Asserted as a whole-number scale of the
+        // window rather than as a number, so this says the same thing on a
+        // 1x display as on a Retina one.
+        let scale = image.width() / WIDTH;
+        assert!(scale >= 1, "the image is narrower than the window it is of");
+        assert_eq!(
+            (image.width(), image.height()),
+            (WIDTH * scale, HEIGHT * scale),
+            "the image is not a whole-number scale of the window"
+        );
+        assert!(
+            image.pixels().any(|p| p.0[3] != 0),
+            "every pixel is transparent, so nothing was drawn at all"
+        );
+    }
 }

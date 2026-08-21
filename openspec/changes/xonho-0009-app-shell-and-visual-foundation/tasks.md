@@ -112,3 +112,24 @@
         runs the application and captures the states themselves. Nothing here
         needs deciding again — the capability inventory is in
         `vunm-knowledge-base/topics/gpui-capabilities.md` §Hạ tầng test.
+      - **2026-08-21, later the same day: the blocker is gone, and this task is
+        still not done.** `XONHO-0015` built the seam and proved the whole
+        chain end to end — `World::scripted` builds a real `CaixonhoApp` with
+        no `~/.aws` and no keychain, and
+        `HeadlessAppContext::with_platform(.., gpui_platform::current_headless_renderer)`
+        captured it as a real image. Every condition this note predicted held:
+        the factory did need `gpui_platform`'s `test-support` (now a
+        dev-dependency), and it is macOS-only, so the test is `cfg`-gated and
+        Windows has no such coverage.
+      - One thing the note could not have known, found by running it: the image
+        comes back in **device pixels**. A 1280x800 window captured as
+        2560x1600 on a 2x display, so any assertion about size has to be a
+        scale of the window rather than a number.
+      - **What is left is the part a machine was never going to do.** This task
+        asks for screenshots of *every* state, judged against
+        `docs/design-language.md` — and judging a rendering against a visual
+        reference is the owner's, not a test's. What `XONHO-0015` changed is
+        that capturing them is now a loop over states rather than an
+        impossibility. Left unticked deliberately: the seam being open is not
+        the same as the work being finished, and ticking it would have made a
+        real defect-finding exercise disappear into a green checkbox.

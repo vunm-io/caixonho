@@ -176,7 +176,37 @@
     it.
   - Verification: `cargo test -p caixonho-gui`
 
-- [ ] 3.2 A screenshot of a real view — `XONHO-0009` task 6.3 [dispatch: main]
+- [x] 3.2 A screenshot of a real view — `XONHO-0009` task 6.3 [dispatch: main]
+      - Done in `main` (2026-08-21); verified: `cargo test -p caixonho-gui
+        a_real_view_renders` passes on macOS, and the whole chain is real —
+        a `CaixonhoApp` built over `World::scripted`, opened in a
+        `HeadlessAppContext`, rendered through Metal, captured as an
+        `RgbaImage` with non-transparent pixels in it.
+      - **It needed one dependency line, and the reason is measured.**
+        `current_headless_renderer` lives behind `gpui_platform`'s
+        `test-support` feature (`gpui_platform.rs:84`), which this workspace
+        did not enable — the compiler said `cannot find value`, which is how
+        that was found rather than assumed. Added under `[dev-dependencies]`,
+        the same shape and the same argument as the `gpui` line above it:
+        `ADR-0001`'s byte-identical rule is about the *source*, and a feature
+        is not a different source.
+      - **Windows is not put at risk by it**, checked rather than hoped:
+        `test-support` expands to `gpui_macos/test-support`, and `gpui_macos`
+        sits under `[target.'cfg(target_os = "macos")'.dependencies]` in that
+        crate, so it is inert elsewhere. This workspace already enables
+        `font-kit` and `runtime_shaders`, which name the same crate the same
+        way, and Windows CI has been green throughout.
+      - **The shipped binary is unaffected, and that is measured both ways.**
+        Non-dev features of `gpui_platform` are
+        `default,font-kit,runtime_shaders,wayland,x11` — no `test-support`;
+        with dev edges it appears. Building the release binary with both
+        dev-dependencies removed and again with them restored produced
+        **byte-identical** output, 39,946,848 bytes each time.
+      - **Found by running it: the image is in device pixels.** A 1280x800
+        window came back 2560x1600 on this 2x display. The first assertion
+        hard-coded the logical size and failed — corrected to assert a
+        whole-number scale of the window, so it says the same thing on a 1x
+        display.
   - Paths: `crates/caixonho-gui/src/app.rs` or a test module beside it
   - Done criteria: a real view is constructed over the world from 2.3, drawn,
     and captured with `capture_screenshot`; the image is non-empty and has the
@@ -191,7 +221,22 @@
     on Windows CI must stay green **because the test is absent there, not
     because it silently passed**
 
-- [ ] 3.3 Close `XONHO-0009` 6.3, and say what it does not cover [dispatch: main]
+- [x] 3.3 Close `XONHO-0009` 6.3, and say what it does not cover [dispatch: main]
+      - Done in `main` (2026-08-21) — **but not as this task described it, and
+        the difference matters.** The task said 6.3 would be ticked and
+        `XONHO-0009` would move to 19/19. It was not, and it did not.
+      - Reading 6.3 rather than remembering it: it asks for screenshots of
+        **every state**, judged against `docs/design-language.md`. The seam is
+        what was blocking it, and the seam is now open — but judging a
+        rendering against a visual reference is the owner's work, not a test's,
+        and one screenshot of one view is not every state. Ticking it would
+        have made a real defect-finding exercise disappear into a green
+        checkbox, which is the failure this project keeps writing down about
+        itself.
+      - What was done instead: 6.3 carries a dated note recording that the
+        blocker is gone, that every condition its earlier note predicted held,
+        the device-pixel surprise, and exactly what is left. `XONHO-0009` stays
+        at 18/19.
   - Paths: `openspec/changes/xonho-0009-app-shell-and-visual-foundation/tasks.md`
   - Done criteria: 6.3 ticked with what was captured and on which platform, and
     with the macOS-only limit stated. `XONHO-0009` moves to 19/19.

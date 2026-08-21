@@ -25,6 +25,12 @@ flume.workspace = true
 # test profile — measured at 31 seconds, against tests that run in 0.01.
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
+# `gpui_platform`'s own `test-support`, which is the only thing that defines
+# `current_headless_renderer` — without it there is no renderer to capture a
+# screenshot with (`gpui_platform.rs:84`). Same reasoning as the line above:
+# the spec is the workspace one, so ADR-0001's byte-identical rule is
+# untouched, because a feature is not a different source.
+gpui_platform = { workspace = true, features = ["test-support"] }
 # The core crate's own doubles — the keychain, the connections file and the
 # object store — so a window test builds over them instead of over the
 # machine's `~/.aws` (`XONHO-0015`). Dev-only, so the shipped binary is the
