@@ -14,7 +14,7 @@ whole thing.
 | **M2** | Transfers — up and download including folders, multipart, a queue with progress, cancel and retry | not started |
 | **M3** | Object operations, safe subset first — create folder, delete with a counted confirmation, properties, presigned URLs | not started |
 | **M4** | Ship v0.1 — installers for both platforms, a README with a recording, public announcement | not started |
-| **M5** | Extras — S3-compatible endpoints as a supported configuration, directory buckets, sync, versions | not started |
+| **M5** | Extras — S3-compatible endpoints as a supported configuration, sync, versions | not started |
 | **M6** | Reach — Linux, then the CLI crate over the same core | not started |
 
 **v0.1 is M1 + M2 + the safe part of M3.** Copy, move and rename wait for v0.2:
@@ -36,6 +36,15 @@ that each own a subsystem and land on their own:
 | `XONHO-0006` | Opening a bucket and browsing objects by prefix, including reaching a bucket by name when the account listing is denied | landed |
 | `XONHO-0011` | Signing in to IAM Identity Center from the app, via the OIDC device flow | after browsing |
 | `XONHO-0013` | Editing a saved connection: its region, its key, and renaming it | after browsing |
+| `XONHO-0016` | S3 Express One Zone directory buckets: listed beside ordinary ones, opened, and refused in their own words | landed |
+
+`XONHO-0016` was pulled forward out of **M5** on 2026-08-20. It is an `[S]`
+taken ahead of four `[M]`s, which the planning gate exists to make deliberate
+rather than accidental — the reasoning is in that change's `proposal.md`. The
+short version: the only account available to verify against cannot list
+ordinary buckets at all, so directory buckets are the difference between a
+connection that works and a connection that shows an error, and `XONHO-0011`'s
+own acceptance was waiting on a listing that account could serve.
 
 Credential entry was ordered **ahead** of browsing on 2026-08-19, reversing an
 earlier decision that had put browsing first. The argument for browsing first

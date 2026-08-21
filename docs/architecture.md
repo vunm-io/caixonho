@@ -88,8 +88,8 @@ sequenceDiagram
     W->>S: spawn_listing(id, profile, deliver)
     S->>T: hand off
     W-->>U: renders "listing…" immediately
-    T->>A: open connection, ListBuckets
-    A-->>T: buckets, or a failure
+    T->>A: open connection, ListBuckets + ListDirectoryBuckets
+    A-->>T: buckets of both kinds, or a failure, or one of each
     T->>W: deliver(outcome) over a channel
     W-->>U: rows, or the cause and its fix
 ```

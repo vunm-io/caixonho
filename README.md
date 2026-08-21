@@ -19,8 +19,15 @@ Working today:
   sign in rather than offering it as though it worked.
 - Lists that account's buckets with name, creation date and region, and narrows
   the list to one region.
+- Lists **S3 Express One Zone directory buckets** too, which `ListBuckets` does
+  not return at all — so an account holding only those is not shown as an
+  account holding nothing. Where one listing is permitted and the other is not,
+  it shows what came back and says what it was refused. Almost no GUI client
+  does this.
 - Says which buckets your credentials can actually open, and names the IAM action
-  a refused one would need. A bucket nobody has asked about yet says so, rather
+  a refused one would need — including `s3express:CreateSession`, which is what
+  a directory bucket is refused at rather than the listing permission it looks
+  like. A bucket nobody has asked about yet says so, rather
   than guessing — and one still being checked says that, which is a different
   thing again.
 - Tells failure causes apart — an expired session, rejected credentials, a

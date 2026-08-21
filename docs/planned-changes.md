@@ -412,25 +412,60 @@ Two things to settle when it is written, because they decide the shape:
   different promise from on disk between runs, and §8's security posture means
   the difference has to be decided rather than defaulted.
 
-## Directory buckets are absent by design, not by defect
+## Directory buckets: what "absent by design" turned into
 
 Reported 2026-08-20 as a bug: connecting with a static key listed no directory
-buckets. It is not one. S3 Express One Zone directory buckets are **not
-returned by `ListBuckets` at all** — they have their own operation,
+buckets. It was not one, and the diagnosis is kept because it is still the
+reason the code looks the way it does. S3 Express One Zone directory buckets
+are **not returned by `ListBuckets` at all** — they have their own operation,
 `ListDirectoryBuckets`, against their own endpoint
-(`s3express-control.<region>.amazonaws.com`, path-style only). An application
-that calls `ListBuckets` and shows what comes back is behaving correctly.
+(`s3express-control.<region>.amazonaws.com`). An application that called
+`ListBuckets` and showed what came back was behaving correctly.
 
-`PROJECT_BRIEF.md` §4.2 already carries it as `[S]` at **M5**, and already
-names the four parts: the listing operation, zonal endpoints, `CreateSession`
-with silent refresh, and the `<name>--<az-id>--x-s3` naming. So this is
-scheduled work rather than a gap — recorded here only so the next person to
-notice it does not diagnose it a second time.
+**`XONHO-0016` built them the same day**, pulled forward out of M5 because the
+one account available to verify against cannot list ordinary buckets at all:
+directory buckets were the difference between a connection that works and a
+connection that shows an error. What that change found, and what is worth
+knowing before touching this again:
 
-Worth knowing while it waits: an account holding directory buckets is now
-available to test against, which is rarer than it sounds, and the brief calls
-supporting them "a real differentiator" precisely because almost no GUI client
-does.
+- **Three of the four parts are the SDK's.** `aws-sdk-s3` resolves both the
+  control-plane and the zonal endpoints, and obtains and refreshes the session
+  itself through an expiring identity cache installed by default. Only the
+  listing call and the presentation were ours. Anyone reimplementing
+  `CreateSession` here is duplicating something that already works.
+- **A refusal of that session does not arrive as a denial.** It happens inside
+  the SDK before our request is dispatched, so what reaches the classifier is a
+  dispatch failure with no code and no status, carrying the service error in
+  its chain. It read as "unexpected error: the call failed without a reportable
+  cause" until rule 4 of `classify` learned to read a denial out of the chain
+  when there is no response to read instead.
+- **`ListObjectsV2` on a directory bucket answers without `KeyCount` or
+  `IsTruncated`.** Pagination that depends on either will silently misbehave;
+  ours follows `NextContinuationToken` and was unaffected.
+- **A zone id is not two segments.** A local zone's has three. Nothing may
+  parse one by counting.
+
+### Still deferred, with the reasoning
+
+Two mechanisms were designed during `XONHO-0016` and taken back out so it could
+land the capability first. Both are worth doing, and neither is started:
+
+- **Remember a refusal against the credentials that earned it**, so a listing
+  observed to be refused is not issued again until those credentials change.
+  Today an account that will never hold directory buckets pays one wasted
+  request and shows one refusal on every connect — and a refusal shown every
+  time is how a user learns to stop reading refusals. `Scope` is
+  `{bucket, prefix}` and would grow an account level; the credential-keyed
+  retention and its invalidation already exist.
+- **Narrow the bucket list by kind**, applied to what has been retrieved and
+  issuing no request, the same shape as the region narrowing.
+
+A connection-level switch — choose ordinary, directory or all when connecting —
+was proposed and rejected, and the reason is worth keeping: set to "ordinary"
+on an account holding only directory buckets it renders "this account has no
+buckets", with no signal that a setting emptied the screen. It also asks the
+account holder to declare what one request can observe, which is the inversion
+`ADR-0002` exists to prevent.
 
 ## The window's views are methods, and that is why they cannot be tested
 
