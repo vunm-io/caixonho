@@ -1,0 +1,6 @@
+# Fixture for scripts/check-advisory-expiry.sh. Not a policy — a test.
+# One acceptance still in date. Must pass.
+[advisories]
+ignore = [
+    { id = "RUSTSEC-2024-0384", reason = "still in date; expires 2099-12-31" },
+]

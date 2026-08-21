@@ -18,6 +18,35 @@ jobs:
       - uses: actions/checkout@v4
       - run: cargo fmt --all --check
 
+  audit:
+    name: dependency audit
+    # Its own job, beside rustfmt rather than inside either build matrix. A
+    # supply-chain failure and a compilation failure have different owners and
+    # different remedies, and a red tick that could mean either tells whoever
+    # reads it neither. One runner, not two: the lockfile is the same on both.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Advisories
+        # The policy, including which acceptances exist and why, is deny.toml.
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
+      - name: Acceptances are still in date
+        # cargo-deny has no expiry of its own, so this is what stops the
+        # ignore list becoming permanent by accident.
+        run: scripts/check-advisory-expiry.sh
+      - name: The expiry check can still fail
+        # A gate nobody has watched fail is not known to be a gate. Both
+        # fixtures run on every push, so the day this script silently stops
+        # working is the day CI says so.
+        run: |
+          scripts/check-advisory-expiry.sh scripts/fixtures/deny-in-date.toml
+          if scripts/check-advisory-expiry.sh scripts/fixtures/deny-expired.toml; then
+            echo "::error::the expiry check passed a fixture it must reject"
+            exit 1
+          fi
+
   build:
     name: build (${{ matrix.os }})
     # M0a gate: the workspace must compile, lint clean and pass tests on both

@@ -1,0 +1,8 @@
+# Fixture for scripts/check-advisory-expiry.sh. Not a policy — a test.
+# One acceptance whose date has passed, and one that never had a date. Both
+# must fail, or the checker is decoration.
+[advisories]
+ignore = [
+    { id = "RUSTSEC-2024-0384", reason = "a date that has passed; expires 2020-01-01" },
+    { id = "RUSTSEC-2024-0436", reason = "no expiry at all, which the policy forbids" },
+]

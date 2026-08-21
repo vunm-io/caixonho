@@ -57,7 +57,31 @@
 
 ## 2. The gate
 
-- [ ] 2.1 A `deny.toml` that states the policy rather than silencing it [dispatch: main]
+- [x] 2.1 A `deny.toml` that states the policy rather than silencing it [dispatch: main]
+      - Done in `main` (2026-08-21); verified: `cargo deny check advisories`
+        reports `advisories ok`, with every one of the seven ignores matching a
+        real crate — no `advisory-not-detected` warnings left.
+      - **`unsound = "all"` is the line that matters, and it was nearly
+        missed.** With it absent, `cargo deny check advisories` passed clean
+        while `cargo audit` reported `RUSTSEC-2026-0253` against `lru` — a
+        use-after-free on panic, arriving through `aws-sdk-s3`. cargo-deny's
+        default for `unsound` does not reach a transitive crate. It surfaced
+        only because that ignore was reported as matching nothing; a policy
+        written without the seven-item list would have shipped a gate that
+        silently dropped the one memory-safety advisory in the tree.
+      - **The gate was watched failing**, not assumed to bite: removing the
+        `lru` exception turns `advisories ok` into `advisories FAILED`, and
+        restoring it turns it back.
+      - `unmaintained = "all"`, and the six frozen-stack advisories named one
+        by one. `unmaintained = "workspace"` would have silenced all six,
+        since none is a direct dependency — the decision argued in `design.md`.
+      - **Deviation from the done criteria.** The task said licence and ban
+        checks should be "configured but not enforced". They are **not
+        configured**, and a comment says why: CI runs `check advisories` only,
+        and an unreviewed `[licenses]` section would read like a policy while
+        being a default nobody has looked at the output of. That is the exact
+        failure this repository keeps finding in its own documents. They are
+        their own change.
   - Paths: `deny.toml`
   - Done criteria: `[advisories]` denies vulnerabilities. `unmaintained` is set
     to the scope that still reports the six transitive warnings, and each is
@@ -71,7 +95,20 @@
     them on unread is how a pipeline goes red for a reason nobody decided.
   - Verification: `cargo deny check advisories`
 
-- [ ] 2.2 Enforce the expiry the tool does not [dispatch: main]
+- [x] 2.2 Enforce the expiry the tool does not [dispatch: main]
+      - Done in `main` (2026-08-21); verified against both fixtures:
+        `scripts/fixtures/deny-expired.toml` exits 1 and names both entries,
+        `scripts/fixtures/deny-in-date.toml` exits 0.
+      - The fixtures are **in the repository**, not in a scratch directory, and
+        CI runs both. A test that lives on one machine is not a test the
+        project has.
+      - It fails an entry with **no** expiry as well as one with a past date.
+        "Accepted forever" is not a decision this policy offers.
+      - **POSIX awk only.** The first version used gawk's three-argument
+        `match` and `{n}` intervals, which macOS awk has neither of — it failed
+        on the maintainer's own machine. Rewritten with two-argument `match`
+        plus `substr`. The date comparison is a string compare, which is
+        exactly why the format is fixed to ISO.
   - Paths: `scripts/check-advisory-expiry.sh`
   - Done criteria: reads `deny.toml`, finds every accepted advisory, and exits
     non-zero when a recorded date has passed, naming which. Measured, not
@@ -83,7 +120,18 @@
     that cannot fail is the same as no expiry checker.
   - Verification: the script against both fixtures
 
-- [ ] 2.3 A CI job of its own [dispatch: external-ok]
+- [x] 2.3 A CI job of its own [dispatch: external-ok]
+      - Done in `main` (2026-08-21); the workflow parses and declares
+        `fmt`, `audit`, `build`. Verified by loading the YAML rather than by
+        reading it.
+      - `EmbarkStudios/cargo-deny-action@v2`, pinned by tag to match the
+        convention the workflow already uses for `actions/checkout` and
+        `Swatinem/rust-cache`. Pinning actions by SHA instead is a defensible
+        supply-chain position and would be a change to all of them, not to
+        this one alone — noted rather than done unilaterally.
+      - The job runs the two fixtures as well as the real file, so the expiry
+        check's failure path is exercised on every push. A gate nobody has
+        watched fail is not known to be a gate.
   - Paths: `.github/workflows/ci.yml`
   - Done criteria: an `audit` job on `ubuntu-latest`, beside `rustfmt` rather
     than inside either build matrix, running `cargo deny check advisories` and
@@ -94,8 +142,10 @@
 
 ## 3. Close-out
 
-- [ ] 3.1 `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`,
+- [x] 3.1 `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`,
       `cargo test --workspace` green [dispatch: main]
+      - Done in `main` (2026-08-21); verified: all three exit zero.
+        263 core + 36 window tests, clippy clean at `-D warnings`.
   - Paths: whole workspace
   - Done criteria: all three exit zero
   - Verification: the commands themselves

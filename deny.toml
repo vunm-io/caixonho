@@ -1,0 +1,58 @@
+# Dependency policy — XONHO-0017.
+#
+# What this file is for: an advisory against a crate we ship stops the change.
+# Where an advisory cannot be resolved by removing or upgrading the crate, the
+# exception is written here — one advisory per entry, with the reason it is
+# accepted and the date that acceptance runs out.
+#
+# `cargo-deny` 0.20.2 has no `expires` key; it accepts `id` and `reason` only,
+# and rejects anything else with `error[unexpected-keys]`. So the date lives in
+# the reason, in the fixed form `expires YYYY-MM-DD`, and
+# `scripts/check-advisory-expiry.sh` is what makes it mean something. An
+# exception with no expiry is indistinguishable from having stopped looking.
+#
+# Licence, ban and source checks are NOT configured here yet, deliberately. CI
+# runs `cargo deny check advisories` only, and a `[licenses]` section nobody has
+# read the output of would read like a policy while being an unreviewed default
+# — which is the failure this project keeps finding in its own documents. They
+# are their own change.
+
+[advisories]
+# Every advisory this project ships, not only the ones it chose directly. The
+# alternative — `unmaintained = "workspace"` — would silence all six entries
+# below at a stroke, because not one of them is a direct dependency. That is
+# defensible and it is not what this project wants: it turns six decisions into
+# one silence, and the difference shows on the day one of these stops being
+# merely unmaintained.
+unmaintained = "all"
+# `unsound` needs saying out loud too, and this is the one that would have been
+# missed. cargo-deny 0.20.2 takes the same enum here and its default does not
+# reach a transitive crate: with this line absent, `cargo deny check advisories`
+# passes clean while `cargo audit` reports RUSTSEC-2026-0253 against `lru` — a
+# use-after-free, arriving through `aws-sdk-s3`. Measured, not supposed. A gate
+# that silently drops the one memory-safety advisory in the tree satisfies the
+# requirement's letter and none of its purpose.
+unsound = "all"
+
+ignore = [
+    # --- The frozen UI stack (ADR-0001) -----------------------------------
+    # All six arrive through `gpui`/`gpui-component`, which are pinned by `rev`
+    # and frozen by `Cargo.lock`. None can be fixed from here: fixing them is a
+    # stack bump, which ADR-0001 makes its own change, green on both targets.
+    # They are listed one by one rather than scoped away so that each is a
+    # decision somebody made on a date, not a category nobody looks at.
+    { id = "RUSTSEC-2025-0141", reason = "bincode, unmaintained, via syntect in the ADR-0001 UI stack; not fixable without a stack bump; expires 2027-02-21" },
+    { id = "RUSTSEC-2024-0384", reason = "instant, unmaintained, via gpui-base in the ADR-0001 UI stack; not fixable without a stack bump; expires 2027-02-21" },
+    { id = "RUSTSEC-2024-0436", reason = "paste, unmaintained, via gpui-component in the ADR-0001 UI stack; not fixable without a stack bump; expires 2027-02-21" },
+    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile, unmaintained, via zed-reqwest under gpui-component-assets; reachable only on non-macOS targets; not fixable without a stack bump; expires 2027-02-21" },
+    { id = "RUSTSEC-2026-0206", reason = "rustybuzz, unmaintained, via usvg in the ADR-0001 UI stack; text shaping, no known defect; expires 2027-02-21" },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser, unmaintained, via fontdb in the ADR-0001 UI stack; font parsing, no known defect; expires 2027-02-21" },
+
+    # --- The AWS SDK -------------------------------------------------------
+    # Not unmaintained but unsound, and filed separately because it is a
+    # different claim: a use-after-free on panic in `LruCache::pop`. It arrives
+    # through `aws-sdk-s3`'s own dependency, so the fix is an SDK bump rather
+    # than anything here, and the SDK moves often enough that this gets a
+    # shorter rope than the frozen stack above.
+    { id = "RUSTSEC-2026-0253", reason = "lru, unsound (use-after-free on panic in LruCache::pop), via aws-sdk-s3; fixed by an SDK bump, which moves often; expires 2026-11-21" },
+]
