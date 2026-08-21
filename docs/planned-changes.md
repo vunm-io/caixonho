@@ -640,3 +640,49 @@ Two consequences worth keeping:
   an application whose identity changes every build cannot hold onto the
   credential access a user granted it. A stable Developer ID is what makes
   "Always Allow" mean always.
+
+## What auditing the dependencies actually finds (measured 2026-08-21)
+
+`cargo-deny` + `cargo-audit` in CI is promised by the brief (§5) and by §8's
+"Dependencies audited in CI"; `docs/requirements-status.md` still carries that
+row as *none*. It was assumed to be a two-line CI change. **It is not**, and
+this is the measurement rather than the assumption. `XONHO-0017` is issued for
+it and unplanned.
+
+`cargo audit` against the current lockfile — **944 crates** — reports **4
+vulnerabilities and 7 warnings**. Adding the step to CI without deciding what
+to do about them turns the pipeline red on the first run.
+
+| Advisory | Crate | Patched in |
+|---|---|---|
+| RUSTSEC-2026-0098 | `rustls-webpki 0.101.7` | `>=0.103.12` |
+| RUSTSEC-2026-0099 | `rustls-webpki 0.101.7` | `>=0.103.12` |
+| RUSTSEC-2026-0104 | `rustls-webpki 0.101.7` | `>=0.103.13` |
+| RUSTSEC-2026-0258 | `h2 0.3.27` | `>=0.4.16` |
+
+The seven warnings are six *unmaintained* crates (`bincode`, `instant`,
+`paste`, `rustls-pemfile`, `rustybuzz`, `ttf-parser`) and one *unsound*
+(`lru 0.16.4`, a use-after-free on panic in `LruCache::pop`). The font crates
+arrive with the UI stack; the rest with the SDK.
+
+**Where they come from matters more than the count, and it is good news.**
+Both vulnerable crates arrive through `aws-smithy-http-client 1.3.0`, not
+through the frozen UI stack — so fixing them is not blocked behind ADR-0001.
+
+**And the path is one this application never uses.** Traced rather than
+guessed: this workspace asks for `rustls-aws-lc`, that turns on
+`aws-smithy-http-client`'s `__rustls`, and `__rustls` pulls
+`hyper-rustls 0.24.2` **with its `acceptor` feature** — the server-side TLS
+path — which is what drags in `rustls 0.21.12` and its `rustls-webpki`. The
+lockfile holds `rustls 0.23.43` as well, which is the one the client actually
+talks through. An S3 client accepts no TLS connections, so the advisories sit
+in code that is compiled and not called.
+
+That is a reason to rank it, **not** a reason to dismiss it. "Compiled but
+unreachable" is a claim about today's call graph, and it is exactly the claim
+that stops being true quietly. The finding for whoever plans `XONHO-0017`:
+the work is not wiring two commands into CI, it is deciding the policy —
+which advisories fail the build, which are recorded as accepted and with what
+expiry, and whether the legacy `acceptor` path can be dropped upstream or
+worked around here. A `deny.toml` full of blanket ignores would satisfy the
+requirement's letter and none of its purpose.
