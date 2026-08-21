@@ -19,6 +19,11 @@ Working today:
   sign in rather than offering it as though it worked.
 - Lists that account's buckets with name, creation date and region, and narrows
   the list to one region.
+- Opens a bucket that lives in another region without being told to. S3 answers
+  a read addressed to the wrong region with a redirect naming the right one;
+  caixonho follows it, remembers it, and corrects the region shown for that
+  bucket — where most clients hand back the redirect as an error and leave you
+  to work out which region to switch to.
 - Lists **S3 Express One Zone directory buckets** too, which `ListBuckets` does
   not return at all — so an account holding only those is not shown as an
   account holding nothing. Where one listing is permitted and the other is not,

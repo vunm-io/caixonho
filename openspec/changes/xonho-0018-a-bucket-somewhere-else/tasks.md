@@ -220,7 +220,28 @@
   - Verification: the log in the platform's log directory names the location
     and the region each call was served from
 
-- [ ] 4.4 Update the reader-facing documents in this change, not after it [dispatch: main]
+- [x] 4.4 Update the reader-facing documents in this change, not after it [dispatch: main]
+      - Done in `main` (2026-08-21); verified: `scripts/count-requirements.sh`
+        agrees with the tables, and a second implementation written
+        independently in Python produced identical numbers.
+      - **Deviation from the done criteria, deliberately.** The task says the
+        §4.1 region row moves from **none** to *done*. It moved to
+        **partial**. This file's own legend defines done as "built and
+        exercised", and every other network-facing row it marks done cites a
+        live exercise ("Exercised live, `XONHO-0003`"); the virtualized-table
+        row is partial for precisely this reason — "the claim stands
+        unmeasured". The follow has been exercised only against a canned 301
+        this repository wrote, which task 4.3 says in as many words is not
+        acceptance. Marking it done would be the exact failure the file exists
+        to prevent, in the file whose stated purpose is to be diffed against
+        reality. **It moves to done when 4.3 passes**, and the row says so.
+      - Counting is now `scripts/count-requirements.sh`, committed rather than
+        left in a scratchpad: the file already instructed "count it with a
+        script" after drifting twice by hand, and an instruction whose tool
+        does not exist is one the next person will skip too.
+      - `docs/planned-changes.md` records one finding — a hand-built fixture
+        in `capability.rs` that kept passing after it stopped testing the case
+        it was named for, and the two cheap habits that make that findable.
   - Paths: `docs/requirements-status.md`, `README.md`,
     `docs/planned-changes.md`
   - Done criteria: the §4.1 region row moves from **none** to done.

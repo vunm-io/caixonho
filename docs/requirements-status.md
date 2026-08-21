@@ -24,7 +24,7 @@ gap is named. **none** — not started.
 | Static credentials in the OS keychain | done | `XONHO-0004`. Entered in the app, secret in the keychain, the rest in the platform's config location; a stored connection can be forgotten |
 | Named profiles, including `role_arn` + `source_profile` chains and `mfa_serial` prompting | partial | Profiles are discovered and chains resolve through the SDK. No MFA prompt |
 | Multiple simultaneous connections; switch profile **and region** live | partial | One connection at a time; choosing one is an explicit act, which simultaneity will need. Switching region is not offered |
-| Region handling that follows `x-amz-bucket-region` instead of a misleading error | none | Probes use a client for the bucket's own region, but the listing path does not follow a redirect, and a wrong region is not even a distinct cause in the classifier |
+| Region handling that follows `x-amz-bucket-region` instead of a misleading error | partial | `XONHO-0018`. The listing path follows a 301 to the region the service names, remembers it for later pages, and corrects the bucket's row; a redirect that names nowhere is its own cause rather than "unexpected error". **Partial, not done, because it has only been exercised against a canned exchange this repository wrote** — no local rig emits a real region redirect, so a real account is what accepts it (`xonho-0018` task 4.3) |
 
 ## §4.2 Browsing — M1
 
@@ -69,8 +69,8 @@ are not started. They are M2+ and are not late.
 
 ## The count
 
-Of the 24 `[M]` requirements in the three M1 areas: **11 done, 9 partial, 4 not
-started** — §4.1 has 2 done, 4 partial, 2 not started; §4.2 has 3, 3 and 1;
+Of the 24 `[M]` requirements in the three M1 areas: **11 done, 10 partial, 3 not
+started** — §4.1 has 2 done, 5 partial, 1 not started; §4.2 has 3, 3 and 1;
 §4.3, the headline, has 6, 2 and 1. Outside M1, §7–8 stands at 1 done, 3
 partial and 1 not started.
 
@@ -78,11 +78,12 @@ The nearest gap is signing in to IAM Identity Center from the app — mandatory,
 unbuilt, and stepped over by three changes running. Entering a credential and
 opening a bucket both closed on 2026-08-20.
 
-Counted from the tables above rather than written from memory. That distinction
+Counted by `scripts/count-requirements.sh`, not from memory. That distinction
 is not pedantry: this line has now drifted **twice** in one day — first reading
 "10 done, 7 partial" against rows that said 9 and 8, and then, an hour after
 being corrected, being rewritten by hand as "11, 8, 5" against rows that said
 11, 9 and 4. Both times the total stayed right and the split went wrong, which
 is exactly how it survives review. **Count it with a script.** A summary that
 disagrees with what it summarises is worse than no summary, in a file whose
-whole purpose is to be diffed against reality.
+whole purpose is to be diffed against reality. The script exists so that
+instruction costs nothing to follow.

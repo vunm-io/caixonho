@@ -686,3 +686,42 @@ which advisories fail the build, which are recorded as accepted and with what
 expiry, and whether the legacy `acceptor` path can be dropped upstream or
 worked around here. A `deny.toml` full of blanket ignores would satisfy the
 requirement's letter and none of its purpose.
+
+## A test can go on passing after it stops testing anything (found 2026-08-21)
+
+`XONHO-0018` gave a wrong-region redirect its own cause, `BucketElsewhere`.
+Nothing broke. Every test stayed green, including one in `capability.rs` whose
+case was named "a wrong-region redirect" — and which built its fixture by hand:
+
+```rust
+Error::Unexpected { detail: "the service reported `PermanentRedirect` (HTTP 301)" }
+```
+
+That is the shape the classifier used to produce and no longer does. The test
+asserts that such a failure is no evidence about permission, and `Unexpected`
+still satisfies that, so it passed — while no longer exercising the case its own
+name claims. It would have passed for ever.
+
+The mechanism is worth naming because it is not specific to this file. **A
+hand-built fixture is a copy of what the code produced on the day it was
+written.** When the production shape moves, the copy stays behind, and a test
+whose assertion is broad enough — here, "anything that is not `AccessDenied`
+means unknown" — keeps agreeing with the copy. Nothing fails. The coverage is
+gone and the green tick is unchanged.
+
+Two things make it findable rather than a matter of luck:
+
+- **A fixture that names a scenario should be built by the thing that produces
+  that scenario**, or the change that moves the shape has to visit it. The four
+  new tests in `classify.rs` go through `from_sdk` with a real
+  `SdkError::ServiceError` for exactly this reason — a misspelled header name
+  or a dropped status check fails them, where a hand-built `SdkFailure` would
+  have accepted either.
+- **When a change adds a variant, grep the test tree for the old shape**, not
+  just for compile errors. The exhaustive matches in `error.rs` consumers
+  caught every *display* site automatically, which is the design working; they
+  cannot catch a fixture that constructs a still-valid variant for a case that
+  has moved to a new one.
+
+Cheap, and worth doing at every close-out that adds a cause.
+
