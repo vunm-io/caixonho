@@ -1,6 +1,31 @@
 ## 1. Let a test reach the doubles core already has
 
-- [ ] 1.1 A `test-support` feature on `caixonho-core` [dispatch: main]
+- [x] 1.1 A `test-support` feature on `caixonho-core` [dispatch: main]
+      - Done in `main` (2026-08-21); verified: `cargo test --workspace` 264
+        core + 36 window, clippy clean at `-D warnings`,
+        `cargo check -p caixonho-core --features test-support` compiles with
+        the feature alone (not only under `cfg(test)`).
+      - **The default build is unchanged, measured on both sides.**
+        `cargo tree -p caixonho-gui --edges features,no-dev` reports
+        `caixonho-core` with **no features** before and after; with dev edges
+        it reports `test-support`. The release binary is
+        **39,949,456 bytes — byte-identical** to the pre-change build.
+      - **Deviation from the done criteria, narrowed on evidence.** The task
+        said `with_secret_store` and `with_connection_file` would open up too.
+        They did not, and clippy is why: making them `pub` leaks
+        `credentials::SecretStore` and `connections::ConnectionFile`, both
+        `pub(crate)`, into the public API — `private_interfaces` fails the
+        build. The right question then was whether the seam needs them at all,
+        and it does not: a frontend is **handed** its connections by the world
+        (task 2.1) rather than reading them, and neither recorded gap touches
+        the keychain. So the surface is `StoreDouble` and
+        `install_object_store`, and nothing speculative.
+      - **A real defect the doc build caught.** Both injectors already carried
+        `#[cfg(test)]`; adding a second `#[cfg(any(test, feature = ...))]`
+        **ANDs** them, so the feature alone would never have compiled those
+        functions. Nothing failed — the tests still ran under `cfg(test)`. It
+        surfaced as two unresolved rustdoc links, which is the only signal that
+        was ever going to appear.
   - Paths: `crates/caixonho-core/Cargo.toml`, `crates/caixonho-core/src/store.rs`,
     `crates/caixonho-core/src/session.rs`
   - Done criteria: a `test-support` feature, off by default. Under
@@ -15,7 +40,18 @@
     is off must cost nothing.
   - Verification: `cargo build --release -p caixonho-gui`; `cargo test --workspace`
 
-- [ ] 1.2 A way to put an object store into a session [dispatch: main]
+- [x] 1.2 A way to put an object store into a session [dispatch: main]
+      - Done in `main` (2026-08-21); verified: `cargo test -p caixonho-core
+        session::` — 20 pass, one new.
+      - `Session::install_object_store` is a gated wrapper over
+        `install_scheduler`, the door production uses, so the probe scheduler
+        is installed with the store. A double wired past it would leave every
+        row in a window test saying "checking…" for ever, and a test asserting
+        on that would be asserting on the absence of an answer.
+      - The test opens no connection, resolves no profile and touches no
+        keychain, and a location still reads — asserted by the page carrying a
+        cursor only the double could have produced, rather than by it merely
+        being `Ok`.
   - Paths: `crates/caixonho-core/src/session.rs`
   - Done criteria: under the same gate, a session can be given an
     `Arc<dyn ObjectStore>` for a stated `CredentialsId`, filling the slot
@@ -27,7 +63,12 @@
     from it, with no network and no keychain touched.
   - Verification: `cargo test -p caixonho-core session::`
 
-- [ ] 1.3 Say what the feature is for, where a reader will look [dispatch: main]
+- [x] 1.3 Say what the feature is for, where a reader will look [dispatch: main]
+      - Done in `main` (2026-08-21); verified: `cargo doc -p caixonho-core
+        --no-deps --features test-support` builds with no unresolved links.
+      - The crate docs name the feature, what it exposes, what it deliberately
+        does **not** expose and why, and that resolver 2 keeps it out of a
+        build without dev targets.
   - Paths: `crates/caixonho-core/src/lib.rs`
   - Done criteria: the crate docs name `test-support`, what it exposes, and
     that it is not part of the shipped surface. A feature nobody can find is a

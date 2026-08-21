@@ -65,8 +65,8 @@ pub trait ObjectStore: Send + Sync {
     async fn list_objects(&self, location: &Location, cursor: Option<&Cursor>) -> Result<Page>;
 }
 
-#[cfg(test)]
-pub(crate) mod double {
+#[cfg(any(test, feature = "test-support"))]
+pub mod double {
     //! Hand-rolled test double: one constructor per canned behaviour, so a
     //! test names the scenario it simulates instead of assembling state.
 
@@ -76,7 +76,7 @@ pub(crate) mod double {
     use crate::types::{AccountListing, Bucket, Cursor, Location, Page, Region};
 
     /// A canned [`ObjectStore`] for tests.
-    pub(crate) struct StoreDouble {
+    pub struct StoreDouble {
         outcome: Outcome,
         /// What a listing answers with when the canned outcome succeeds.
         /// Empty unless a test says otherwise, so every existing constructor
@@ -91,7 +91,7 @@ pub(crate) mod double {
 
     impl StoreDouble {
         /// Succeeds with the given buckets.
-        pub(crate) fn with_buckets(buckets: Vec<Bucket>) -> Self {
+        pub fn with_buckets(buckets: Vec<Bucket>) -> Self {
             Self {
                 outcome: Outcome::Buckets(buckets),
                 page: Page::default(),
@@ -100,25 +100,25 @@ pub(crate) mod double {
 
         /// The page a listing answers with. Chained onto any succeeding
         /// constructor: `StoreDouble::allows_listing().listing(page)`.
-        pub(crate) fn listing(mut self, page: Page) -> Self {
+        pub fn listing(mut self, page: Page) -> Self {
             self.page = page;
             self
         }
 
         /// Succeeds with an empty account.
-        pub(crate) fn empty_account() -> Self {
+        pub fn empty_account() -> Self {
             Self::with_buckets(Vec::new())
         }
 
         /// Fails with `no credentials` for the given profile.
-        pub(crate) fn no_credentials() -> Self {
+        pub fn no_credentials() -> Self {
             Self::failing(|| Error::NoCredentials {
                 profile: "double".into(),
             })
         }
 
         /// Fails with an expired session.
-        pub(crate) fn expired_session() -> Self {
+        pub fn expired_session() -> Self {
             Self::failing(|| Error::SessionRejected {
                 profile: "double".into(),
                 sso_session: Some("corp".into()),
@@ -127,21 +127,21 @@ pub(crate) mod double {
         }
 
         /// Fails with a TLS trust failure.
-        pub(crate) fn tls_trust() -> Self {
+        pub fn tls_trust() -> Self {
             Self::failing(|| Error::TlsTrust {
                 endpoint: "s3.example.test".into(),
             })
         }
 
         /// Fails with an unreachable network.
-        pub(crate) fn network() -> Self {
+        pub fn network() -> Self {
             Self::failing(|| Error::Network {
                 detail: "connection refused (double)".into(),
             })
         }
 
         /// Fails with a service-side denial of the listing.
-        pub(crate) fn access_denied() -> Self {
+        pub fn access_denied() -> Self {
             Self::failing(|| Error::AccessDenied {
                 iam_action: "s3:ListAllMyBuckets",
             })
@@ -149,13 +149,13 @@ pub(crate) mod double {
 
         /// Answers a probe: the credentials may list this bucket, and it
         /// holds nothing.
-        pub(crate) fn allows_listing() -> Self {
+        pub fn allows_listing() -> Self {
             Self::with_buckets(Vec::new())
         }
 
         /// Fails with a service-side denial of listing one bucket's contents
         /// — what a probe meets when the policy withholds `s3:ListBucket`.
-        pub(crate) fn bucket_access_denied() -> Self {
+        pub fn bucket_access_denied() -> Self {
             Self::failing(|| Error::AccessDenied {
                 iam_action: "s3:ListBucket",
             })
@@ -163,7 +163,7 @@ pub(crate) mod double {
 
         /// Fails because the credentials themselves were refused as invalid
         /// — a different cause from an expired session, and a different fix.
-        pub(crate) fn rejected_credentials() -> Self {
+        pub fn rejected_credentials() -> Self {
             Self::failing(|| Error::SessionRejected {
                 profile: "double".into(),
                 sso_session: None,
@@ -176,7 +176,7 @@ pub(crate) mod double {
         /// specific cause today, so it arrives as `Unexpected` carrying the
         /// service's own code — and, being no kind of denial, it is no
         /// evidence about permission either.
-        pub(crate) fn wrong_region() -> Self {
+        pub fn wrong_region() -> Self {
             Self::failing(|| Error::Unexpected {
                 detail: "the service reported `PermanentRedirect` (HTTP 301)".into(),
             })
@@ -185,14 +185,14 @@ pub(crate) mod double {
         /// Fails the way a busy account answers: slow down. Not a denial,
         /// and it must never be recorded as one — a throttled account would
         /// otherwise render as a wall of locks.
-        pub(crate) fn throttled() -> Self {
+        pub fn throttled() -> Self {
             Self::failing(|| Error::Unexpected {
                 detail: "the service reported `SlowDown` (HTTP 503)".into(),
             })
         }
 
         /// Fails with a missing-configuration error.
-        pub(crate) fn missing_configuration() -> Self {
+        pub fn missing_configuration() -> Self {
             Self::failing(|| Error::MissingConfiguration {
                 profile: Some("double".into()),
                 detail: "no region configured (double)".into(),
@@ -200,7 +200,7 @@ pub(crate) mod double {
         }
 
         /// Fails with an unclassifiable error.
-        pub(crate) fn unexpected() -> Self {
+        pub fn unexpected() -> Self {
             Self::failing(|| Error::Unexpected {
                 detail: "internal service error (double)".into(),
             })

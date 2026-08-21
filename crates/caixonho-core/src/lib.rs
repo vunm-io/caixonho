@@ -27,6 +27,30 @@
 //!   no secret fits into.
 //! - **TDD.** This crate is built test-first; the UI may be exploratory, the
 //!   core may not.
+//!
+//! ## The `test-support` feature
+//!
+//! Off by default, and not part of what this crate ships. Turning it on
+//! exposes exactly two of the doubles this crate already uses for its own
+//! tests: [`store::double::StoreDouble`], and [`Session::install_object_store`]
+//! to put one where a real connection's S3 adapter would go.
+//!
+//! Deliberately only those two. The keychain and connections-file injectors
+//! stay `pub(crate)`: a frontend is handed the connections it should show
+//! rather than reading them itself, so it has no use for them — and exposing
+//! them would have leaked two `pub(crate)` traits into the public API, which
+//! is how a crate acquires a surface nobody chose.
+//!
+//! It exists so a frontend can build a window over a session that reads from
+//! a script rather than from the machine's `~/.aws` and its keychain — a test
+//! that reads the developer's own machine answers differently on every machine
+//! that runs it. `caixonho-gui` enables it under `[dev-dependencies]`;
+//! resolver 2 keeps it out of any build without dev targets, which was
+//! measured rather than assumed.
+//!
+//! A feature rather than plain `pub` on purpose. A test-only API on the
+//! shipped surface is one nobody dares remove later, and the close-out review
+//! in `AGENTS.md` exists to catch exactly that.
 
 pub mod adapter;
 pub mod capability;

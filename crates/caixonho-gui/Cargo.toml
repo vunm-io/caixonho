@@ -25,3 +25,9 @@ flume.workspace = true
 # test profile — measured at 31 seconds, against tests that run in 0.01.
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
+# The core crate's own doubles — the keychain, the connections file and the
+# object store — so a window test builds over them instead of over the
+# machine's `~/.aws` (`XONHO-0015`). Dev-only, so the shipped binary is the
+# same binary; resolver 2 keeps a dev feature out of a build without dev
+# targets, and that was measured rather than assumed.
+caixonho-core = { workspace = true, features = ["test-support"] }

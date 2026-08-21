@@ -26,6 +26,20 @@ directories.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
+[features]
+# Off by default. Exposes `store::double::StoreDouble` and
+# `Session::install_object_store`, so `caixonho-gui` can build a window over a
+# session that reads from a script rather than from the machine's `~/.aws`
+# (`XONHO-0015`). Only those two: a frontend is handed its connections rather
+# than reading them, so the keychain and connections-file injectors stay
+# `pub(crate)`.
+#
+# A feature rather than plain `pub`: a test-only API on the shipped surface is
+# one nobody dares remove later, which is the rubbish the close-out review in
+# AGENTS.md exists to catch. Same arrangement as `gpui`'s `test-support`, which
+# this workspace already consumes.
+test-support = []
+
 [dev-dependencies]
 # `StaticReplayClient`, for the canned HTTP exchanges `xonho-0018` needs to
 # prove a region redirect is followed. The crate is already a normal

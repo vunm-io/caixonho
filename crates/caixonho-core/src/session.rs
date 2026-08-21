@@ -288,6 +288,22 @@ impl Session {
         ));
     }
 
+    /// Point this session at `store`, as opening a connection would.
+    ///
+    /// Through `install_scheduler` — the door production uses — so the probe
+    /// scheduler is installed with it. A double wired past the scheduler would
+    /// leave every capability observation in a window test a fiction: the rows
+    /// would say "checking…" for ever, and a test asserting on them would be
+    /// asserting on the absence of an answer.
+    ///
+    /// `credentials` comes from [`Self::credentials_changed`], the same value
+    /// a real connection mints, so observations are attributed to credentials
+    /// that exist rather than to none.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn install_object_store(&self, store: Arc<dyn ObjectStore>, credentials: CredentialsId) {
+        self.install_scheduler(store, credentials);
+    }
+
     /// Hear about each scope whose probe has settled.
     ///
     /// `announce` runs on a runtime thread, so a frontend should do nothing in
@@ -562,6 +578,7 @@ mod tests {
     use crate::credentials::double::SecretStoreDouble;
     use crate::error::{ConnectionsProblem, CredentialStoreProblem, Error};
     use crate::probe::double::{HeldProbes, settle, until};
+    use crate::store::double::StoreDouble;
     use crate::types::Region;
     use std::path::PathBuf;
 
@@ -790,6 +807,40 @@ mod tests {
                 assert!(detail.contains("no connection"), "{detail}");
             }
             other => panic!("expected MissingConfiguration, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_session_given_a_store_reads_locations_through_it() {
+        // The door `XONHO-0015` opens for the window: no connection is opened,
+        // no profile is resolved and no keychain is touched, and a location
+        // still reads. Without this a window test would have to bring the
+        // machine's `~/.aws` with it, and would answer differently on every
+        // machine that ran it.
+        let fixture = Fixture::new("installed-store");
+        let session = fixture.session("work");
+        let credentials = session.credentials_changed("work");
+        let page = Page {
+            more: Some(Cursor("from-the-double".to_owned())),
+            ..Page::default()
+        };
+        session.install_object_store(
+            Arc::new(StoreDouble::allows_listing().listing(page)),
+            credentials,
+        );
+
+        let (tell, heard) = tokio::sync::oneshot::channel();
+        session.spawn_objects(Location::bucket("holiday"), None, move |outcome| {
+            let _ = tell.send(outcome);
+        });
+
+        match heard.await.expect("the callback runs once") {
+            Ok(page) => assert_eq!(
+                page.more,
+                Some(Cursor("from-the-double".to_owned())),
+                "the page came from somewhere other than the double"
+            ),
+            other => panic!("expected the double's page, got {other:?}"),
         }
     }
 
