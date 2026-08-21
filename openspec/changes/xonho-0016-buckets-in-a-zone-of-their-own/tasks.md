@@ -287,7 +287,12 @@
   - Done criteria: all three exit zero
   - Verification: the commands themselves
 
-- [ ] 4.2 CI green on both targets [dispatch: main]
+- [x] 4.2 CI green on both targets [dispatch: main]
+      - Run **32456173681** on `ab9b728`, 2026-08-21: `build (windows-latest)`
+        success, `build (macos-latest)` success, `rustfmt` success.
+      - The run is for the tip of the four commits this change landed as. It
+        was the last task open, and it was open only because nothing had been
+        pushed — the work itself was finished and verified the night before.
   - Paths: none
   - Done criteria: the run for the tip shows `build (windows-latest)` and
     `build (macos-latest)` successful; the run id is recorded here
