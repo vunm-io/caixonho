@@ -53,6 +53,12 @@ targets — Windows is the primary daily driver and must never be the lagging po
   Before rewriting, take a `git bundle --all` outside the repository and write
   down the old-to-new commit mapping — session logs and planning documents
   cite commits by SHA, and every one of those citations dangles afterwards.
+  **`filter-branch` drops commit signatures and says nothing about it**: the
+  2026-08-21 rewrite left 82 of 129 commits unsigned, and it was nearly missed
+  because `git log %G?` prints `N` both for an unsigned commit and for a signed
+  one it cannot verify. Read the `gpgsig` header with `git cat-file commit` —
+  that is the only answer that distinguishes them — and decide before pushing
+  whether the signatures are being re-applied or given up.
   **Know what it does not buy.** A force-push removes nothing from GitHub:
   unreferenced commits stay reachable by SHA and are still served by the API.
   Measured rather than assumed — the old blob was fetched successfully after
