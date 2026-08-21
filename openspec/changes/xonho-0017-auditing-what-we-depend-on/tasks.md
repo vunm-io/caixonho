@@ -150,7 +150,22 @@
   - Done criteria: all three exit zero
   - Verification: the commands themselves
 
-- [ ] 3.2 CI green on every job, and the run id recorded [dispatch: main]
+- [x] 3.2 CI green on every job, and the run id recorded [dispatch: main]
+      - Done in `main` (2026-08-21); run **32490249136**, conclusion `success`:
+        `rustfmt`, `dependency audit`, `build (windows-latest)` and
+        `build (macos-latest)` all successful. The first run of the new job,
+        and it passed on its first attempt.
+      - The run is for `0266090`, the commit carrying every code and config
+        change in this change. Checked rather than waved at:
+        `git diff --name-only 0266090..HEAD` returns markdown only.
+      - The job's log was read rather than trusted: cargo-deny 0.20.2 was
+        fetched and run, all seven acceptances were checked and reported in
+        date, the in-date fixture passed, and the expired fixture was correctly
+        rejected with both `EXPIRED` and `NO EXPIRY`. A job that passes because
+        a step quietly did nothing is worse than a red one.
+      - `build (windows-latest)` took ~20 minutes. `e176ec9` changed
+        `Cargo.lock` substantially, so the Windows `rust-cache` was cold — the
+        next run is the one to judge the standing cost by.
   - Paths: this file
   - Done criteria: `build (windows-latest)`, `build (macos-latest)`, `rustfmt`
     and the new `audit` job all successful for the tip; the run id is written
