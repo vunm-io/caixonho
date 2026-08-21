@@ -114,6 +114,19 @@ targets — Windows is the primary daily driver and must never be the lagging po
 - Verify external facts (crate versions, AWS behavior) against current sources
   before shipping an identifier — the UI stack moves fast; do not trust this
   file or the brief over `cargo` and upstream docs, and say so when they drift.
+- **A dependency trace is read, never reconstructed.** Which crate arrives by
+  which route comes off that crate's own `[features]` table and `cargo tree`,
+  not from what a feature name sounds like. `XONHO-0017` found a trace in
+  `docs/planned-changes.md` blaming `__rustls` for pulling a legacy TLS stack
+  it does not pull, and the wrong mechanism produced the wrong remedy —
+  "accept four advisories" instead of "delete two default-feature sets". Note
+  also that `cargo tree` answers for the **host** target unless told otherwise:
+  a crate that reaches the build only on Windows is invisible here until
+  `--target all`, while `cargo audit` reads the lockfile and sees it.
+- **Scripts in `scripts/` run on the maintainer's macOS as well as on the Linux
+  runner.** That means POSIX `awk` — macOS has neither gawk's three-argument
+  `match` nor `{n}` interval expressions, and a script using them passes CI and
+  fails on the machine the maintainer is holding.
 
 ## Planning gate (before choosing what to build)
 
