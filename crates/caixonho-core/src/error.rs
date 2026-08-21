@@ -232,6 +232,26 @@ pub enum Error {
         endpoint: String,
     },
 
+    /// The bucket lives in another region, and the service did not say
+    /// which one.
+    ///
+    /// Its own cause, and not [`Self::Unexpected`], because the condition is
+    /// known exactly and so is the remedy. A redirect that *does* name a
+    /// region never reaches here — the adapter follows that one and the read
+    /// succeeds, which is the whole reason this variant is narrow: it is what
+    /// is left when following is impossible, not what a redirect means.
+    ///
+    /// Never [`Self::AccessDenied`]. A redirect is the service saying "not
+    /// here", never "not you", and there is no policy anywhere that would
+    /// change the answer.
+    #[error(
+        "bucket `{bucket}` is in another region and the service did not say which — set this connection's region to the one the bucket is in"
+    )]
+    BucketElsewhere {
+        /// The bucket that is not where the connection is looking.
+        bucket: String,
+    },
+
     /// Anything the classifier could not attribute to a specific cause.
     /// Deliberately last: growth here is a signal the classifier needs work.
     #[error("unexpected error: {detail}")]

@@ -400,6 +400,16 @@ pub struct Page {
     pub objects: Vec<Object>,
     /// Where to continue, when the service says there is more.
     pub more: Option<Cursor>,
+    /// The region that actually served this page, when it was not the region
+    /// the call was addressed to.
+    ///
+    /// `None` in the ordinary case, which is the point: a value that is always
+    /// present is a value every reader has to compare against something else
+    /// before it knows whether anything happened. `Some` says, once and at the
+    /// source, that the bucket lives somewhere other than where it was looked
+    /// for — and it arrives with the page it belongs to, so the correction
+    /// reaches the window together with the data it corrects.
+    pub served_from: Option<Region>,
 }
 
 impl Page {
@@ -619,6 +629,7 @@ mod tests {
 
         let more_coming = Page {
             more: Some(Cursor("token".to_owned())),
+            served_from: None,
             ..Page::default()
         };
         assert!(more_coming.is_empty(), "this page carried nothing");

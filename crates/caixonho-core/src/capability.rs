@@ -317,9 +317,14 @@ mod tests {
                 },
             ),
             (
+                // The shape a redirect actually reaches here in since
+                // `xonho-0018`: one that named a region is followed and never
+                // becomes an error at all, and one that named nowhere is this.
+                // Left as `Unexpected` it would have gone on passing while
+                // testing a shape the classifier no longer produces.
                 "a wrong-region redirect",
-                Error::Unexpected {
-                    detail: "the service reported `PermanentRedirect` (HTTP 301)".into(),
+                Error::BucketElsewhere {
+                    bucket: "reports".into(),
                 },
             ),
             (

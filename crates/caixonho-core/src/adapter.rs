@@ -12,8 +12,11 @@ use async_trait::async_trait;
 use aws_config::SdkConfig;
 use aws_sdk_s3::Client;
 use aws_sdk_s3::config::Region as SdkRegion;
+use aws_sdk_s3::config::http::HttpResponse;
+use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::operation::list_buckets::builders::ListBucketsFluentBuilder;
 use aws_sdk_s3::operation::list_objects_v2::builders::ListObjectsV2FluentBuilder;
+use aws_sdk_s3::operation::list_objects_v2::{ListObjectsV2Error, ListObjectsV2Output};
 use aws_sdk_s3::primitives::DateTimeFormat;
 use aws_sdk_s3::types::Bucket as SdkBucket;
 use aws_sdk_s3::types::Object as SdkObject;
@@ -99,6 +102,15 @@ pub struct S3ObjectStore {
     /// A bucket opened by name without a listing is simply absent from here,
     /// and then this connection genuinely does not know.
     directory: Arc<Mutex<HashSet<String>>>,
+    /// Which of this connection's buckets turned out to live in a region
+    /// other than the one the connection is pointed at, and where.
+    ///
+    /// Learned from a redirect the service sent, never guessed: beside the
+    /// directory set for the same reason it is, because the operation that
+    /// answered is what knows, and what it learned belongs to the connection
+    /// that learned it. It cannot go stale the way a cache can — a bucket
+    /// does not change region — and it dies with the connection regardless.
+    elsewhere: Arc<Mutex<HashMap<String, String>>>,
     /// The region this connection was opened in. Kept because a directory
     /// bucket that states no region of its own is in this one, and "the
     /// region we asked in" has to be answerable without asking the SDK for a
@@ -135,6 +147,7 @@ impl S3ObjectStore {
             config,
             regional: Arc::default(),
             directory: Arc::default(),
+            elsewhere: Arc::default(),
             profile: profile.to_owned(),
             endpoint,
             region: region.to_owned(),
@@ -185,7 +198,7 @@ impl S3ObjectStore {
             let page = page.map_err(|error| {
                 classify(
                     &SdkFailure::from_sdk(&error),
-                    &self.call(LIST_DIRECTORY_BUCKETS_ACTION, &self.endpoint),
+                    &self.call(LIST_DIRECTORY_BUCKETS_ACTION, &self.endpoint, None),
                 )
             })?;
 
@@ -238,6 +251,67 @@ impl S3ObjectStore {
             .clone()
     }
 
+    /// The region this connection has learned `bucket` actually lives in.
+    ///
+    /// The lock is held for one lookup and never across an await, the same
+    /// discipline `client_for` and `read_action` keep.
+    fn region_learned_for(&self, bucket: &str) -> Option<Region> {
+        self.elsewhere
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(bucket)
+            .map(|region| Region::Known(region.clone()))
+    }
+
+    /// Remember where a redirect said a bucket lives, so the next read of it
+    /// is addressed there rather than paying for the redirect again.
+    fn remember_region(&self, bucket: &str, region: &str) {
+        self.elsewhere
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(bucket.to_owned(), region.to_owned());
+    }
+
+    /// One page of a location, addressed to `region` — or to the connection's
+    /// own client when there is nothing better known.
+    ///
+    /// Hands back the SDK's own error rather than a cause: the caller has to
+    /// look at the failure before deciding whether it is one, and classifying
+    /// here would throw away the redirect on the way past.
+    async fn read_page(
+        &self,
+        location: &Location,
+        cursor: Option<&Cursor>,
+        region: Option<&Region>,
+    ) -> std::result::Result<ListObjectsV2Output, SdkError<ListObjectsV2Error, HttpResponse>> {
+        let client = match region {
+            Some(region) => self.client_for(region),
+            None => self.client.clone(),
+        };
+        list_objects_request(&client, location, cursor).send().await
+    }
+
+    /// What a failed read of `location`, addressed to `region`, means.
+    fn read_failure(
+        &self,
+        failure: &SdkFailure,
+        location: &Location,
+        region: Option<&Region>,
+    ) -> Error {
+        let endpoint = match region {
+            Some(region) => self.endpoint_for(region),
+            None => self.endpoint.clone(),
+        };
+        classify(
+            failure,
+            &self.call(
+                self.read_action(&location.bucket),
+                &endpoint,
+                Some(&location.bucket),
+            ),
+        )
+    }
+
     /// The host a failure about `region` should name.
     ///
     /// A probe travels to the bucket's own region, so a trust failure there
@@ -265,12 +339,23 @@ impl S3ObjectStore {
     }
 
     /// The context a failure needs to name what the user must fix.
-    fn call<'a>(&'a self, iam_action: &'static str, endpoint: &'a str) -> CallContext<'a> {
+    ///
+    /// `bucket` is a parameter rather than something derived here because
+    /// only the caller knows whether its call was about one: an account
+    /// listing is about none, and a defaulted `None` would let a bucket-scoped
+    /// call quietly lose the name a cause needs to state.
+    fn call<'a>(
+        &'a self,
+        iam_action: &'static str,
+        endpoint: &'a str,
+        bucket: Option<&'a str>,
+    ) -> CallContext<'a> {
         CallContext {
             profile: &self.profile,
             endpoint,
             iam_action,
             sso_session: self.sso_session.as_deref(),
+            bucket,
         }
     }
 }
@@ -304,6 +389,7 @@ impl ObjectStore for S3ObjectStore {
                     &self.call(
                         self.read_action(scope.bucket_name()),
                         &self.endpoint_for(region),
+                        Some(scope.bucket_name()),
                     ),
                 )
             })?;
@@ -312,18 +398,48 @@ impl ObjectStore for S3ObjectStore {
     }
 
     async fn list_objects(&self, location: &Location, cursor: Option<&Cursor>) -> Result<Page> {
-        // The connection's own client: a location is reached through the
-        // endpoint the connection was opened against, and this change does not
-        // yet follow a bucket to a region of its own.
-        let answer = list_objects_request(&self.client, location, cursor)
-            .send()
+        // A bucket this connection has already been redirected about is
+        // addressed to its own region from the start. Discovering it once and
+        // then paying for the redirect on every page afterwards would make
+        // the discovery worth nothing.
+        let addressed_to = self.region_learned_for(&location.bucket);
+
+        let (answer, served_from) = match self
+            .read_page(location, cursor, addressed_to.as_ref())
             .await
-            .map_err(|error| {
-                classify(
-                    &SdkFailure::from_sdk(&error),
-                    &self.call(self.read_action(&location.bucket), &self.endpoint),
-                )
-            })?;
+        {
+            Ok(answer) => (answer, None),
+            Err(error) => {
+                let failure = SdkFailure::from_sdk(&error);
+                // Asked before it is classified, because a redirect that
+                // names a region is not a failure yet — it is a call that has
+                // been told where to go.
+                let Some(region) = failure.redirect_region() else {
+                    return Err(self.read_failure(&failure, location, addressed_to.as_ref()));
+                };
+                let region = Region::Known(region.to_owned());
+
+                // Once. The reissue below is addressed to the region the
+                // service itself named, so a second redirect is the service
+                // contradicting itself, and following it again would turn a
+                // wrong region into a request that never settles.
+                let answer = self
+                    .read_page(location, cursor, Some(&region))
+                    .await
+                    .map_err(|error| {
+                        self.read_failure(&SdkFailure::from_sdk(&error), location, Some(&region))
+                    })?;
+
+                // Remembered only after a read that worked. A region that
+                // answered nothing is not knowledge worth keeping, and
+                // storing it would send every later page somewhere this
+                // connection has never successfully reached.
+                if let Region::Known(name) = &region {
+                    self.remember_region(&location.bucket, name);
+                }
+                (answer, Some(region))
+            }
+        };
 
         // Every rule about what a listing shows is applied in `listing`, over
         // the service's own answer — the adapter's job is to hand that answer
@@ -339,6 +455,7 @@ impl ObjectStore for S3ObjectStore {
             answer
                 .next_continuation_token()
                 .map(|token| Cursor(token.to_owned())),
+            served_from,
         ))
     }
 }
@@ -409,7 +526,7 @@ impl S3ObjectStore {
             let page = page.map_err(|error| {
                 classify(
                     &SdkFailure::from_sdk(&error),
-                    &self.call(LIST_BUCKETS_ACTION, &self.endpoint),
+                    &self.call(LIST_BUCKETS_ACTION, &self.endpoint, None),
                 )
             })?;
             buckets.extend(page.buckets().iter().map(map_bucket));
@@ -579,11 +696,14 @@ mod tests {
     use crate::tls::HttpStack;
     use crate::types::Prefix;
     use aws_config::SdkConfig;
+    use aws_sdk_s3::config::retry::RetryConfig;
     use aws_sdk_s3::config::{
         AppName, BehaviorVersion, ConfigBag, Credentials, IdentityCache, Region as SdkRegion,
         RuntimeComponents, SharedCredentialsProvider,
     };
     use aws_sdk_s3::primitives::DateTime;
+    use aws_sdk_s3::primitives::SdkBody;
+    use aws_smithy_http_client::test_util::{ReplayEvent, StaticReplayClient};
     use aws_smithy_runtime_api::client::http::{
         HttpClient, HttpConnector, HttpConnectorFuture, HttpConnectorSettings, SharedHttpConnector,
     };
@@ -591,8 +711,9 @@ mod tests {
         Identity, IdentityCachePartition, IdentityFuture, ResolveCachedIdentity,
         SharedIdentityResolver,
     };
-    use aws_smithy_runtime_api::client::orchestrator::HttpRequest;
+    use aws_smithy_runtime_api::client::orchestrator::{HttpRequest, HttpResponse};
     use aws_smithy_runtime_api::client::result::ConnectorError;
+    use aws_smithy_runtime_api::http::StatusCode;
     use std::collections::HashSet;
 
     /// A client good enough to shape a request with. It is never sent, so no
@@ -1292,5 +1413,161 @@ mod tests {
                 "empty region in {arn:?} must fall back to listing region"
             );
         }
+    }
+
+    /// A page the SDK will actually parse. A shape it would reject fails the
+    /// test instead of quietly passing it.
+    const ONE_OBJECT: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Name>reports</Name>
+  <Prefix></Prefix>
+  <KeyCount>1</KeyCount>
+  <MaxKeys>1000</MaxKeys>
+  <Delimiter>/</Delimiter>
+  <IsTruncated>false</IsTruncated>
+  <Contents>
+    <Key>q1.csv</Key>
+    <LastModified>2026-08-21T00:00:00.000Z</LastModified>
+    <Size>12</Size>
+  </Contents>
+</ListBucketResult>"#;
+
+    /// What S3 answers a read addressed to the wrong region with.
+    fn redirect_naming(region: &str) -> HttpResponse {
+        let mut response = HttpResponse::new(
+            StatusCode::try_from(301).expect("a valid status"),
+            SdkBody::from("<Error><Code>PermanentRedirect</Code></Error>"),
+        );
+        response
+            .headers_mut()
+            .insert("x-amz-bucket-region", region.to_owned());
+        response
+    }
+
+    fn a_page() -> HttpResponse {
+        HttpResponse::new(
+            StatusCode::try_from(200).expect("a valid status"),
+            SdkBody::from(ONE_OBJECT),
+        )
+    }
+
+    /// A connection whose every call is answered from a script.
+    ///
+    /// Retries are off so the request count means what it says: these tests
+    /// assert how many times the request went out, and a retry policy would
+    /// make that a property of the retry policy instead of a property of the
+    /// code under test.
+    fn replaying_config(replay: &StaticReplayClient) -> SdkConfig {
+        SdkConfig::builder()
+            .behavior_version(BehaviorVersion::latest())
+            .region(SdkRegion::new(CONNECTION_REGION))
+            .credentials_provider(SharedCredentialsProvider::new(test_credentials()))
+            .identity_cache(IdentityCache::lazy().build())
+            .retry_config(RetryConfig::disabled())
+            .http_client(replay.clone())
+            .build()
+    }
+
+    fn replaying_store(responses: Vec<HttpResponse>) -> (S3ObjectStore, StaticReplayClient) {
+        let replay = StaticReplayClient::new(
+            responses
+                .into_iter()
+                .map(|response| ReplayEvent::new(HttpRequest::new(SdkBody::empty()), response))
+                .collect(),
+        );
+        let store = S3ObjectStore::over(
+            replaying_config(&replay),
+            "work",
+            CONNECTION_REGION,
+            Some("corp"),
+        );
+        (store, replay)
+    }
+
+    fn reports() -> Location {
+        Location {
+            bucket: "reports".to_owned(),
+            prefix: Prefix::root(),
+        }
+    }
+
+    fn hosts(replay: &StaticReplayClient) -> Vec<String> {
+        replay
+            .actual_requests()
+            .map(|request| request.uri().to_owned())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_bucket_in_another_region_is_read_from_the_region_the_service_named() {
+        let (store, replay) = replaying_store(vec![redirect_naming("us-west-2"), a_page()]);
+
+        let page = store
+            .list_objects(&reports(), None)
+            .await
+            .expect("the redirect is followed and the read succeeds");
+
+        assert_eq!(page.objects.len(), 1, "the second answer is the page");
+        assert_eq!(
+            page.served_from,
+            Some(Region::Known("us-west-2".to_owned())),
+            "the page says which region actually served it"
+        );
+
+        // The result alone would pass even if the reissue went back to the
+        // same region and the script happened to answer it — asserting the
+        // request is what proves the named region was used.
+        let hosts = hosts(&replay);
+        assert_eq!(hosts.len(), 2, "asked twice: {hosts:?}");
+        assert!(
+            hosts[0].contains(CONNECTION_REGION),
+            "the first request goes to the connection's own region: {hosts:?}"
+        );
+        assert!(
+            hosts[1].contains("us-west-2"),
+            "the reissue goes where the service said: {hosts:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_service_that_redirects_the_reissue_is_reported_rather_than_followed() {
+        // A service that redirects a request already addressed to the region
+        // it named has contradicted itself. Following again turns a wrong
+        // region into a loop, so the second answer is reported.
+        let (store, replay) = replaying_store(vec![
+            redirect_naming("us-west-2"),
+            redirect_naming("eu-west-1"),
+        ]);
+
+        let outcome = store.list_objects(&reports(), None).await;
+
+        assert!(outcome.is_err(), "the second redirect is not followed");
+        assert_eq!(hosts(&replay).len(), 2, "and nothing is asked a third time");
+    }
+
+    #[tokio::test]
+    async fn a_bucket_already_known_to_live_elsewhere_is_addressed_there_from_the_start() {
+        let (store, replay) =
+            replaying_store(vec![redirect_naming("us-west-2"), a_page(), a_page()]);
+
+        store
+            .list_objects(&reports(), None)
+            .await
+            .expect("the first read follows the redirect");
+        let second = store
+            .list_objects(&reports(), None)
+            .await
+            .expect("the second read needs no redirect");
+
+        let hosts = hosts(&replay);
+        assert_eq!(hosts.len(), 3, "three requests in total: {hosts:?}");
+        assert!(
+            hosts[2].contains("us-west-2"),
+            "the second read is addressed to the discovered region on its first try: {hosts:?}"
+        );
+        assert_eq!(
+            second.served_from, None,
+            "nothing was corrected this time — the page came from where it was addressed"
+        );
     }
 }

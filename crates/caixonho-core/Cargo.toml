@@ -25,3 +25,16 @@ keyring.workspace = true
 directories.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[dev-dependencies]
+# `StaticReplayClient`, for the canned HTTP exchanges `xonho-0018` needs to
+# prove a region redirect is followed. The crate is already a normal
+# dependency above; only the extra feature is dev-only.
+#
+# Dev-only is safe rather than merely tidy: resolver 2 does not unify
+# dev-dependency features into a build that excludes dev targets, so the
+# release binary keeps the feature set it had — measured, not assumed, by
+# comparing `cargo tree --edges features,no-dev` before and after. And this
+# crate is not part of the UI stack `ADR-0001` freezes, so nothing pinned by
+# `rev` or by `Cargo.lock` is disturbed by touching its features.
+aws-smithy-http-client = { workspace = true, features = ["test-util"] }

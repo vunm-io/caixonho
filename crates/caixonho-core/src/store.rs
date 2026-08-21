@@ -491,6 +491,7 @@ mod tests {
                 etag: None,
             }],
             more: None,
+            served_from: None,
         }));
 
         let page = store
@@ -507,6 +508,7 @@ mod tests {
     async fn a_truncated_page_says_so_rather_than_looking_like_a_small_folder() {
         let store: Box<dyn ObjectStore> = Box::new(StoreDouble::allows_listing().listing(Page {
             more: Some(Cursor("next".to_owned())),
+            served_from: None,
             ..Page::default()
         }));
 

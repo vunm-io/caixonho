@@ -87,6 +87,8 @@ impl SsoOidcSignIn {
             endpoint: &at.start_url,
             iam_action: "",
             sso_session: at.session_name.as_deref(),
+            // Signing in is about a session, never about a bucket.
+            bucket: None,
         }
     }
 

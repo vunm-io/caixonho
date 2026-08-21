@@ -10,16 +10,21 @@
 //! function over the service's own answer, because that is a thing a test can
 //! hold and a window is not.
 
-use crate::types::{Cursor, Folder, Object, Page, Prefix};
+use crate::types::{Cursor, Folder, Object, Page, Prefix, Region};
 
 /// The page a listing of `prefix` should show.
 ///
 /// `common_prefixes` and `contents` are what the service reported, unaltered.
+///
+/// `served_from` is a parameter rather than something decided here because
+/// only the caller knows which region it addressed the request to. This
+/// function sees an answer, never where it came from.
 pub(crate) fn page_at(
     prefix: &Prefix,
     common_prefixes: Vec<String>,
     contents: Vec<Object>,
     more: Option<Cursor>,
+    served_from: Option<Region>,
 ) -> Page {
     Page {
         folders: common_prefixes
@@ -38,6 +43,7 @@ pub(crate) fn page_at(
             .filter(|object| object.key != prefix.as_str())
             .collect(),
         more,
+        served_from,
     }
 }
 
@@ -51,6 +57,12 @@ mod tests {
     //! and a prefix nothing stands behind.
 
     use super::*;
+
+    /// Every test here is about what a listing shows, never about where the
+    /// answer came from. Named rather than a bare `None` sitting beside the
+    /// `more` cursor, which is also `None` in most of them: two anonymous
+    /// `None`s in a row tell a reader nothing about which is which.
+    const SERVED_FROM_THE_REGION_ASKED: Option<Region> = None;
 
     fn object(key: &str, size: u64) -> Object {
         Object {
@@ -79,6 +91,7 @@ mod tests {
                 object("photos/dog.jpg", 1),
             ],
             None,
+            SERVED_FROM_THE_REGION_ASKED,
         );
 
         assert_eq!(
@@ -99,7 +112,13 @@ mod tests {
         // column that describes an object is empty for it.
         let root = Prefix::root();
 
-        let page = page_at(&root, vec!["deep/".to_owned()], vec![], None);
+        let page = page_at(
+            &root,
+            vec!["deep/".to_owned()],
+            vec![],
+            None,
+            SERVED_FROM_THE_REGION_ASKED,
+        );
 
         assert_eq!(page.folders.len(), 1);
         assert_eq!(page.folders[0].name(), "deep");
@@ -123,6 +142,7 @@ mod tests {
             vec!["notes/".to_owned()],
             vec![object("notes", 35)],
             None,
+            SERVED_FROM_THE_REGION_ASKED,
         );
 
         assert_eq!(page.folders[0].name(), "notes");
@@ -142,6 +162,7 @@ mod tests {
             vec![],
             vec![object("photos-old.zip", 900), object("photos.txt", 12)],
             None,
+            SERVED_FROM_THE_REGION_ASKED,
         );
 
         assert_eq!(page.objects.len(), 2, "neither key is a folder marker");
@@ -153,7 +174,13 @@ mod tests {
         // quietly stops early reads exactly like a small folder.
         let root = Prefix::root();
 
-        let page = page_at(&root, vec![], vec![], Some(Cursor("token".to_owned())));
+        let page = page_at(
+            &root,
+            vec![],
+            vec![],
+            Some(Cursor("token".to_owned())),
+            SERVED_FROM_THE_REGION_ASKED,
+        );
 
         assert!(page.is_truncated());
         assert!(page.is_empty(), "and this page still carried nothing");

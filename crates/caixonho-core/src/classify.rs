@@ -64,6 +64,10 @@ pub(crate) struct SdkFailure {
     status: Option<u16>,
     io: bool,
     timeout: bool,
+    /// Where the service said the bucket really lives, when it answered a
+    /// read with a redirect. Read by the adapter *before* it classifies:
+    /// this is the one failure that is not a failure yet.
+    redirect_region: Option<String>,
     /// Lowercased source chain. Private on purpose: matching only, never
     /// copied into an `Error`.
     chain: String,
@@ -80,6 +84,11 @@ pub(crate) struct CallContext<'a> {
     pub iam_action: &'static str,
     /// `sso_session` name from the shared config, when the profile has one.
     pub sso_session: Option<&'a str>,
+    /// Bucket the call was scoped to, for causes that are about one.
+    /// `None` where the call is scoped to the account instead — listing
+    /// buckets is about no bucket, and a redirect there names nothing to
+    /// report.
+    pub bucket: Option<&'a str>,
 }
 
 /// Certificate-trust failures, in the spellings rustls, OpenSSL and the
@@ -207,6 +216,34 @@ const CONFIGURATION_MARKERS: &[&str] = &[
     "no such profile",
 ];
 
+/// The header a redirect uses to name where the bucket really lives.
+const BUCKET_REGION_HEADER: &str = "x-amz-bucket-region";
+
+/// The status that makes that header a redirect rather than a statement.
+const PERMANENT_REDIRECT: u16 = 301;
+
+/// The region a response redirected to, if it redirected at all.
+///
+/// The status check is not ceremony. `HeadBucket` models this same header as
+/// an output field, so it can arrive on a response that is redirecting
+/// nowhere; reading it as a redirect would reissue a request the service
+/// never asked us to reissue. And a header that is present but blank answers
+/// `None`, because the caller chooses between following and reporting on
+/// `Some` against `None` — a region named by the empty string is not
+/// somewhere to follow, and making the caller re-check emptiness would be
+/// asking every caller to know what this function already knows.
+fn redirect_region_in(response: &HttpResponse) -> Option<String> {
+    if response.status().as_u16() != PERMANENT_REDIRECT {
+        return None;
+    }
+    response
+        .headers()
+        .get(BUCKET_REGION_HEADER)
+        .map(str::trim)
+        .filter(|region| !region.is_empty())
+        .map(str::to_owned)
+}
+
 impl SdkFailure {
     /// Extract the classifiable facts from an SDK error.
     pub(crate) fn from_sdk<E>(error: &SdkError<E, HttpResponse>) -> Self
@@ -233,6 +270,7 @@ impl SdkFailure {
                 if let Some(code) = context.err().code() {
                     failure = failure.with_code(code);
                 }
+                failure.redirect_region = redirect_region_in(context.raw());
                 failure
             }
             _ => Self::new(FailureKind::Other),
@@ -248,6 +286,7 @@ impl SdkFailure {
             status: None,
             io: false,
             timeout: false,
+            redirect_region: None,
             chain: String::new(),
         }
     }
@@ -289,6 +328,16 @@ impl SdkFailure {
     /// over on the way out. Only then is the chain the best account available.
     fn answered_nothing(&self) -> bool {
         self.code.is_none() && self.status.is_none()
+    }
+
+    /// Where the service said the bucket really lives, when it redirected.
+    ///
+    /// `Some` means this call can be made to succeed by addressing it
+    /// elsewhere, so the adapter asks here before it classifies. Classifying
+    /// first and unpicking it afterwards would model a followable redirect as
+    /// a failure, which is what it stops being the moment this answers.
+    pub(crate) fn redirect_region(&self) -> Option<&str> {
+        self.redirect_region.as_deref()
     }
 
     fn code_is(&self, codes: &[&str]) -> bool {
@@ -400,7 +449,24 @@ pub(crate) fn classify(failure: &SdkFailure, call: &CallContext<'_>) -> Error {
         };
     }
 
-    // 8. Unattributed. Growth here means the classifier needs work, so the
+    // 8. A redirect nobody can follow. Last of the specific causes and only
+    //    ever reached with `redirect_region` empty: the adapter follows a
+    //    redirect that named a region before it ever classifies, so arriving
+    //    here means the service moved the bucket and declined to say where.
+    //
+    //    Scoped to a bucket or not stated at all — the cause names the bucket
+    //    to say which one to go and look up, and a cause that cannot name it
+    //    would be a sentence with the useful half missing.
+    if failure.redirect_region.is_none()
+        && failure.status == Some(PERMANENT_REDIRECT)
+        && let Some(bucket) = call.bucket
+    {
+        return Error::BucketElsewhere {
+            bucket: bucket.to_owned(),
+        };
+    }
+
+    // 9. Unattributed. Growth here means the classifier needs work, so the
     //    detail carries the two facts that make the next case diagnosable.
     Error::Unexpected {
         detail: match (failure.code.as_deref(), failure.status) {
@@ -432,6 +498,10 @@ mod tests {
     //! refactor can break silently.
 
     use super::*;
+    use aws_sdk_s3::primitives::SdkBody;
+    use aws_smithy_runtime_api::client::result::ServiceError;
+    use aws_smithy_runtime_api::http::StatusCode;
+    use aws_smithy_types::error::ErrorMetadata;
 
     fn call() -> CallContext<'static> {
         CallContext {
@@ -439,6 +509,7 @@ mod tests {
             endpoint: "s3.ap-southeast-1.amazonaws.com",
             iam_action: "s3:ListAllMyBuckets",
             sso_session: Some("corp"),
+            bucket: None,
         }
     }
 
@@ -872,5 +943,141 @@ mod tests {
             classify(&denied, &call()),
             Error::AccessDenied { .. }
         ));
+    }
+
+    /// Build the SDK error shape a wrong-region read actually produces: a
+    /// service error whose raw response is what carries the answer. These go
+    /// through `from_sdk` rather than a hand-built `SdkFailure`, because the
+    /// rule under test lives in the extraction — which status counts, and
+    /// which header is read — and a builder would let a wrong header name or
+    /// a missing status check pass unnoticed.
+    fn service_error(status: u16, region: Option<&str>) -> SdkError<ErrorMetadata, HttpResponse> {
+        let mut raw = HttpResponse::new(
+            StatusCode::try_from(status).expect("a valid status"),
+            SdkBody::empty(),
+        );
+        if let Some(region) = region {
+            raw.headers_mut()
+                .insert("x-amz-bucket-region", region.to_owned());
+        }
+        SdkError::ServiceError(
+            ServiceError::builder()
+                .source(ErrorMetadata::builder().code("PermanentRedirect").build())
+                .raw(raw)
+                .build(),
+        )
+    }
+
+    /// A read is always scoped to a bucket, which is what a redirect is
+    /// about. The plain `call()` above leaves it `None` because listing an
+    /// account is scoped to no bucket at all.
+    fn call_in_bucket(bucket: &str) -> CallContext<'_> {
+        CallContext {
+            bucket: Some(bucket),
+            ..call()
+        }
+    }
+
+    #[test]
+    fn a_redirect_that_named_nowhere_says_the_bucket_lives_elsewhere() {
+        let failure = SdkFailure::from_sdk(&service_error(301, None));
+
+        match classify(&failure, &call_in_bucket("reports")) {
+            Error::BucketElsewhere { bucket } => assert_eq!(bucket, "reports"),
+            other => panic!("expected BucketElsewhere, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_redirect_that_named_a_region_is_never_reported_as_unfollowable() {
+        // The whole point of the cause under test is that there is nowhere to
+        // follow. A classifier that answers it for a redirect which *did*
+        // name a region makes the follow unreachable — and it would do so
+        // silently, because both shapes are 301 and the caller that stopped
+        // following would simply report a plausible-looking error instead.
+        let failure = SdkFailure::from_sdk(&service_error(301, Some("us-west-2")));
+
+        assert!(
+            !matches!(
+                classify(&failure, &call_in_bucket("reports")),
+                Error::BucketElsewhere { .. }
+            ),
+            "a redirect that names a region is followed, not reported"
+        );
+    }
+
+    #[test]
+    fn an_unfollowable_redirect_says_what_to_change_and_blames_no_one() {
+        let failure = SdkFailure::from_sdk(&service_error(301, None));
+        let message = classify(&failure, &call_in_bucket("reports")).to_string();
+
+        assert!(message.contains("reports"), "got: {message}");
+        assert!(message.contains("region"), "got: {message}");
+        // Not a mystery: this cause knows exactly what happened.
+        assert!(!message.contains("unexpected"), "got: {message}");
+        // Not a policy problem: a redirect is the service saying "not here",
+        // never "not you", and sending someone to IAM over it wastes an
+        // afternoon on a permission that was never the matter.
+        for blame in ["denied", "permission", "access"] {
+            assert!(!message.contains(blame), "got: {message}");
+        }
+    }
+
+    #[test]
+    fn a_redirect_on_a_call_scoped_to_no_bucket_stays_diagnosable() {
+        // Listing an account is scoped to no bucket, so there is no bucket to
+        // name and this cause cannot be stated. Reaching here at all would
+        // mean the service redirected something that is not a bucket read —
+        // so the fallback keeps the code and the status, which is what makes
+        // a case nobody predicted possible to diagnose at all.
+        let failure = SdkFailure::from_sdk(&service_error(301, None));
+
+        match classify(&failure, &call()) {
+            Error::Unexpected { detail } => {
+                assert!(detail.contains("PermanentRedirect"), "got: {detail}");
+                assert!(detail.contains("301"), "got: {detail}");
+            }
+            other => panic!("expected Unexpected, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_redirect_carries_the_region_the_service_named() {
+        let failure = SdkFailure::from_sdk(&service_error(301, Some("us-west-2")));
+
+        assert_eq!(failure.redirect_region(), Some("us-west-2"));
+    }
+
+    #[test]
+    fn a_redirect_that_names_no_region_carries_nothing() {
+        let failure = SdkFailure::from_sdk(&service_error(301, None));
+
+        assert_eq!(failure.redirect_region(), None);
+    }
+
+    #[test]
+    fn a_region_header_on_a_response_that_is_not_a_redirect_is_not_a_redirect() {
+        // `HeadBucket` models this header as an output field, so it can arrive
+        // on a response that redirects nowhere. Following one of those would
+        // reissue a request the service never asked us to reissue.
+        let failure = SdkFailure::from_sdk(&service_error(403, Some("us-west-2")));
+
+        assert_eq!(failure.redirect_region(), None);
+    }
+
+    #[test]
+    fn a_region_header_that_says_nothing_is_the_same_as_no_header() {
+        // The caller decides "follow or report" on `Some` vs `None`. A header
+        // present but empty would answer `Some` and send the retry to a region
+        // named by the empty string.
+        for empty in ["", "   "] {
+            let failure = SdkFailure::from_sdk(&service_error(301, Some(empty)));
+
+            assert_eq!(
+                failure.redirect_region(),
+                None,
+                "a header of {empty:?} should read as no region"
+            );
+        }
     }
 }
