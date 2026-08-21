@@ -203,7 +203,18 @@
   - Done criteria: all three exit zero
   - Verification: the commands themselves
 
-- [ ] 4.2 CI green on both targets [dispatch: main]
+- [x] 4.2 CI green on both targets [dispatch: main]
+      - Done in `main` (2026-08-21); run **32487546539**, conclusion `success`:
+        `build (windows-latest)` success, `build (macos-latest)` success,
+        `rustfmt` success.
+      - That run is for `e297a62`, not the tip. Checked rather than waved at:
+        `git diff --name-only 2e45e38..HEAD` matches no `.rs`, no
+        `Cargo.toml`/`Cargo.lock` and nothing under `.github/` — every commit
+        after the code is documentation, so this run compiled exactly the code
+        that is on `main`.
+      - The run took 18m20s against the 4-6m these usually take. The added
+        `test-util` dev-dependency brings 13 crates that had never been in the
+        CI cache; the next run on a warm cache is the one to judge by.
   - Paths: none
   - Done criteria: the run for the tip shows `build (windows-latest)` and
     `build (macos-latest)` successful; the run id is recorded here
