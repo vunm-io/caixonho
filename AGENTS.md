@@ -42,6 +42,23 @@ targets — Windows is the primary daily driver and must never be the lagging po
   changed rather than restating the diff, and history stays linear — no
   force-pushes to `main`, no rewriting published commits to tidy them. Prefer
   several focused commits over one that mixes concerns.
+- **One exception to that, and only one: removing what must never have been
+  published.** A secret, or content that crosses the owner's knowledge
+  boundary — anything identifying their employer, its accounts, or its
+  infrastructure. Tidiness is never a reason; the line above still forbids
+  rewriting to make history read better. Done once, on 2026-08-21, when
+  `docs/design-language.md` was found carrying the owner's employer's name in
+  a sidebar mockup: 82 commits rewritten, the name replaced by `work`, and the
+  result checked to differ from the original tree in that one line alone.
+  Before rewriting, take a `git bundle --all` outside the repository and write
+  down the old-to-new commit mapping — session logs and planning documents
+  cite commits by SHA, and every one of those citations dangles afterwards.
+  **Know what it does not buy.** A force-push removes nothing from GitHub:
+  unreferenced commits stay reachable by SHA and are still served by the API.
+  Measured rather than assumed — the old blob was fetched successfully after
+  the push. Closing that takes a request to GitHub Support to purge the
+  unreferenced objects, so the rewrite is the first half of the job and not
+  the whole of it.
 - Conventional Commits with a task ID in the scope: `feat(XONHO-0003): ...`.
   Small housekeeping may use the owner's global `OPS-NNNN` sequence — prefer it
   for anything that is not project work, so the project's own sequence stays
