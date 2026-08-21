@@ -133,6 +133,22 @@ pub struct Diagnostics {
 }
 
 impl Diagnostics {
+    /// A handle naming no log at all, for a frontend test that is not about
+    /// logging (`XONHO-0015`).
+    ///
+    /// `NoLocation` rather than no problem: a machine with nowhere to put a
+    /// log is a state this type already describes and `start` already returns.
+    /// All-`None` would be a fourth shape production never reaches, and a test
+    /// standing in one is testing something nobody ships.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn without_a_log() -> Self {
+        Self {
+            file: None,
+            directory: None,
+            problem: Some(LogProblem::NoLocation),
+        }
+    }
+
     /// The file being written now, when there is one.
     pub fn file(&self) -> Option<&Path> {
         self.file.as_deref()

@@ -21,7 +21,7 @@ mod views;
 use gpui::{AppContext, Bounds, WindowBounds, WindowOptions, px, size};
 use gpui_component::{Root, TitleBar};
 
-use app::CaixonhoApp;
+use app::{CaixonhoApp, World};
 
 fn main() {
     gpui_platform::application()
@@ -32,6 +32,12 @@ fn main() {
             let diagnostics = caixonho_core::diagnostics::start();
             gpui_component::init(cx);
             theme::install(cx);
+
+            // Everything the application needs from this machine, read here
+            // and handed over. The window is given its world; it does not go
+            // looking for one — which is what lets a test hand it a world it
+            // wrote instead (`XONHO-0015`).
+            let world = World::from_env();
 
             cx.spawn(async move |cx| {
                 let options = cx.update(|cx| WindowOptions {
@@ -45,7 +51,7 @@ fn main() {
 
                 cx.open_window(options, |window, cx| {
                     window.set_window_title("caixonho");
-                    let view = cx.new(|cx| CaixonhoApp::new(diagnostics, window, cx));
+                    let view = cx.new(|cx| CaixonhoApp::new(diagnostics, world, window, cx));
                     cx.new(|cx| Root::new(view, window, cx))
                 })
                 .expect("failed to open window");

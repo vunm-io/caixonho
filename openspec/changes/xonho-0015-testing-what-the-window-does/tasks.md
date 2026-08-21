@@ -77,7 +77,16 @@
 
 ## 2. Give the window its world
 
-- [ ] 2.1 A world the application is handed [dispatch: main]
+- [x] 2.1 A world the application is handed [dispatch: main]
+      - Done in `main` (2026-08-21); verified: `cargo test --workspace` 264
+        core + 38 window, clippy clean.
+      - The greppable criterion holds: **none of** `from_env`, `discover(`,
+        `ConfigPaths`, `HttpStack`, `stored_connections` or
+        `tokio::runtime::Builder` appears anywhere inside the constructor.
+        Checked by script over the function body rather than by eye.
+      - `World` owns the runtime, as the task required. It is destructured at
+        the top of `new`, so the fields are named once and the rest of the
+        constructor reads exactly as it did.
   - Paths: `crates/caixonho-gui/src/app.rs`
   - Done criteria: a `World` carrying what `CaixonhoApp::new` reads from the
     machine today — the tokio runtime, the optional `Session`, the discovered
@@ -89,7 +98,23 @@
     the constructor. That is the whole point, and it is greppable.
   - Verification: `cargo test --workspace`
 
-- [ ] 2.2 `main.rs` reads the world, as the application always did [dispatch: main]
+- [x] 2.2 `main.rs` reads the world, as the application always did [dispatch: main]
+      - Done in `main` (2026-08-21).
+      - **Run, not just compiled.** A fresh debug build was started, stayed up
+        1m52s at 80 MB RSS, and stopped cleanly on `SIGTERM`. It got past
+        `open_window(...).expect("failed to open window")`, which is what a
+        failed window would have panicked at, and nothing new appeared in the
+        log at `~/Library/Logs/caixonho`.
+      - **What that does and does not prove.** Nothing appearing in the log is
+        the *expected* result, not a weak one: the default filter records
+        `WARN` and above, so a clean startup is silent by design — checked
+        against the previous days' files, which contain only warnings. What is
+        **not** proven is what the window looked like. The process passing the
+        window-open expect is an inference from the code, not a screenshot,
+        and the visual pass belongs with the owner's other live checks.
+      - `diagnostics::start()` still runs first in `main`, before
+        `gpui_component::init` and before the world is read — the ordering that
+        comment exists to protect is untouched.
   - Paths: `crates/caixonho-gui/src/main.rs`, `crates/caixonho-gui/src/app.rs`
   - Done criteria: `main.rs` builds the world from the environment and hands it
     over; startup behaviour is **byte-for-byte what it was**, including the two
@@ -101,7 +126,21 @@
   - Verification: `cargo run -p caixonho-gui`, and the log in the platform's
     log directory
 
-- [ ] 2.3 A world a test can write, in one line [dispatch: main]
+- [x] 2.3 A world a test can write, in one line [dispatch: main]
+      - Done in `main` (2026-08-21); used by both tests in 3.1.
+      - `World::scripted(store)` — a current-thread runtime, trust material
+        from the OS store, config paths naming nothing, and the store double
+        where the S3 adapter goes. No profile and no remembered connection: a
+        test that wants either should say so rather than inherit it.
+      - **The session is real, not `None`.** A world with no session *and* no
+        startup error is a state the application never reaches — `new` only
+        ever produces `session: None` alongside `startup_error: Some(_)` — and
+        a test standing in one would be testing a shape nobody ships.
+      - It needed one thing core did not offer: `Diagnostics` has no
+        constructor but `start()`, which opens a real log file. Added
+        `Diagnostics::without_a_log()` under the same feature gate, returning
+        `NoLocation` rather than all-`None` — because all-`None` is a fourth
+        shape `start` never returns.
   - Paths: `crates/caixonho-gui/src/app.rs`
   - Done criteria: under `#[cfg(test)]`, a constructor giving a world with a
     current-thread runtime, a session over doubles, and no profiles — so a test
@@ -111,7 +150,20 @@
 
 ## 3. The tests the seam exists for
 
-- [ ] 3.1 The wiring `XONHO-0018` left open [dispatch: main]
+- [x] 3.1 The wiring `XONHO-0018` left open [dispatch: main]
+      - Done in `main` (2026-08-21); verified: `cargo test -p caixonho-gui
+        app::tests` — 2 pass.
+      - **Both were watched failing before being believed.** These tests were
+        written after the code they cover, so passing proves nothing on its
+        own. Removing the `correct_region` call from `apply_page` fails
+        `a_page_served_from_elsewhere_corrects_that_bucket_and_no_other` and
+        leaves the other green; removing the early return fails
+        `a_page_for_a_location_already_left_corrects_nothing` and leaves the
+        first green. Each test fails for its own reason and no other, then both
+        were restored.
+      - They drive the **real view** through `apply_page`, not a delegate
+        lifted out of it — which is the half `XONHO-0018` recorded it could
+        not reach.
   - Paths: `crates/caixonho-gui/src/app.rs`
   - Done criteria: a `#[gpui::test]` that drives `apply_page` with a `Page`
     carrying `served_from: Some(region)` and asserts **that bucket's row** now

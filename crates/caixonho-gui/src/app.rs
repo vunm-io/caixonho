@@ -150,12 +150,134 @@ enum Listing {
     Loaded,
 }
 
+/// Everything `CaixonhoApp` needs from outside itself.
+///
+/// It exists so the application can be **given** its world instead of reading
+/// it. `CaixonhoApp::new` used to build the runtime, resolve `~/.aws`, prepare
+/// trust material and read the connections file inline, which meant a test
+/// that constructed a window read the developer's own machine and answered
+/// differently on each one (`XONHO-0015`).
+///
+/// The runtime lives here rather than being built in the constructor because
+/// it must outlive every spawn, and a caller that has to remember that
+/// separately will one day not.
+pub(crate) struct World {
+    pub(crate) runtime: tokio::runtime::Runtime,
+    pub(crate) session: Option<Session>,
+    /// Set when trust material or the runtime could not be prepared at all.
+    pub(crate) startup_error: Option<Error>,
+    pub(crate) profiles: Vec<Profile>,
+    pub(crate) stored: Vec<StoredCredential>,
+    pub(crate) connections_error: Option<Error>,
+}
+
+impl World {
+    /// Read from the machine this process is running on. What `main` calls,
+    /// and the only place in this crate that touches the environment.
+    pub(crate) fn from_env() -> Self {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_name("caixonho-aws")
+            .build()
+            .expect("failed to start the tokio runtime");
+
+        let paths = ConfigPaths::from_env();
+        let profiles = caixonho_core::discover(&paths).unwrap_or_default();
+
+        // Trust material is prepared once, at startup: it belongs to the
+        // process, not to a profile, and failing here is not a connection
+        // failure to be shown against whichever profile happens to be first.
+        let (session, startup_error) = match HttpStack::from_env() {
+            Ok(http) => (
+                Some(Session::new(runtime.handle().clone(), http, paths)),
+                None,
+            ),
+            Err(error) => (None, Some(error)),
+        };
+
+        // Connections remembered from a previous run. Reading them is local
+        // and cheap — no credential is resolved and nothing is contacted, so
+        // this does not reintroduce the wait that startup just stopped paying.
+        let mut stored = Vec::new();
+        let mut connections_error = None;
+        if let Some(session) = &session {
+            match session.stored_connections() {
+                Ok(remembered) => stored = remembered,
+                // Not shown as "no connections": a machine whose connections
+                // could not be read is not a machine without any, and saying
+                // the second invites entering a credential on top of one that
+                // is already there.
+                Err(error) => connections_error = Some(error),
+            }
+        }
+
+        Self {
+            runtime,
+            session,
+            startup_error,
+            profiles,
+            stored,
+            connections_error,
+        }
+    }
+}
+
+#[cfg(test)]
+impl World {
+    /// A world with no machine in it.
+    ///
+    /// Every window test starts here, so it is worth being one line: a
+    /// current-thread runtime, a session whose trust material comes from the
+    /// OS store rather than from `AWS_CA_BUNDLE`, config paths that name
+    /// nothing, and `store` where the S3 adapter would be. No profile is
+    /// discovered and no connection is remembered, because a test that wants
+    /// either should say so rather than inherit it.
+    ///
+    /// The session is real, not `None`. A world with no session and no startup
+    /// error is a state the application never reaches in production, and a
+    /// test standing in one is testing a shape nobody ships.
+    pub(crate) fn scripted(store: std::sync::Arc<dyn caixonho_core::ObjectStore>) -> Self {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a current-thread runtime");
+        let session = Session::new(
+            runtime.handle().clone(),
+            HttpStack::with_ca_bundle(None).expect("the OS trust store alone builds a client"),
+            ConfigPaths {
+                config: None,
+                credentials: None,
+            },
+        );
+        let credentials = session.credentials_changed("test");
+        session.install_object_store(store, credentials);
+
+        Self {
+            runtime,
+            session: Some(session),
+            startup_error: None,
+            profiles: Vec::new(),
+            stored: Vec::new(),
+            connections_error: None,
+        }
+    }
+}
+
 impl CaixonhoApp {
     pub(crate) fn new(
         diagnostics: Diagnostics,
+        world: World,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let World {
+            runtime,
+            session,
+            startup_error,
+            profiles,
+            stored,
+            connections_error,
+        } = world;
         let table = cx.new(|cx| TableState::new(BucketsDelegate::new(), window, cx));
         let objects = cx.new(|cx| TableState::new(ObjectsDelegate::new(), window, cx));
         let path = cx.new(|cx| InputState::new(window, cx).placeholder("s3://bucket/prefix/"));
@@ -210,42 +332,6 @@ impl CaixonhoApp {
             }
         })
         .detach();
-
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .thread_name("caixonho-aws")
-            .build()
-            .expect("failed to start the tokio runtime");
-
-        let paths = ConfigPaths::from_env();
-        let profiles = caixonho_core::discover(&paths).unwrap_or_default();
-
-        // Trust material is prepared once, at startup: it belongs to the
-        // process, not to a profile, and failing here is not a connection
-        // failure to be shown against whichever profile happens to be first.
-        let (session, startup_error) = match HttpStack::from_env() {
-            Ok(http) => (
-                Some(Session::new(runtime.handle().clone(), http, paths)),
-                None,
-            ),
-            Err(error) => (None, Some(error)),
-        };
-
-        // Connections remembered from a previous run. Reading them is local
-        // and cheap — no credential is resolved and nothing is contacted, so
-        // this does not reintroduce the wait that startup just stopped paying.
-        let mut stored = Vec::new();
-        let mut connections_error = None;
-        if let Some(session) = &session {
-            match session.stored_connections() {
-                Ok(remembered) => stored = remembered,
-                // Not shown as "no connections": a machine whose connections
-                // could not be read is not a machine without any, and saying
-                // the second invites entering a credential on top of one that
-                // is already there.
-                Err(error) => connections_error = Some(error),
-            }
-        }
 
         // The table reads observations straight from the session, and reports
         // the rows on screen back to it for probing.
@@ -1720,5 +1806,122 @@ impl Render for CaixonhoApp {
                             ),
                     ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! What the window does with what arrives, driven through the real view
+    //! rather than through a delegate lifted out of it — which is the half
+    //! `XONHO-0018` could not reach and `XONHO-0015` exists to open.
+
+    use super::*;
+    use caixonho_core::store::double::StoreDouble;
+    use caixonho_core::{Region, types::Prefix as CorePrefix};
+    use gpui::TestAppContext;
+    use std::sync::Arc;
+
+    fn bucket(name: &str) -> Bucket {
+        Bucket {
+            name: name.to_owned(),
+            created: None,
+            region: Region::Unknown,
+            kind: BucketKind::General,
+        }
+    }
+
+    /// A window over a session that reads from a script, holding two buckets
+    /// and looking inside the first.
+    fn looking_at<'a>(
+        cx: &'a mut TestAppContext,
+        bucket_name: &str,
+    ) -> (gpui::Entity<CaixonhoApp>, &'a mut gpui::VisualTestContext) {
+        cx.update(gpui_component::init);
+        let store: Arc<dyn caixonho_core::ObjectStore> = Arc::new(StoreDouble::allows_listing());
+        let (app, cx) = cx.add_window_view(|window, cx| {
+            CaixonhoApp::new(
+                Diagnostics::without_a_log(),
+                World::scripted(store),
+                window,
+                cx,
+            )
+        });
+        let looking = Location::at(bucket_name.to_owned(), CorePrefix::root());
+        app.update(cx, |app, cx| {
+            app.table.update(cx, |state, _| {
+                let delegate = state.delegate_mut();
+                delegate.rows = vec![bucket("reports"), bucket("logs")];
+                delegate.shown = vec![0, 1];
+            });
+            app.location = Some(looking);
+            cx.notify();
+        });
+        (app, cx)
+    }
+
+    fn region_of(
+        app: &gpui::Entity<CaixonhoApp>,
+        cx: &mut gpui::VisualTestContext,
+        row: usize,
+    ) -> Region {
+        app.read_with(cx, |app, cx| {
+            app.table.read(cx).delegate().rows[row].region.clone()
+        })
+    }
+
+    #[gpui::test]
+    fn a_page_served_from_elsewhere_corrects_that_bucket_and_no_other(cx: &mut TestAppContext) {
+        // `correct_region` has had a test since XONHO-0018. What had not been
+        // tested is that `apply_page` calls it, with the bucket the page was
+        // for — which is the half a user would have seen go wrong.
+        let (app, cx) = looking_at(cx, "reports");
+
+        app.update(cx, |app, cx| {
+            app.apply_page(
+                Location::at("reports".to_owned(), CorePrefix::root()),
+                Ok(Page {
+                    served_from: Some(Region::Known("us-west-2".to_owned())),
+                    ..Page::default()
+                }),
+                cx,
+            );
+        });
+
+        assert_eq!(
+            region_of(&app, cx, 0),
+            Region::Known("us-west-2".to_owned()),
+            "the bucket the page was for now reports the region that served it"
+        );
+        assert_eq!(
+            region_of(&app, cx, 1),
+            Region::Unknown,
+            "and the bucket it was not for is untouched"
+        );
+    }
+
+    #[gpui::test]
+    fn a_page_for_a_location_already_left_corrects_nothing(cx: &mut TestAppContext) {
+        // `apply_page` returns early for a page nobody is looking at. Without
+        // a test for it, a version that dropped the early return would pass
+        // everything else — and would correct a row from a read the user had
+        // already navigated away from.
+        let (app, cx) = looking_at(cx, "reports");
+
+        app.update(cx, |app, cx| {
+            app.apply_page(
+                Location::at("logs".to_owned(), CorePrefix::root()),
+                Ok(Page {
+                    served_from: Some(Region::Known("eu-west-1".to_owned())),
+                    ..Page::default()
+                }),
+                cx,
+            );
+        });
+
+        assert_eq!(
+            region_of(&app, cx, 1),
+            Region::Unknown,
+            "a page for a screen nobody is on changes nothing"
+        );
     }
 }

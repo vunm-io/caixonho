@@ -33,7 +33,9 @@
 //! Off by default, and not part of what this crate ships. Turning it on
 //! exposes exactly two of the doubles this crate already uses for its own
 //! tests: [`store::double::StoreDouble`], and [`Session::install_object_store`]
-//! to put one where a real connection's S3 adapter would go.
+//! to put one where a real connection's S3 adapter would go. It also adds
+//! [`Diagnostics::without_a_log`], because a frontend cannot construct its
+//! window without a diagnostics handle and a test has no log to name.
 //!
 //! Deliberately only those two. The keychain and connections-file injectors
 //! stay `pub(crate)`: a frontend is handed the connections it should show
