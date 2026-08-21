@@ -92,3 +92,23 @@
 - [ ] 6.3 [dispatch: main] Screenshots of every state for the owner to judge
       against `docs/design-language.md`, and the blurred-window comparison the
       design deferred.
+      - **2026-08-21: what blocks this, checked rather than assumed.** The
+        obvious automation exists and is not the obstacle. `gpui` really does
+        render offscreen — `HeadlessAppContext::capture_screenshot` calls
+        `Window::render_to_image` (`gpui/src/window.rs:2430`) and returns an
+        `RgbaImage`, and `gpui_platform::current_headless_renderer()` supplies
+        a Metal renderer for it. Two conditions come with it: the factory is
+        behind `gpui_platform`'s `test-support` feature, which this workspace
+        does not enable, and it answers `Some` only on macOS — `None`
+        everywhere else, so it can never be a gate on both CI targets.
+      - Neither of those is the blocker. The blocker is that a screenshot is
+        only worth judging if it is of the **real** view, and there is no seam
+        for building one in a test yet. A test that reconstructs a fragment
+        photographs its own reconstruction: that was measured on 2026-08-20,
+        when a rebuilt fragment failed to reproduce the white-window defect it
+        was written for. **That seam is `XONHO-0015`'s subject** — the number
+        is issued and anchored, but no change is planned under it yet.
+      - So this task waits on `XONHO-0015`, or it is done by hand: the owner
+        runs the application and captures the states themselves. Nothing here
+        needs deciding again — the capability inventory is in
+        `vunm-knowledge-base/topics/gpui-capabilities.md` §Hạ tầng test.
