@@ -474,6 +474,46 @@ pub(crate) fn credential_forgotten(connection: &str, settled: Settled<'_, ()>) {
     }
 }
 
+/// One scroll event, exactly as the handler saw it, and what it decided.
+///
+/// **Temporary measurement instrumentation for `XONHO-0014`, removed by that
+/// change's task 3.2.** It is here rather than behind an `eprintln!` because
+/// two earlier rounds of this measurement produced nothing at all: the output
+/// went to stderr, the owner runs their own build from their own terminal, and
+/// the events landed in a scrollback nobody read. The whole point of the log
+/// (`XONHO-0012`) is that the record outlives the terminal that made it.
+///
+/// **Level `info`, deliberately, and it is why this must not be left in.** At
+/// `debug` it would need `CAIXONHO_LOG` set, and a measurement that silently
+/// records nothing when someone forgets a variable is the failure this is
+/// trying to stop repeating. The cost is that one flick writes dozens of
+/// lines, which is tolerable for a measurement and is not tolerable as
+/// shipped behaviour.
+///
+/// `decision` says which path the event took, which is the actual question:
+/// the suspicion on record is that the owner's mouse emits precise deltas
+/// small enough to fall under the trackpad curve's threshold and leave on the
+/// native path unboosted. That shows up here as `precise = true` with
+/// `decision = "under threshold"`.
+pub fn scroll_event(
+    dy: f32,
+    dx: f32,
+    since_previous_ms: Option<u64>,
+    precise: bool,
+    decision: &'static str,
+    multiplier: Option<f32>,
+) {
+    tracing::info!(
+        dy = f64::from(dy),
+        dx = f64::from(dx),
+        dt_ms = ?since_previous_ms,
+        precise,
+        decision,
+        multiplier = ?multiplier,
+        "scroll event"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The file itself.
 // ---------------------------------------------------------------------------
@@ -1705,6 +1745,40 @@ mod tests {
                 "caixonho-1970-01-02.002.log",
             ],
             "segment 10 sorting before segment 2 would prune the wrong file"
+        );
+    }
+
+    #[test]
+    fn a_scroll_event_is_recorded_without_anyone_raising_the_level() {
+        // `quiet()`, not `everything()`. That is the whole assertion: the
+        // owner scrolls and the data is there, with no `CAIXONHO_LOG` to
+        // remember. Two earlier rounds of this measurement produced nothing
+        // because the output needed a step nobody took, and a test that
+        // recorded at TRACE would pass while reproducing exactly that.
+        let (log, ()) = recording(quiet(), || {
+            scroll_event(-4.5, 0.0, Some(16), true, "precise under threshold", None);
+        });
+
+        assert!(log.contains("scroll event"), "not recorded at all: {log}");
+        assert!(
+            log.contains("precise under threshold"),
+            "the decision is the measurement — which path the event took is \
+             the question being asked: {log}"
+        );
+        assert!(log.contains("dt_ms"), "the interval is missing: {log}");
+        assert!(log.contains("-4.5"), "the delta is missing: {log}");
+    }
+
+    #[test]
+    fn the_first_scroll_event_reports_no_interval_rather_than_zero() {
+        let (log, ()) = recording(quiet(), || {
+            scroll_event(-4.5, 0.0, None, true, "precise under threshold", None);
+        });
+
+        assert!(
+            log.contains("dt_ms=None"),
+            "there is no interval before the first event, and a fabricated \
+             zero would sit in the data looking like a real measurement: {log}"
         );
     }
 }

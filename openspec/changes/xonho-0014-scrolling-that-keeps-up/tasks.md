@@ -7,8 +7,42 @@
 
 ## 1. Find out what the device actually sends
 
-- [ ] 1.1 [dispatch: main] Record `(dy, dt, precise?)` for every scroll event
+- [x] 1.1 [dispatch: main] Record `(dy, dt, precise?)` for every scroll event
       through the log, not through stderr.
+      - Done in `main` (2026-08-21); verified: `cargo test --workspace` green
+        (252 core + 32 window), clippy clean at `-D warnings`.
+      - `diagnostics::scroll_event` in core, called from the handler in
+        `scroll.rs`. It carries `dy`, `dx`, `dt_ms`, `precise`, `decision` and
+        `multiplier`.
+      - **`decision` is not in the task's list and is the field that answers
+        1.3.** The question is not what the events look like but which path
+        they take, and the suspicion on record — precise deltas landing under
+        the 12 px/event threshold — reads directly as `precise=true` with
+        `decision="precise under threshold"`. The four values are
+        `horizontal`, `precise under threshold`, `precise boosted`, and
+        `wheel streak`.
+      - **Logged before the handler decides anything**, because both paths
+        under suspicion `return` early: a horizontal event and a precise event
+        below the threshold were previously invisible, and those are exactly
+        the events this measurement exists to see.
+      - `dx` is logged alongside `dy` so the horizontal early-return can be
+        told apart from a vertical event rather than inferred from silence.
+      - The interval needed its own field on `ScrollAccel`. `last_wheel`
+        belongs to the streak and only a notch may move it; reusing it would
+        have made measuring the thing change the thing. `last_event` advances
+        on every event and goes out with the instrumentation.
+      - The first event of a session reports `dt_ms=None`, not zero — there is
+        no interval before the first event, and a fabricated zero would sit in
+        the data looking like a real reading. Asserted.
+      - **Level `info`, and the test asserts it at the default filter rather
+        than at TRACE.** At `debug` this would need `CAIXONHO_LOG` set, and a
+        measurement that silently records nothing when someone forgets a
+        variable is the exact failure of the two earlier rounds. A test
+        recording at `everything()` would have passed while reproducing it.
+      - Cost, stated because it is the reason 3.2 exists: one flick writes
+        dozens of `info` lines into a log bounded at 4 MiB × 5 segments, so a
+        long measurement session can push older entries out. Acceptable for a
+        deliberate measurement, not acceptable shipped.
   - Paths: `crates/caixonho-gui/src/scroll.rs`,
     `crates/caixonho-core/src/diagnostics.rs`
   - Done criteria: scrolling the window appends one line per event to the file

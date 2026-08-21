@@ -8,6 +8,7 @@
 
 use std::time::{Duration, Instant};
 
+use caixonho_core::diagnostics;
 use gpui::{Bounds, Entity, IntoElement, Pixels, ScrollWheelEvent, Styled, Window, canvas, px};
 use gpui_component::table::{TableDelegate, TableState};
 
@@ -62,9 +63,36 @@ fn trackpad_multiplier(speed: f32) -> Option<f32> {
 pub struct ScrollAccel {
     last_wheel: Option<Instant>,
     wheel_streak: f32,
+    /// When the previous scroll event of **any** kind arrived.
+    ///
+    /// Separate from `last_wheel` on purpose. That one is the streak's own
+    /// state and only a wheel notch may move it; this one has to advance on
+    /// every event — precise ones, and the horizontal ones the handler
+    /// returns early on — because the interval between events is half of what
+    /// `XONHO-0014` is trying to measure. Sharing one field would have the
+    /// measurement quietly rewrite the behaviour it is measuring.
+    ///
+    /// Temporary, with the instrumentation it exists for (task 3.2).
+    last_event: Option<Instant>,
 }
 
 impl ScrollAccel {
+    /// Milliseconds since the previous scroll event, and remember this one.
+    ///
+    /// `None` for the first event of a session, which is a real answer: there
+    /// is no interval before the first event, and reporting zero would put a
+    /// fabricated data point in the middle of a measurement.
+    ///
+    /// Temporary instrumentation for `XONHO-0014` (task 3.2 removes it).
+    fn since_previous_event(&mut self) -> Option<u64> {
+        let now = Instant::now();
+        let elapsed = self
+            .last_event
+            .map(|previous| (now - previous).as_millis().min(u128::from(u64::MAX)) as u64);
+        self.last_event = Some(now);
+        elapsed
+    }
+
     /// The multiplier for a wheel notch arriving now.
     fn wheel_multiplier(&mut self) -> f32 {
         let now = Instant::now();
@@ -103,21 +131,49 @@ pub fn accelerator<D: TableDelegate + 'static>(
                     if !phase.capture() || !bounds.contains(&event.position) {
                         return;
                     }
-                    // Horizontal scrolling keeps native behaviour.
                     let delta = event.delta.pixel_delta(line_height);
+                    let precise = event.delta.precise();
+
+                    // Measured before anything is decided, because the two
+                    // paths that return early are the ones under suspicion —
+                    // an event this handler declines to touch is exactly the
+                    // event `XONHO-0014` needs to see. Temporary; task 3.2
+                    // takes this and its `decision` argument back out.
+                    let since_previous = accel.update(cx, |accel, _| accel.since_previous_event());
+                    let report = |decision, multiplier| {
+                        diagnostics::scroll_event(
+                            f32::from(delta.y),
+                            f32::from(delta.x),
+                            since_previous,
+                            precise,
+                            decision,
+                            multiplier,
+                        );
+                    };
+
+                    // Horizontal scrolling keeps native behaviour.
                     if delta.y.abs() <= delta.x.abs() {
+                        report("horizontal", None);
                         return;
                     }
 
-                    let multiplier = if event.delta.precise() {
+                    let multiplier = if precise {
                         // Trackpad: stateless velocity curve. Under the
                         // threshold the event stays on the native path.
                         match trackpad_multiplier(f32::from(delta.y.abs())) {
-                            Some(multiplier) => multiplier,
-                            None => return,
+                            Some(multiplier) => {
+                                report("precise boosted", Some(multiplier));
+                                multiplier
+                            }
+                            None => {
+                                report("precise under threshold", None);
+                                return;
+                            }
                         }
                     } else {
-                        accel.update(cx, |accel, _| accel.wheel_multiplier())
+                        let multiplier = accel.update(cx, |accel, _| accel.wheel_multiplier());
+                        report("wheel streak", Some(multiplier));
+                        multiplier
                     };
 
                     let handle = table
