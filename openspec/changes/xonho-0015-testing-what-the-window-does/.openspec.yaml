@@ -1,0 +1,8 @@
+schema: passdown
+created: 2026-08-21
+# No spec delta on purpose. This change alters how the application is
+# assembled so that its views can be constructed in a test; it does not change
+# a single requirement in openspec/specs/. What it changes is how many of them
+# are checkable, which is a fact about this repository rather than about the
+# product.
+skip_specs: true
