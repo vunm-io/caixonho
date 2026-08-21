@@ -36,7 +36,20 @@ flume = "0.11"
 # AWS stack — XONHO-0003. Versions verified against crates.io on 2026-08-19;
 # Cargo.lock freezes the exact graph, bumps are deliberate.
 aws-config = { version = "1.10.1", features = ["sso"] }
-aws-sdk-s3 = "1.142.0"
+# `default-features = false` on purpose (XONHO-0017). The default set includes
+# `rustls` and `default-https-client`, which supply an HTTP client this
+# application never uses — every AWS client here is handed the one stack from
+# `tls.rs` explicitly. What those features actually did was pull
+# `aws-smithy-runtime/tls-rustls`, and with it the legacy hyper-0.14 /
+# rustls-0.21 client: four RUSTSEC advisories compiled into the shipped binary
+# to provide a client that was replaced at every construction site. Measured,
+# not argued — dropping them takes `cargo audit` from four vulnerabilities to
+# none. Anything added back here must be a feature this workspace uses.
+aws-sdk-s3 = { version = "1.142.0", default-features = false, features = [
+    "sigv4a",
+    "http-1x",
+    "rt-tokio",
+] }
 # Direct dependency so core can build ONE HTTP client and hand it to both the
 # config loader and the S3 client. aws-lc matches the crypto backend the SDK
 # already selects by default, so this adds no new crypto build burden.
@@ -47,7 +60,13 @@ aws-smithy-runtime-api = { version = "1.14.0", features = ["client", "http-1x"] 
 # in — so naming it here adds no crate to the graph and leaves the lockfile
 # untouched. Core only: the device flow lives behind a port, and the GUI never
 # sees an `aws-sdk-*` type (invariant 1).
-aws-sdk-ssooidc = "1.108.0"
+# `default-features = false` for the same reason as `aws-sdk-s3` above, and it
+# is the second of the two crates that were enabling the legacy TLS stack —
+# `aws-config` already declares this crate that way, so these two declarations
+# were the only ones turning it on.
+aws-sdk-ssooidc = { version = "1.108.0", default-features = false, features = [
+    "rt-tokio",
+] }
 # XONHO-0011 again, and for the same reason: all four are already in
 # `Cargo.lock`, pulled in by the AWS stack itself. They are named here because
 # the token cache is written by hand — `aws-config`'s own writer is

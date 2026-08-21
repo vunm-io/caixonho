@@ -1,6 +1,14 @@
 ## 1. Stop compiling what this application does not use
 
-- [ ] 1.1 Drop the default features of the two SDK crates [dispatch: main]
+- [x] 1.1 Drop the default features of the two SDK crates [dispatch: main]
+      - Done in `main` (2026-08-21); verified: `cargo test --workspace` 263
+        core + 36 window, clippy clean at `-D warnings`, `cargo build --release
+        -p caixonho-gui` succeeds.
+      - `aws-config` untouched, as the task says. It already declares
+        `aws-sdk-ssooidc` with `default-features = false`, so the two
+        declarations changed here were the only ones turning the legacy stack
+        on — which is why dropping them is sufficient rather than merely
+        helpful.
   - Paths: `Cargo.toml`
   - Done criteria: `aws-sdk-s3` and `aws-sdk-ssooidc` are declared with
     `default-features = false` and the features actually used named
@@ -14,7 +22,30 @@
     defaults provide is left alone rather than trimmed on a guess.
   - Verification: `cargo test --workspace`; `cargo build --release -p caixonho-gui`
 
-- [ ] 1.2 Prove the removal by measurement, and write the numbers here [dispatch: main]
+- [x] 1.2 Prove the removal by measurement, and write the numbers here [dispatch: main]
+      - Done in `main` (2026-08-21). Measured, both sides:
+
+        | | Before | After |
+        |---|---|---|
+        | `cargo audit` vulnerabilities | 4 | **0** |
+        | `cargo audit` warnings | 7 | 7 |
+        | Lockfile crates | 957 | **948** |
+        | `rustls` in build | 0.21.12, 0.23.43, 0.26.4, 0.27.9 | 0.23.43, 0.26.4, 0.27.9 |
+        | `rustls-webpki` in build | 0.101.7, 0.103.14 | **0.103.14** |
+        | `h2` in build | 0.3.27, 0.4.16 | **0.4.16** |
+        | `hyper` in build | 0.14.32, 1.11.0 | **1.11.0** |
+
+      - Every remaining version is at or above the advisories' patched
+        threshold: `rustls-webpki >= 0.103.13` and `h2 >= 0.4.16`. Checked
+        against the advisory text rather than assumed from "the old one is
+        gone".
+      - `Cargo.lock` shrank by 145 lines and gained 23. Worth stating because
+        an earlier guess in this session was that a lockfile is
+        feature-independent and would not move — it moved, and the audit
+        followed it. A partial change does **not** move it: turning off only
+        `aws-sdk-ssooidc` left the lockfile byte-identical, because
+        `aws-sdk-s3` still asked for the same features. Feature unification
+        means a subtree leaves only when the last consumer stops asking.
   - Paths: this file
   - Done criteria: recorded before and after — the `cargo audit` vulnerability
     count, the lockfile crate count, and the presence of `rustls 0.21.x`,
