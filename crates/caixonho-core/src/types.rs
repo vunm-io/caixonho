@@ -38,6 +38,23 @@ pub enum Region {
     Unknown,
 }
 
+/// Which listing a bucket came back from, and therefore what it is.
+///
+/// The kind is a record of the operation that answered, never a reading of the
+/// name. A directory bucket's name does end in `--x-s3`, and inferring from
+/// that would work until the day it did not: a name is a string the account
+/// holder chose part of, while the operation that returned the bucket is the
+/// only thing that actually knows what it returned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BucketKind {
+    /// An ordinary bucket, from the general bucket listing.
+    General,
+    /// An S3 Express One Zone directory bucket, from the directory listing.
+    /// It lives in a single zone, and reading its objects goes through a
+    /// session rather than through the caller's own credentials.
+    Directory,
+}
+
 /// One bucket as the domain sees it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bucket {
@@ -49,6 +66,48 @@ pub struct Bucket {
     pub created: Option<String>,
     /// Where the bucket lives, when known.
     pub region: Region,
+    /// Which listing this bucket came from — see [`BucketKind`].
+    pub kind: BucketKind,
+}
+
+/// What one act of listing an account produced.
+///
+/// Two operations answer "what buckets are there", and they are permitted
+/// independently. So what came back and what was refused are both facts about
+/// the same listing rather than alternatives — a `Result` alone cannot say
+/// "here are your buckets, and there is a second kind I was not allowed to ask
+/// about", which is exactly the account this type exists for.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AccountListing {
+    /// Every bucket that came back, of either kind.
+    pub buckets: Vec<Bucket>,
+    /// The listing that was refused, when one was refused and the other
+    /// answered. `None` when both answered — and when both were refused, which
+    /// is a failure rather than a partial result.
+    pub refused: Option<RefusedListing>,
+}
+
+impl AccountListing {
+    /// A listing where nothing was refused.
+    pub fn complete(buckets: Vec<Bucket>) -> Self {
+        Self {
+            buckets,
+            refused: None,
+        }
+    }
+}
+
+/// A listing the caller was not allowed to make.
+///
+/// Names the action rather than describing the refusal, because the action is
+/// the one thing the user can act on: it is what they ask for, verbatim, from
+/// whoever grants permissions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefusedListing {
+    /// Which kind of bucket the refused listing would have returned.
+    pub kind: BucketKind,
+    /// The IAM action it required.
+    pub action: &'static str,
 }
 
 /// How the bucket list has been narrowed by region.
@@ -370,6 +429,7 @@ mod tests {
             name: name.to_owned(),
             created: None,
             region,
+            kind: BucketKind::General,
         }
     }
 

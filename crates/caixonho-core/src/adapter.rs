@@ -5,7 +5,7 @@
 //! already been through the classifier — so the layers above never see an
 //! `SdkError`, and never have to parse a string to know what happened.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use async_trait::async_trait;
@@ -24,10 +24,28 @@ use crate::connection::Connection;
 use crate::error::{Error, Result};
 use crate::listing;
 use crate::store::ObjectStore;
-use crate::types::{Bucket, Cursor, Location, Object, Page, Region};
+use crate::types::{
+    AccountListing, Bucket, BucketKind, Cursor, Location, Object, Page, RefusedListing, Region,
+};
 
 /// The IAM action a bucket listing needs, named in denial messages.
 const LIST_BUCKETS_ACTION: &str = "s3:ListAllMyBuckets";
+
+/// What the directory listing requires, which is not the same permission.
+///
+/// Quoted from `aws-sdk-s3`'s own documentation for the operation rather than
+/// recalled: directory buckets are governed by `s3express:*`, and telling
+/// someone to obtain `s3:ListAllMyBuckets` when this is what was refused costs
+/// them a request to whoever grants permissions, and the wait for it.
+const LIST_DIRECTORY_BUCKETS_ACTION: &str = "s3express:ListAllMyDirectoryBuckets";
+
+/// What reading a directory bucket requires, whatever the read is.
+///
+/// Objects in a directory bucket are reached with a session, not with the
+/// caller's own credentials, so a refusal almost always lands on obtaining the
+/// session rather than on the listing that wanted it. Reporting `s3:ListBucket`
+/// there sends the user to ask for a permission that would change nothing.
+const SESSION_ACTION: &str = "s3express:CreateSession";
 
 /// How many buckets to ask for per page.
 ///
@@ -73,6 +91,19 @@ pub struct S3ObjectStore {
     regional: Arc<Mutex<HashMap<String, Client>>>,
     profile: String,
     endpoint: String,
+    /// Which of this connection's buckets the directory listing returned.
+    ///
+    /// Remembered, not inferred: the operation that returned a bucket is what
+    /// knows its kind, and the alternative — reading the `--x-s3` suffix off
+    /// the name — is a guess about a string the account holder chose part of.
+    /// A bucket opened by name without a listing is simply absent from here,
+    /// and then this connection genuinely does not know.
+    directory: Arc<Mutex<HashSet<String>>>,
+    /// The region this connection was opened in. Kept because a directory
+    /// bucket that states no region of its own is in this one, and "the
+    /// region we asked in" has to be answerable without asking the SDK for a
+    /// value it treats as optional.
+    region: String,
     sso_session: Option<String>,
 }
 
@@ -103,10 +134,77 @@ impl S3ObjectStore {
             client: Client::new(&config),
             config,
             regional: Arc::default(),
+            directory: Arc::default(),
             profile: profile.to_owned(),
             endpoint,
+            region: region.to_owned(),
             sso_session: sso_session.map(ToOwned::to_owned),
         }
+    }
+
+    /// The buckets the general listing returns, which is not all of them.
+    async fn general_buckets(&self) -> Result<Vec<Bucket>> {
+        match self.buckets_with_page_size(true).await {
+            // The page size is an optimisation for one implementation, and
+            // one that another rejects outright. Asked, refused, asked again
+            // without it — which is finding out what an endpoint implements
+            // by asking, exactly as `ADR-0002` finds out what a credential
+            // may do. Branching on which vendor the endpoint belongs to
+            // would be the same mistake one layer down.
+            Err(Error::NotImplemented { .. }) => self.buckets_with_page_size(false).await,
+            other => other,
+        }
+    }
+
+    /// Whether this connection is one that can hold directory buckets at all.
+    ///
+    /// Directory buckets are an AWS construct. A connection addressing an
+    /// S3-compatible service cannot have them, and asking earns a
+    /// `NotImplemented` this application would then have to explain away — a
+    /// failure it created by asking a question that could not apply. The
+    /// endpoint is what distinguishes the two, and it is already known here.
+    fn offers_directory_buckets(&self) -> bool {
+        self.config.endpoint_url().is_none()
+    }
+
+    /// The account's directory buckets, which the general listing never
+    /// returns.
+    ///
+    /// Every page, because a partial account presented as the whole one is a
+    /// lie the user cannot see. The SDK routes this to the regional control
+    /// plane and signs it; nothing here names an endpoint.
+    async fn directory_buckets(&self) -> Result<Vec<Bucket>> {
+        if !self.offers_directory_buckets() {
+            return Ok(Vec::new());
+        }
+
+        let mut pages = self.client.list_directory_buckets().into_paginator().send();
+        let mut buckets = Vec::new();
+
+        while let Some(page) = pages.next().await {
+            let page = page.map_err(|error| {
+                classify(
+                    &SdkFailure::from_sdk(&error),
+                    &self.call(LIST_DIRECTORY_BUCKETS_ACTION, &self.endpoint),
+                )
+            })?;
+
+            let mut known = self.directory.lock().expect("not poisoned");
+            buckets.extend(page.buckets().iter().map(|bucket| {
+                let mapped = Bucket {
+                    name: bucket.name().unwrap_or_default().to_owned(),
+                    created: bucket
+                        .creation_date()
+                        .and_then(|date| date.fmt(DateTimeFormat::DateTime).ok()),
+                    region: directory_bucket_region(bucket.bucket_arn(), &self.region),
+                    kind: BucketKind::Directory,
+                };
+                known.insert(mapped.name.clone());
+                mapped
+            }));
+        }
+
+        Ok(buckets)
     }
 
     /// The client a request about `region` has to go through.
@@ -152,6 +250,20 @@ impl S3ObjectStore {
         }
     }
 
+    /// What a read of `bucket` required, which depends on what the bucket is.
+    fn read_action(&self, bucket: &str) -> &'static str {
+        if self
+            .directory
+            .lock()
+            .expect("not poisoned")
+            .contains(bucket)
+        {
+            SESSION_ACTION
+        } else {
+            LIST_BUCKET_ACTION
+        }
+    }
+
     /// The context a failure needs to name what the user must fix.
     fn call<'a>(&'a self, iam_action: &'static str, endpoint: &'a str) -> CallContext<'a> {
         CallContext {
@@ -165,17 +277,14 @@ impl S3ObjectStore {
 
 #[async_trait]
 impl ObjectStore for S3ObjectStore {
-    async fn list_buckets(&self) -> Result<Vec<Bucket>> {
-        match self.buckets_with_page_size(true).await {
-            // The page size is an optimisation for one implementation, and
-            // one that another rejects outright. Asked, refused, asked again
-            // without it — which is finding out what an endpoint implements
-            // by asking, exactly as `ADR-0002` finds out what a credential
-            // may do. Branching on which vendor the endpoint belongs to
-            // would be the same mistake one layer down.
-            Err(Error::NotImplemented { .. }) => self.buckets_with_page_size(false).await,
-            other => other,
-        }
+    async fn list_buckets(&self) -> Result<AccountListing> {
+        // Both at once. They are independent requests to different endpoints,
+        // so the pair costs what the slower one costs; one after the other
+        // would double the latency of the most common screen in the
+        // application to no purpose.
+        let (general, directory) = tokio::join!(self.general_buckets(), self.directory_buckets());
+
+        combine(general, directory)
     }
 
     async fn probe_list(&self, scope: &Scope, region: &Region) -> Result<()> {
@@ -192,7 +301,10 @@ impl ObjectStore for S3ObjectStore {
                 // `capability::observation_for` decides what it is evidence of.
                 classify(
                     &SdkFailure::from_sdk(&error),
-                    &self.call(LIST_BUCKET_ACTION, &self.endpoint_for(region)),
+                    &self.call(
+                        self.read_action(scope.bucket_name()),
+                        &self.endpoint_for(region),
+                    ),
                 )
             })?;
 
@@ -209,7 +321,7 @@ impl ObjectStore for S3ObjectStore {
             .map_err(|error| {
                 classify(
                     &SdkFailure::from_sdk(&error),
-                    &self.call(LIST_BUCKET_ACTION, &self.endpoint),
+                    &self.call(self.read_action(&location.bucket), &self.endpoint),
                 )
             })?;
 
@@ -378,7 +490,80 @@ fn map_bucket(bucket: &SdkBucket) -> Bucket {
             Some(region) if !region.is_empty() => Region::Known(region.to_owned()),
             _ => Region::Unknown,
         },
+        kind: BucketKind::General,
     }
+}
+
+/// What the two listings, together, mean.
+///
+/// A free function on purpose: this is the whole policy of the change, and
+/// keeping it out of the async call makes every case above assertable without
+/// a network.
+fn combine(general: Result<Vec<Bucket>>, directory: Result<Vec<Bucket>>) -> Result<AccountListing> {
+    match (general, directory) {
+        (Ok(mut general), Ok(directory)) => {
+            general.extend(directory);
+            Ok(AccountListing::complete(general))
+        }
+        (Ok(buckets), Err(error)) => partial(buckets, BucketKind::Directory, error),
+        (Err(error), Ok(buckets)) => partial(buckets, BucketKind::General, error),
+        // Both refused is a refusal, not a partial result. The general
+        // listing's cause is the one reported: it is the question the user
+        // thinks they asked.
+        (Err(general), Err(_)) => Err(general),
+    }
+}
+
+/// One listing answered and the other did not.
+///
+/// Only an authorization denial makes this a partial result. A denial is a
+/// durable fact about these credentials, and the buckets that did come back
+/// are still true. Anything else — an unreachable network, an expired session
+/// — is a condition of the moment that applies to both calls equally, and
+/// presenting half an account as though it were whole would hide it behind
+/// buckets that happen to have arrived first.
+fn partial(buckets: Vec<Bucket>, kind: BucketKind, error: Error) -> Result<AccountListing> {
+    match error {
+        // The action comes from the error rather than from the caller, so what
+        // is reported is what the classifier decided the call required.
+        Error::AccessDenied { iam_action } => Ok(AccountListing {
+            buckets,
+            refused: Some(RefusedListing {
+                kind,
+                action: iam_action,
+            }),
+        }),
+        other => Err(other),
+    }
+}
+
+/// The region a directory bucket lives in.
+///
+/// An ARN states the bucket's region as fact, whereas the listing region is an
+/// assumption that happens to hold. A directory bucket that exists is always in
+/// a region, so an absent, malformed, or blank-region ARN falls back to the
+/// region the listing was made against rather than leaving the bucket unknown.
+fn directory_bucket_region(arn: Option<&str>, listing_region: &str) -> Region {
+    let region = arn
+        .and_then(|arn| {
+            let mut parts = arn.split(':');
+            if parts.next()? != "arn" {
+                return None;
+            }
+            let _partition = parts.next()?;
+            let _service = parts.next()?;
+            let region = parts.next()?.trim();
+            let _account = parts.next()?;
+            let _resource = parts.next()?;
+            if region.is_empty() {
+                None
+            } else {
+                Some(region)
+            }
+        })
+        .unwrap_or(listing_region);
+
+    Region::Known(region.to_owned())
 }
 
 #[cfg(test)]
@@ -680,6 +865,219 @@ mod tests {
         );
     }
 
+    fn a_bucket(name: &str, kind: BucketKind) -> Bucket {
+        Bucket {
+            name: name.to_owned(),
+            created: None,
+            region: Region::Known(CONNECTION_REGION.to_owned()),
+            kind,
+        }
+    }
+
+    fn denied(action: &'static str) -> Error {
+        Error::AccessDenied { iam_action: action }
+    }
+
+    #[test]
+    fn both_listings_answering_make_one_list() {
+        let listing = combine(
+            Ok(vec![a_bucket("logs", BucketKind::General)]),
+            Ok(vec![a_bucket(
+                "fast--apse1-az1--x-s3",
+                BucketKind::Directory,
+            )]),
+        )
+        .expect("nothing was refused");
+
+        assert_eq!(listing.buckets.len(), 2);
+        assert!(listing.refused.is_none());
+    }
+
+    #[test]
+    fn the_general_listing_being_refused_keeps_the_directory_buckets() {
+        // The account this change exists for: no permission to list ordinary
+        // buckets, eight directory buckets that are perfectly visible.
+        let listing = combine(
+            Err(denied(LIST_BUCKETS_ACTION)),
+            Ok(vec![a_bucket(
+                "fast--apse1-az1--x-s3",
+                BucketKind::Directory,
+            )]),
+        )
+        .expect("a refusal of one listing is not a failure of both");
+
+        assert_eq!(listing.buckets.len(), 1, "what came back is still true");
+        let refused = listing.refused.expect("the refusal must be stated");
+        assert_eq!(refused.kind, BucketKind::General);
+        assert_eq!(
+            refused.action, LIST_BUCKETS_ACTION,
+            "the action reported is the one the refused call required"
+        );
+    }
+
+    #[test]
+    fn the_directory_listing_being_refused_keeps_the_general_buckets() {
+        let listing = combine(
+            Ok(vec![a_bucket("logs", BucketKind::General)]),
+            Err(denied(LIST_DIRECTORY_BUCKETS_ACTION)),
+        )
+        .expect("the mirror of the case above");
+
+        assert_eq!(listing.buckets.len(), 1);
+        let refused = listing.refused.expect("the refusal must be stated");
+        assert_eq!(refused.kind, BucketKind::Directory);
+        assert_eq!(
+            refused.action, LIST_DIRECTORY_BUCKETS_ACTION,
+            "never s3:ListAllMyBuckets — that is a different permission, and \
+             asking for the wrong one costs a round trip through whoever grants it"
+        );
+    }
+
+    #[test]
+    fn both_refused_is_a_refusal_not_an_empty_account() {
+        let error = combine(
+            Err(denied(LIST_BUCKETS_ACTION)),
+            Err(denied(LIST_DIRECTORY_BUCKETS_ACTION)),
+        )
+        .expect_err("nothing was listed and the user may not list anything");
+
+        assert!(
+            matches!(error, Error::AccessDenied { iam_action } if iam_action == LIST_BUCKETS_ACTION),
+            "the general listing is the question the user thinks they asked"
+        );
+    }
+
+    #[test]
+    fn a_failure_that_is_not_a_denial_fails_the_whole_listing() {
+        // A network that is down applies to both calls. Presenting the half
+        // that happened to arrive as the whole account would hide it.
+        let error = combine(
+            Ok(vec![a_bucket("logs", BucketKind::General)]),
+            Err(Error::Network {
+                detail: "the control plane could not be reached".to_owned(),
+            }),
+        )
+        .expect_err("a transient failure is not a partial result");
+
+        assert!(matches!(error, Error::Network { .. }));
+    }
+
+    /// What a real refusal of a directory bucket looks like, end to end.
+    ///
+    /// `#[ignore]`d: it needs an account, a directory bucket, and a permission
+    /// the caller does not have. It exists because the shape of this failure
+    /// could not be reasoned out — the session is obtained inside the SDK's
+    /// auth scheme, so what reaches us is whatever that resolver left in the
+    /// chain, and guessing at it is how a classifier ends up matching nothing.
+    ///
+    /// It lists **through the same store** before reading, because that is the
+    /// second defect this found: the knowledge of which buckets are directory
+    /// buckets lives on the store that listed them, and a store built for the
+    /// listing and dropped takes it away, leaving the read to name the wrong
+    /// permission.
+    ///
+    /// ```text
+    /// CAIXONHO_PROFILE=<profile> CAIXONHO_DIRECTORY_BUCKET=<name> \
+    ///   cargo test -p caixonho-core this_machine_opening -- --ignored --nocapture
+    /// ```
+    #[tokio::test]
+    #[ignore = "needs a real directory bucket the caller may not open"]
+    async fn this_machine_opening_a_directory_bucket() {
+        let profile = std::env::var("CAIXONHO_PROFILE").expect("CAIXONHO_PROFILE");
+        let bucket = std::env::var("CAIXONHO_DIRECTORY_BUCKET").expect("CAIXONHO_DIRECTORY_BUCKET");
+
+        let config = aws_config::defaults(BehaviorVersion::latest())
+            .profile_name(&profile)
+            .load()
+            .await;
+        let region = config
+            .region()
+            .map(|region| region.to_string())
+            .expect("the profile states a region");
+        let store = S3ObjectStore::over(config, &profile, &region, None);
+
+        let listing = store.list_buckets().await.expect("the account lists");
+        println!(
+            "listed {} buckets, {} of them directory",
+            listing.buckets.len(),
+            listing
+                .buckets
+                .iter()
+                .filter(|bucket| bucket.kind == BucketKind::Directory)
+                .count()
+        );
+
+        let answer = store.list_objects(&Location::bucket(&bucket), None).await;
+
+        match answer {
+            Ok(_) => println!("ALLOWED — this bucket opens, so it proves nothing here"),
+            Err(cause) => {
+                println!("classified as: {cause:?}");
+
+                match cause {
+                    Error::AccessDenied { iam_action } => assert_eq!(
+                        iam_action, SESSION_ACTION,
+                        "reading a directory bucket is refused at the session, and naming any \
+                         other permission sends the user to ask for one that changes nothing"
+                    ),
+                    other => panic!(
+                        "expected a denial the user can act on, got {other:?} — this is the run \
+                         that caught it arriving as a mystery"
+                    ),
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_custom_endpoint_is_never_asked_for_directory_buckets() {
+        // The HTTP client refuses everything, so the call returning an empty
+        // list *is* the assertion that nothing was sent. A guard that merely
+        // looked right would fail here.
+        let config = SdkConfig::builder()
+            .behavior_version(BehaviorVersion::latest())
+            .region(SdkRegion::new(CONNECTION_REGION))
+            .endpoint_url("https://object-store.example.invalid")
+            .credentials_provider(SharedCredentialsProvider::new(test_credentials()))
+            .identity_cache(IdentityCache::lazy().build())
+            .http_client(RefusingHttpClient)
+            .build();
+        let store = S3ObjectStore::over(config, "work", CONNECTION_REGION, None);
+
+        assert!(
+            !store.offers_directory_buckets(),
+            "an S3-compatible service cannot hold directory buckets"
+        );
+        assert_eq!(
+            store
+                .directory_buckets()
+                .await
+                .expect("asking nothing cannot fail"),
+            Vec::new(),
+            "nothing was sent, so there is nothing to report and no error to \
+             explain away"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_aws_connection_is_asked_for_directory_buckets() {
+        // The mirror of the test above, and the reason it is not vacuous: on a
+        // connection with no custom endpoint the call is issued, so the
+        // refusing client turns it into a failure rather than an empty list.
+        let store = S3ObjectStore::over(
+            probing_config(&RecordingIdentityCache::default()),
+            "work",
+            CONNECTION_REGION,
+            None,
+        );
+
+        assert!(store.offers_directory_buckets());
+        assert!(
+            store.directory_buckets().await.is_err(),
+            "the request was actually issued"
+        );
+    }
+
     #[test]
     fn a_probe_failure_names_the_host_the_request_was_sent_to() {
         let store = store();
@@ -837,5 +1235,62 @@ mod tests {
         let sdk = SdkBucket::builder().name("logs").bucket_region("").build();
 
         assert_eq!(map_bucket(&sdk).region, Region::Unknown);
+    }
+
+    #[test]
+    fn a_well_formed_arn_yields_the_region_named_in_the_arn() {
+        let arn = "arn:aws:s3express:ap-southeast-1:123456789012:bucket/example--usw2-az1--x-s3";
+
+        assert_eq!(
+            directory_bucket_region(Some(arn), "us-east-1"),
+            Region::Known("ap-southeast-1".to_owned()),
+            "the ARN states the bucket's region as fact"
+        );
+    }
+
+    #[test]
+    fn no_arn_yields_the_region_the_listing_was_made_against() {
+        assert_eq!(
+            directory_bucket_region(None, "us-east-1"),
+            Region::Known("us-east-1".to_owned()),
+            "without an ARN, the listing region is the only evidence"
+        );
+    }
+
+    #[test]
+    fn a_malformed_arn_yields_the_listing_region_never_a_fragment() {
+        let malformed_examples = [
+            "not-an-arn",
+            "arn",
+            "arn:aws",
+            "arn:aws:s3express",
+            "arn:aws:s3express:ap-southeast-1",
+            "arn:aws:s3express:ap-southeast-1:123456789012",
+            "something:else:entirely:here:123:bucket/foo",
+        ];
+
+        for malformed in malformed_examples {
+            assert_eq!(
+                directory_bucket_region(Some(malformed), "us-east-1"),
+                Region::Known("us-east-1".to_owned()),
+                "malformed ARN {malformed:?} must fall back to listing region"
+            );
+        }
+    }
+
+    #[test]
+    fn an_arn_whose_region_field_is_empty_yields_the_listing_region() {
+        let blank_region_arns = [
+            "arn:aws:s3express::123456789012:bucket/example--usw2-az1--x-s3",
+            "arn:aws:s3express:   :123456789012:bucket/example--usw2-az1--x-s3",
+        ];
+
+        for arn in blank_region_arns {
+            assert_eq!(
+                directory_bucket_region(Some(arn), "us-east-1"),
+                Region::Known("us-east-1".to_owned()),
+                "empty region in {arn:?} must fall back to listing region"
+            );
+        }
     }
 }

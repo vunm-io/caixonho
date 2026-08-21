@@ -324,7 +324,7 @@ impl Session {
             // that disagrees with the screen is worse than none.
             let outcome = match session.list_buckets(id, &source).await {
                 Ok(buckets) => {
-                    diagnostics::listing_settled(id, source.name(), Ok(buckets.len()));
+                    diagnostics::listing_settled(id, source.name(), Ok(buckets.buckets.len()));
                     Outcome::Loaded(buckets)
                 }
                 Err(error) => {
@@ -388,9 +388,25 @@ impl Session {
         &self,
         id: ConnectionId,
         source: &ConnectionSource,
-    ) -> Result<Vec<crate::Bucket>> {
-        let connection = self.open(id, source.clone()).await?;
-        S3ObjectStore::new(&connection).list_buckets().await
+    ) -> Result<crate::types::AccountListing> {
+        // Through the store `open` installs, never a second one built here.
+        // The listing is where this connection learns which of its buckets are
+        // directory buckets, and a store dropped at the end of this line takes
+        // that with it — leaving the read of a location to report the wrong
+        // permission, which is exactly what it did.
+        self.open(id, source.clone()).await?;
+        let store = self
+            .store
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        match store {
+            Some(store) => store.list_buckets().await,
+            None => Err(crate::error::Error::MissingConfiguration {
+                profile: None,
+                detail: "no connection is open to list through".into(),
+            }),
+        }
     }
 
     /// Save a stored credential, off the caller's thread.

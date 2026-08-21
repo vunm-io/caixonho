@@ -67,6 +67,6 @@ pub use sso_adapter::SsoOidcSignIn;
 pub use store::ObjectStore;
 pub use tls::HttpStack;
 pub use types::{
-    Bucket, ConnectionId, Cursor, Folder, Location, Object, Page, Prefix, Profile, Region,
-    RegionChoice, region_choices,
+    AccountListing, Bucket, BucketKind, ConnectionId, Cursor, Folder, Location, Object, Page,
+    Prefix, Profile, RefusedListing, Region, RegionChoice, region_choices,
 };

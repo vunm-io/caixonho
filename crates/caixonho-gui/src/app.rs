@@ -512,8 +512,8 @@ impl CaixonhoApp {
             return; // Stale: a late answer from a profile the user left.
         }
         match self.outcome.state() {
-            Outcome::Loaded(buckets) => {
-                let buckets = buckets.clone();
+            Outcome::Loaded(listing) => {
+                let buckets = listing.buckets.clone();
                 if let Some(index) = self.active_profile {
                     self.unavailable.remove(&index);
                 }
@@ -1512,7 +1512,7 @@ impl CaixonhoApp {
                 let panel = self.failure_panel_from(rendered, error, cx);
                 panel.into_any_element()
             }
-            Outcome::Loaded(buckets) if buckets.is_empty() => empty_state(
+            Outcome::Loaded(listing) if listing.buckets.is_empty() => empty_state(
                 IconName::Folder,
                 "This account has no buckets.",
                 "The listing succeeded — there is simply nothing in it yet.",
@@ -1552,11 +1552,11 @@ impl Render for CaixonhoApp {
         let status: SharedString = match (self.active_profile, self.outcome.state()) {
             (None, _) => "".into(),
             (Some(_), Outcome::Loading) => "Listing buckets…".into(),
-            (Some(_), Outcome::Loaded(buckets)) => {
+            (Some(_), Outcome::Loaded(listing)) => {
                 // Says both numbers while a region is chosen: reporting the
                 // account's total beside a narrowed table reads as rows lost.
                 let shown = self.table.read(cx).delegate().shown.len();
-                let total = buckets.len();
+                let total = listing.buckets.len();
                 if shown == total {
                     format!("{total} buckets").into()
                 } else {

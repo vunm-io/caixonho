@@ -178,6 +178,16 @@ const DENIED_CODES: &[&str] = &[
     "unauthorizedoperation",
 ];
 
+/// A denial that arrives with no code of its own, in the chain instead.
+///
+/// A directory bucket's session is obtained inside the SDK, before our request
+/// is dispatched, so a refusal of *that* call never becomes our response — it
+/// reaches us as a dispatch failure carrying the service error further down
+/// the chain. Measured on a real account rather than supposed: `kind:
+/// Dispatch, code: None, status: None`, chain holding `unhandled error
+/// (accessdenied)`.
+const DENIED_IN_CHAIN_MARKERS: &[&str] = &["(accessdenied)", "code: \"accessdenied\""];
+
 /// The provider chain found nothing to sign with.
 const NO_CREDENTIALS_MARKERS: &[&str] = &[
     "no credentials",
@@ -273,6 +283,14 @@ impl SdkFailure {
         markers.iter().any(|marker| self.chain.contains(marker))
     }
 
+    /// Whether this failure has no answer of its own to be judged by.
+    ///
+    /// No code and no status means the request never got a response — it fell
+    /// over on the way out. Only then is the chain the best account available.
+    fn answered_nothing(&self) -> bool {
+        self.code.is_none() && self.status.is_none()
+    }
+
     fn code_is(&self, codes: &[&str]) -> bool {
         self.code
             .as_deref()
@@ -335,7 +353,17 @@ pub(crate) fn classify(failure: &SdkFailure, call: &CallContext<'_>) -> Error {
     // 4. A real authorization refusal, and only that. The code has to say so:
     //    a bare 403 is not evidence of an authorization decision, and
     //    guessing one sends the user to edit IAM policy over a wrong key.
-    if failure.code_is(DENIED_CODES) {
+    //
+    //    Or the chain says so where there is no response to read. A call that
+    //    failed before it was ever dispatched has no code and no status of its
+    //    own, so the only account of what happened is the chain — and a
+    //    service error in there saying `accessdenied` is a decision, not a
+    //    mystery. Guarded on there being no response, because a response that
+    //    *did* arrive must be judged by its own code and never by text from
+    //    something further down.
+    if failure.code_is(DENIED_CODES)
+        || (failure.answered_nothing() && failure.chain_has(DENIED_IN_CHAIN_MARKERS))
+    {
         return Error::AccessDenied {
             iam_action: call.iam_action,
         };
@@ -465,6 +493,42 @@ mod tests {
         assert!(
             !matches!(classify(&failure, &call()), Error::AccessDenied { .. }),
             "a status alone must not be read as an authorization decision"
+        );
+    }
+
+    #[test]
+    fn a_denial_with_no_response_of_its_own_is_still_a_denial() {
+        // The exact chain a real refusal produced, copied from a run against
+        // an account that may list a directory bucket but not open it. The
+        // session is obtained inside the SDK, so this never became our
+        // response: no code, no status, and the only account of what happened
+        // is further down the chain.
+        let failure = SdkFailure::new(FailureKind::Dispatch).with_text(
+            "dispatch failure\nother\nservice error\nunhandled error (AccessDenied)\n\
+             Error { code: \"AccessDenied\", message: \"Access Denied\" }",
+        );
+
+        match classify(&failure, &call()) {
+            Error::AccessDenied { iam_action } => assert_eq!(iam_action, "s3:ListAllMyBuckets"),
+            other => panic!(
+                "expected AccessDenied, got {other:?} — a refusal the user can act on must not arrive as a mystery"
+            ),
+        }
+    }
+
+    #[test]
+    fn a_response_that_did_arrive_is_judged_by_its_own_code_not_by_its_chain() {
+        // The guard on the rule above. This request *was* answered — the
+        // service said NotImplemented — and something further down the chain
+        // mentioning a denial must not overrule the answer that came back.
+        let failure = SdkFailure::new(FailureKind::Service)
+            .with_code("NotImplemented")
+            .with_status(501)
+            .with_text("not implemented\nunhandled error (AccessDenied)");
+
+        assert!(
+            !matches!(classify(&failure, &call()), Error::AccessDenied { .. }),
+            "the service answered; its own code decides"
         );
     }
 

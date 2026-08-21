@@ -9,16 +9,17 @@
 //! restart").
 
 use crate::error::Error;
-use crate::types::{Bucket, ConnectionId};
+use crate::types::{AccountListing, ConnectionId};
 
 /// The state of one listing request.
 #[derive(Debug)]
 pub enum Outcome {
     /// Issued, nothing back yet.
     Loading,
-    /// The service answered. An empty vector is a real answer: the account
-    /// has no buckets.
-    Loaded(Vec<Bucket>),
+    /// The service answered. An empty listing is a real answer: the account
+    /// has no buckets. The listing also carries what was refused, when one of
+    /// the two listings was and the other was not.
+    Loaded(AccountListing),
     /// The call failed, with the cause already classified.
     Failed(Error),
 }
@@ -100,13 +101,14 @@ mod tests {
     //! scenarios, plus the race the design exists to make impossible.
 
     use super::*;
-    use crate::types::Region;
+    use crate::types::{Bucket, BucketKind, Region};
 
     fn bucket(name: &str) -> Bucket {
         Bucket {
             name: name.to_owned(),
             created: None,
             region: Region::Unknown,
+            kind: BucketKind::General,
         }
     }
 
@@ -116,12 +118,12 @@ mod tests {
 
         let accepted = active.accept(TaggedOutcome::new(
             ConnectionId(1),
-            Outcome::Loaded(vec![bucket("logs")]),
+            Outcome::Loaded(AccountListing::complete(vec![bucket("logs")])),
         ));
 
         assert!(accepted);
         match active.state() {
-            Outcome::Loaded(buckets) => assert_eq!(buckets.len(), 1),
+            Outcome::Loaded(listing) => assert_eq!(listing.buckets.len(), 1),
             other => panic!("expected Loaded, got {other:?}"),
         }
     }
@@ -131,13 +133,15 @@ mod tests {
         let mut active = ActiveOutcome::new(ConnectionId(1));
         active.accept(TaggedOutcome::new(
             ConnectionId(1),
-            Outcome::Loaded(vec![bucket("from-first-profile")]),
+            Outcome::Loaded(AccountListing::complete(vec![bucket("from-first-profile")])),
         ));
 
         active.switch_to(ConnectionId(2));
         let accepted = active.accept(TaggedOutcome::new(
             ConnectionId(1),
-            Outcome::Loaded(vec![bucket("late-from-first-profile")]),
+            Outcome::Loaded(AccountListing::complete(vec![bucket(
+                "late-from-first-profile",
+            )])),
         ));
 
         assert!(!accepted, "a stale outcome must not be taken");
@@ -152,7 +156,7 @@ mod tests {
         let mut active = ActiveOutcome::new(ConnectionId(1));
         active.accept(TaggedOutcome::new(
             ConnectionId(1),
-            Outcome::Loaded(vec![bucket("logs")]),
+            Outcome::Loaded(AccountListing::complete(vec![bucket("logs")])),
         ));
 
         active.switch_to(ConnectionId(2));

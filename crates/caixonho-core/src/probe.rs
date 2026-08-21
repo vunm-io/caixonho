@@ -321,7 +321,7 @@ pub(crate) mod double {
     use crate::capability::Scope;
     use crate::error::Result;
     use crate::store::ObjectStore;
-    use crate::types::{Bucket, Region};
+    use crate::types::Region;
 
     /// How long a wait may take before the test gives up and fails rather
     /// than hanging.
@@ -416,8 +416,8 @@ pub(crate) mod double {
 
     #[async_trait::async_trait]
     impl ObjectStore for HeldProbes {
-        async fn list_buckets(&self) -> Result<Vec<Bucket>> {
-            Ok(Vec::new())
+        async fn list_buckets(&self) -> Result<crate::types::AccountListing> {
+            Ok(crate::types::AccountListing::default())
         }
 
         async fn probe_list(&self, scope: &Scope, _region: &Region) -> Result<()> {
@@ -469,6 +469,7 @@ mod tests {
     use super::double::{HeldProbes, settle, until};
     use super::*;
     use crate::error::Error;
+    use crate::types::BucketKind;
 
     /// A viewport with more rows than the budget can carry at once, so the
     /// cap has something to bite on.
@@ -613,6 +614,7 @@ mod tests {
             name: "logs".to_owned(),
             created: None,
             region: Region::Known("eu-west-1".to_owned()),
+            kind: BucketKind::General,
         };
 
         let target = ProbeTarget::from(&bucket);

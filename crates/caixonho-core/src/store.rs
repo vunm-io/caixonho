@@ -9,7 +9,7 @@
 
 use crate::capability::Scope;
 use crate::error::Result;
-use crate::types::{Bucket, Cursor, Location, Page, Region};
+use crate::types::{AccountListing, Cursor, Location, Page, Region};
 
 /// Object-storage operations behind one object-safe async trait.
 ///
@@ -19,9 +19,11 @@ use crate::types::{Bucket, Cursor, Location, Page, Region};
 pub trait ObjectStore: Send + Sync {
     /// List the buckets visible to this connection.
     ///
-    /// An account with no buckets is `Ok(vec![])` — the empty answer is a
-    /// truthful result, never an error (`bucket-listing` spec).
-    async fn list_buckets(&self) -> Result<Vec<Bucket>>;
+    /// An account with no buckets is an empty listing — the empty answer is a
+    /// truthful result, never an error (`bucket-listing` spec). A listing that
+    /// was refused where the other one answered rides along in
+    /// [`AccountListing::refused`] rather than failing the call.
+    async fn list_buckets(&self) -> Result<AccountListing>;
 
     /// Ask whether this scope's contents can be listed, without reading them.
     ///
@@ -71,7 +73,7 @@ pub(crate) mod double {
     use super::ObjectStore;
     use crate::capability::Scope;
     use crate::error::{Error, Result};
-    use crate::types::{Bucket, Cursor, Location, Page, Region};
+    use crate::types::{AccountListing, Bucket, Cursor, Location, Page, Region};
 
     /// A canned [`ObjectStore`] for tests.
     pub(crate) struct StoreDouble {
@@ -214,9 +216,9 @@ pub(crate) mod double {
 
     #[async_trait::async_trait]
     impl ObjectStore for StoreDouble {
-        async fn list_buckets(&self) -> Result<Vec<Bucket>> {
+        async fn list_buckets(&self) -> Result<AccountListing> {
             match &self.outcome {
-                Outcome::Buckets(buckets) => Ok(buckets.clone()),
+                Outcome::Buckets(buckets) => Ok(AccountListing::complete(buckets.clone())),
                 Outcome::Fail(make) => Err(make()),
             }
         }
@@ -258,13 +260,16 @@ mod tests {
     use super::double::StoreDouble;
     use crate::capability::{CapabilityStore, Observation, Scope, observation_for};
     use crate::error::Error;
-    use crate::types::{Bucket, Cursor, Folder, Location, Object, Page, Prefix, Region};
+    use crate::types::{
+        Bucket, BucketKind, Cursor, Folder, Location, Object, Page, Prefix, Region,
+    };
 
     fn bucket(name: &str, created: Option<&str>) -> Bucket {
         Bucket {
             name: name.into(),
             created: created.map(Into::into),
             region: Region::Unknown,
+            kind: BucketKind::General,
         }
     }
 
@@ -373,7 +378,11 @@ mod tests {
         ];
         let store: Box<dyn ObjectStore> = Box::new(StoreDouble::with_buckets(canned.clone()));
 
-        let listed = store.list_buckets().await.expect("listing must succeed");
+        let listed = store
+            .list_buckets()
+            .await
+            .expect("listing must succeed")
+            .buckets;
 
         assert_eq!(listed, canned);
         assert_eq!(listed[0].created.as_deref(), Some("2026-01-03T05:47:00Z"));
@@ -389,16 +398,22 @@ mod tests {
                 name: "logs".into(),
                 created: None,
                 region: Region::Known("ap-southeast-1".into()),
+                kind: BucketKind::General,
             },
             Bucket {
                 name: "backups".into(),
                 created: None,
                 region: Region::Unknown,
+                kind: BucketKind::General,
             },
         ];
         let store: Box<dyn ObjectStore> = Box::new(StoreDouble::with_buckets(canned));
 
-        let listed = store.list_buckets().await.expect("listing must succeed");
+        let listed = store
+            .list_buckets()
+            .await
+            .expect("listing must succeed")
+            .buckets;
 
         assert_eq!(listed[0].region, Region::Known("ap-southeast-1".into()));
         assert_eq!(
@@ -415,7 +430,11 @@ mod tests {
 
         let listed = store.list_buckets().await.expect("empty is Ok");
 
-        assert!(listed.is_empty());
+        assert!(listed.buckets.is_empty());
+        assert!(
+            listed.refused.is_none(),
+            "an empty account refused nothing — the two are different answers"
+        );
     }
 
     #[tokio::test]

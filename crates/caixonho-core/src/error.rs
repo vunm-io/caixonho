@@ -159,7 +159,7 @@ pub enum Error {
     /// The service itself denied the request on authorization grounds.
     /// Only the adapter's classifier may construct this, and only for a real
     /// service-side denial.
-    #[error("access denied — this operation requires `{iam_action}`")]
+    #[error("access denied — this operation requires {iam_action}")]
     AccessDenied {
         /// The IAM action the caller would need, e.g. `s3:ListAllMyBuckets`.
         iam_action: &'static str,
