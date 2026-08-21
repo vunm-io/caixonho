@@ -252,7 +252,32 @@
   - Done criteria: all three exit zero
   - Verification: the commands themselves
 
-- [ ] 4.2 CI green on every job, and the run id recorded [dispatch: main]
+- [x] 4.2 CI green on every job, and the run id recorded [dispatch: main]
+      - Done in `main` (2026-08-21); run **32496372817**, conclusion `success`:
+        `rustfmt`, `dependency audit`, `build (windows-latest)` and
+        `build (macos-latest)` all successful.
+      - **The absence on Windows is clean, and that is counted rather than
+        assumed.** Comparing the Windows job's own numbers across the two runs:
+
+        | | before this change | after | delta |
+        |---|---|---|---|
+        | Windows core | 262 | 263 | **+1** |
+        | macOS core (local) | 263 | 264 | **+1** |
+        | Windows window | 36 | **38** | +2 |
+        | macOS window (local) | 36 | **39** | +3 |
+
+        The new **core** test runs on Windows too — both platforms gained one,
+        so the standing one-test gap in core is pre-existing and nothing to do
+        with this change. The window crate gained two on Windows and three
+        locally, which is exactly the screenshot test being absent. Its name
+        appears nowhere in the Windows log, so it was excluded rather than run.
+      - Resolution had already been checked here — `cargo tree --target
+        x86_64-pc-windows-msvc --edges all` contains `gpui_macos` zero times —
+        and this run answers the different question resolution could not: that
+        the Windows build compiles and links with the test module `cfg`-ed out.
+      - Windows took 18m21s, in line with the runs before it; the added
+        features brought no new crates, and the lockfile is unchanged since
+        `e176ec9` at 948.
   - Paths: this file
   - Done criteria: `rustfmt`, `dependency audit`, and both builds successful for
     the tip; the run id written here. **Windows is the one that matters here**:
@@ -330,10 +355,15 @@
       - **`main.rs` moved and no test covers it.** The application was run, it
         stayed up, it stopped cleanly and it logged nothing (which is what a
         clean start does). Nobody looked at the window.
-      - **That `gpui_macos/test-support` is inert on Windows is read from a
-        `Cargo.toml`, not observed.** The `[target.'cfg(target_os = "macos")']`
-        gate is there and the same pattern is already in use, but CI is what
-        settles it — task 4.2.
+      - ~~**That `gpui_macos/test-support` is inert on Windows is read from a
+        `Cargo.toml`, not observed.**~~ **Observed.**
+        `cargo tree -p caixonho-gui --target x86_64-pc-windows-msvc --edges all`
+        contains `gpui_macos` **zero** times; the same command for
+        `aarch64-apple-darwin` contains it seven. Feature resolution per target
+        needs no toolchain, so this was checkable here rather than only in CI.
+        What remains for CI is whether the Windows build *compiles and links*
+        with the test module `cfg`-ed out — resolution and compilation are
+        different questions.
       - **`World::scripted` has one shape.** Every window test written after
         this one inherits its choices — no profiles, no stored connections, one
         store double. A test needing otherwise will have to say so, and the
