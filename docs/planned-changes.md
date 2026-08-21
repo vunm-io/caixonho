@@ -653,6 +653,19 @@ it and unplanned.
 vulnerabilities and 7 warnings**. Adding the step to CI without deciding what
 to do about them turns the pipeline red on the first run.
 
+**Amended the same day, after `XONHO-0018`: the lockfile is now 957 crates.**
+That change added `aws-smithy-http-client`'s `test-util` feature under
+`[dev-dependencies]`, and it brought 13 crates with it — `pretty_assertions`,
+`ciborium`, `aws-smithy-protocol-test` and the rest of a test-support tree.
+The four vulnerabilities and seven warnings are unchanged; re-measured, not
+assumed. But the number is worth carrying because of what it implies for the
+job being planned: **`cargo audit` scans the lockfile, and the lockfile holds
+dev-dependencies.** A policy written against "what we ship" and a tool reading
+"what we resolve" disagree by an entire test-support tree, and the difference
+will show up as advisories in crates that never reach a user. Deciding how the
+job treats them — `--ignore`, a `deny.toml` scope, or accepting that dev trees
+are audited too — is part of the policy work, not a detail of the wiring.
+
 | Advisory | Crate | Patched in |
 |---|---|---|
 | RUSTSEC-2026-0098 | `rustls-webpki 0.101.7` | `>=0.103.12` |
