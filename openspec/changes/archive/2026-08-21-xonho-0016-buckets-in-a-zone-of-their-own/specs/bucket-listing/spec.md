@@ -66,6 +66,32 @@ failure or as an account with nothing in it.
 - **THEN** the buckets that were returned are presented, and the system states
   which listing was refused and which IAM action it required
 
+### Requirement: Bucket region is reported when known
+
+The system SHALL obtain each bucket's region as part of the bucket listing
+whenever the service will report it, and SHALL present the region it reported.
+
+The system SHALL present the region as unknown for any bucket the service
+reports no region for, and SHALL distinguish "region not yet determined" from
+any specific region rather than displaying a guessed or default value.
+
+This holds for buckets that may exist in any region. It does not hold for a
+directory bucket, which exists in one zone within one region by construction,
+and for which "the region the listing was made against" is a fact rather than
+a guess — see *A directory bucket's region is where its zone is*.
+
+#### Scenario: The service reports a region
+
+- **WHEN** the bucket listing is retrieved and the service reports a region for
+  a bucket
+- **THEN** that bucket is presented with the region the service reported
+
+#### Scenario: Region is not known yet
+
+- **WHEN** an ordinary bucket's region has not been determined
+- **THEN** the bucket is presented with its region shown as unknown, not as the
+  connection's own region
+
 ## ADDED Requirements
 
 ### Requirement: A directory bucket is presented as its own kind
