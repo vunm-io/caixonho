@@ -103,6 +103,19 @@ it belonged to the new one.
 Probing uses the same bridge in the other direction: the table reports the rows
 on screen, and each settled probe is announced back over a channel.
 
+**The window is given its world; it does not go and get one.** Everything the
+application needs from the machine it runs on — the tokio runtime, the trust
+material, the profiles in `~/.aws`, the remembered connections — is read in
+`main` and handed to the root view as a single value (`XONHO-0015`). The
+constructor decides things; it does not discover them.
+
+That is a testability property before it is a tidiness one. While the
+constructor read the environment itself, building a window in a test read the
+developer's own machine and answered differently on each one, so no view above
+the level of a pure function was ever exercised. The seam is what lets a test
+hand over a world it wrote — a session backed by a script rather than by S3 —
+and drive the real view.
+
 ## Capability is observed, never declared
 
 S3 exposes no API that enumerates what a caller may do. Everything the app says

@@ -244,8 +244,10 @@
 
 ## 4. Close-out
 
-- [ ] 4.1 `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`,
+- [x] 4.1 `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`,
       `cargo test --workspace` green [dispatch: main]
+      - Done in `main` (2026-08-21); verified: all three exit zero.
+        264 core + 39 window tests, clippy clean at `-D warnings`.
   - Paths: whole workspace
   - Done criteria: all three exit zero
   - Verification: the commands themselves
@@ -258,7 +260,22 @@
     absence is clean rather than a compilation error nobody saw.
   - Verification: `gh run list --limit 1 --repo vunm-io/caixonho`
 
-- [ ] 4.3 Update the reader-facing documents in this change [dispatch: main]
+- [x] 4.3 Update the reader-facing documents in this change [dispatch: main]
+      - Done in `main` (2026-08-21).
+      - `docs/architecture.md` gains the shape change: the window is given its
+        world rather than fetching one, stated as a testability property
+        before a tidiness one.
+      - `docs/planned-changes.md` §*"The window's views are methods, and that
+        is why they cannot be tested"* is **corrected in place, title and all,
+        with the old reasoning left standing**. Every observation in it still
+        holds; the conclusion did not. It would have bought a rewrite of every
+        view in the window to obtain what a constructor signature already gave
+        — so the habit is recorded with it: when something is called
+        untestable, find the one thing that makes it so before rewriting what
+        surrounds it. Here it was six lines of environment reading that had sat
+        in a constructor since M0.
+      - `docs/roadmap.md` gains the row. `README.md` needs nothing: nothing a
+        user sees has changed.
   - Paths: `docs/architecture.md`, `docs/planned-changes.md`, `docs/roadmap.md`
   - Done criteria: `docs/architecture.md` records that the application is given
     its world rather than fetching it, because that is a shape change and the
@@ -269,7 +286,68 @@
     `README.md` needs nothing: no user-facing behaviour changes.
   - Verification: the corrected section names what changed and what is still true
 
-- [ ] 4.4 Close-out review per `AGENTS.md` [dispatch: main]
+- [x] 4.4 Close-out review per `AGENTS.md` [dispatch: main]
+      - Done in `main` (2026-08-21). The five answers:
+
+      **1. Did we build what was asked, or what was convenient?** What was
+      asked, and it turned out smaller than the proposal feared because most of
+      the seam already existed. **Three departures, each forced by evidence and
+      each written into the document it departs from:** task 1.1 opened two
+      seams instead of four, because clippy refused to let `pub(crate)` traits
+      leak and the honest follow-up question was whether the seam needed them
+      at all (it did not); task 3.3 did **not** tick `XONHO-0009` 6.3, because
+      reading 6.3 rather than remembering it shows it asks for every state
+      judged against the design language, which is the owner's work; and
+      `Diagnostics::without_a_log` was added, which no task named — the window
+      cannot be constructed without a diagnostics handle and `start()` opens a
+      real log file.
+
+      **2. Do the reader-facing documents still tell the truth?** Yes, and one
+      had stopped: a section of `planned-changes.md` titled *"...and that is
+      why they cannot be tested"*. Corrected in place. `architecture.md` and
+      `roadmap.md` updated here rather than after.
+
+      **3. Did we leave rubbish?** No. Clippy is clean at `-D warnings`, which
+      is what would have caught an unused `World::scripted`. Both new
+      dev-dependency lines are load-bearing — remove either and a test stops
+      compiling. `deny.toml` and the audit job from `XONHO-0017` still pass
+      with the two added features. Nothing was left commented out and no
+      `TODO` was added.
+
+      **4. What is asserted but not verified?**
+      - **The screenshot has no real text in it.** `NoopTextSystem` answers
+        `FontId(1)` for every font and returns fabricated metrics — read from
+        `gpui/src/platform.rs:1090`, not assumed — so the image proves layout,
+        colour and that something was drawn, and proves nothing about type. A
+        real text system means another dependency (`gpui_macos::MacTextSystem`
+        or `gpui_wgpu`), and that is a decision about the `ADR-0001` stack
+        rather than a detail. **It is also the strongest argument for 6.3
+        staying open**: an image with no text cannot be judged against
+        `docs/design-language.md`.
+      - **The screenshot proves one platform of two.** macOS only, by
+        construction. Windows — this project's primary daily driver — has no
+        equivalent, and never will while the renderer is Metal-only.
+      - **`main.rs` moved and no test covers it.** The application was run, it
+        stayed up, it stopped cleanly and it logged nothing (which is what a
+        clean start does). Nobody looked at the window.
+      - **That `gpui_macos/test-support` is inert on Windows is read from a
+        `Cargo.toml`, not observed.** The `[target.'cfg(target_os = "macos")']`
+        gate is there and the same pattern is already in use, but CI is what
+        settles it — task 4.2.
+      - **`World::scripted` has one shape.** Every window test written after
+        this one inherits its choices — no profiles, no stored connections, one
+        store double. A test needing otherwise will have to say so, and the
+        first one to need it will find out whether the helper bends.
+
+      **5. What is left, and where is it written?**
+      - Task 4.2, CI — the only task left here.
+      - `XONHO-0009` 6.3: capturing every state and judging it. The dated note
+        on that task says what changed and what remains.
+      - Real glyphs in a captured image, which is a dependency decision — in
+        answer 4 above.
+      - *Give the views inputs*, still worth doing for its own reasons and no
+        longer the only road to testing them — recorded in the corrected
+        section of `docs/planned-changes.md`.
   - Paths: this file
   - Done criteria: the five questions answered in writing, including what is
     asserted but not verified — at minimum, that `main.rs` moved and no test

@@ -39,6 +39,7 @@ that each own a subsystem and land on their own:
 | `XONHO-0016` | S3 Express One Zone directory buckets: listed beside ordinary ones, opened, and refused in their own words | landed |
 | `XONHO-0018` | Following a bucket to the region it lives in, instead of reporting the redirect as an unexplained error | built, awaiting live acceptance |
 | `XONHO-0017` | Auditing what the project depends on, on every change — and removing the four advisories that were being shipped | built, awaiting live acceptance |
+| `XONHO-0015` | A seam that lets a test build the real window, and the first tests that use it | in progress |
 
 `XONHO-0016` was pulled forward out of **M5** on 2026-08-20. It is an `[S]`
 taken ahead of four `[M]`s, which the planning gate exists to make deliberate

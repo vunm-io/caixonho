@@ -469,6 +469,29 @@ account holder to declare what one request can observe, which is the inversion
 
 ## The window's views are methods, and that is why they cannot be tested
 
+> **Corrected 2026-08-21 by `XONHO-0015`. The title is wrong and the section is
+> kept because how it was wrong is worth more than the correction.**
+>
+> Every observation below still holds: the views are methods, they read
+> `self`, and exercising one does mean building the whole application. What
+> does not follow — and what this section concluded — is that they therefore
+> cannot be tested. **Building the whole application in a test was the thing to
+> fix, and it was one seam wide.** `CaixonhoApp::new` read `~/.aws`, the
+> keychain and the trust store inside itself; once those became a value handed
+> in, a test could construct the real view, drive `apply_page` through it, and
+> render it to an image. Neither view was rewritten.
+>
+> The recommendation — *give the views inputs* — is still worth doing, but for
+> its own reasons now (a smaller blast radius per test, and functions a reader
+> can follow), not because it is the only road to testing them. That
+> distinction matters, because the section as written would have bought a
+> refactor of every view in the window to obtain something a constructor
+> signature already gave.
+>
+> The habit: **when something is called untestable, find the one thing that
+> makes it so before rewriting what surrounds it.** Here it was six lines of
+> environment reading, and they had been sitting in a constructor since M0.
+
 Found 2026-08-20 while splitting `app.rs` for `XONHO-0006`. Everything that
 renders in that file is a method on `CaixonhoApp` reading its private fields —
 72 uses of `self.`. Two consequences, and the second is the interesting one.
