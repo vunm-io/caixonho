@@ -682,23 +682,63 @@ arrive with the UI stack; the rest with the SDK.
 Both vulnerable crates arrive through `aws-smithy-http-client 1.3.0`, not
 through the frozen UI stack — so fixing them is not blocked behind ADR-0001.
 
-**And the path is one this application never uses.** Traced rather than
-guessed: this workspace asks for `rustls-aws-lc`, that turns on
-`aws-smithy-http-client`'s `__rustls`, and `__rustls` pulls
-`hyper-rustls 0.24.2` **with its `acceptor` feature** — the server-side TLS
-path — which is what drags in `rustls 0.21.12` and its `rustls-webpki`. The
-lockfile holds `rustls 0.23.43` as well, which is the one the client actually
-talks through. An S3 client accepts no TLS connections, so the advisories sit
-in code that is compiled and not called.
+> **Corrected the same day, and left visible on purpose.** The paragraph that
+> stood here was wrong about *how* they arrive, and it is left described rather
+> than deleted because the next reader will otherwise trust the next paragraph
+> just as readily.
+>
+> It said: this workspace asks for `rustls-aws-lc`, that turns on `__rustls`,
+> and `__rustls` pulls `hyper-rustls 0.24.2` **with its `acceptor` feature** —
+> the server-side TLS path — so the advisories sit in code compiled and never
+> called, because an S3 client accepts no TLS connections.
+>
+> `aws-smithy-http-client`'s own `[features]` table says `__rustls` pulls the
+> *current* `hyper-rustls`. There is no `acceptor` feature in the chain and no
+> server-side path. The real route, traced with
+> `cargo tree --edges features,no-dev`:
+>
+> ```
+> aws-sdk-s3 / aws-sdk-ssooidc  (default features)
+>   └── feature "rustls"
+>       └── aws-smithy-runtime/tls-rustls
+>           ├── aws-smithy-http-client/hyper-014          → hyper 0.14, h2 0.3.27
+>           └── aws-smithy-http-client/legacy-rustls-ring → rustls 0.21.12
+>                                                           → rustls-webpki 0.101.7
+> ```
+>
+> It is the **legacy client** stack, enabled by the default features of two
+> crates this workspace names directly — and those features supply an HTTP
+> client `tls.rs` already replaces at every construction site.
+>
+> **The conclusion the error supported was the expensive part.** "Compiled but
+> unreachable" made this look like something to accept with a reason. It was
+> something to delete: `default-features = false` on both crates takes
+> `cargo audit` from four vulnerabilities to none and the lockfile from 957
+> crates to 948, with every test still passing (`XONHO-0017` task 1.2).
+>
+> The habit worth keeping: **a dependency trace is read off the crate's
+> `[features]` table and `cargo tree`, never reconstructed from what the
+> feature names sound like.** `__rustls` sounds like the thing that pulls
+> rustls, and it does — just not that rustls.
 
 That is a reason to rank it, **not** a reason to dismiss it. "Compiled but
 unreachable" is a claim about today's call graph, and it is exactly the claim
-that stops being true quietly. The finding for whoever plans `XONHO-0017`:
-the work is not wiring two commands into CI, it is deciding the policy —
-which advisories fail the build, which are recorded as accepted and with what
-expiry, and whether the legacy `acceptor` path can be dropped upstream or
-worked around here. A `deny.toml` full of blanket ignores would satisfy the
-requirement's letter and none of its purpose.
+that stops being true quietly — which is why `XONHO-0017` removed the crates
+rather than recording them as accepted.
+
+The policy work remained, for the seven warnings that **cannot** be removed:
+six live in the UI stack `ADR-0001` freezes. A `deny.toml` full of blanket
+ignores would satisfy the requirement's letter and none of its purpose, so each
+is named with a reason and a date. Two things that only appeared while building
+it, both worth carrying:
+
+- **`cargo-deny` has no `expires` key.** It takes `id` and `reason` and rejects
+  anything else, so a dated acceptance needs enforcing outside the tool —
+  `scripts/check-advisory-expiry.sh`.
+- **`cargo-deny`'s default does not report a transitive `unsound` advisory.**
+  Without `unsound = "all"`, `cargo deny check advisories` passed clean while
+  `cargo audit` reported a use-after-free against `lru`. The two tools disagree
+  by default, and the disagreement is silent in the direction that matters.
 
 ## A test can go on passing after it stops testing anything (found 2026-08-21)
 

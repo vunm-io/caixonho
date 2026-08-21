@@ -59,7 +59,7 @@ gap is named. **none** — not started.
 | Crash handling without telemetry — a local file, with a way to attach it to an issue | partial | `XONHO-0012` landed the log, bounded and rolled daily, and the status bar names its directory. The crash hook itself is not written, so a panic still leaves nothing behind |
 | Secrets redacted from all logs, asserted by a unit test | partial | Real rather than vacuous since `XONHO-0012`: no logging signature accepts a `CredentialSecret`, and the three-spelling test guards it. The gap is the AWS SDK — quiet by default, but `CAIXONHO_LOG` can raise it to levels that carry request and header material, and nothing redacts that |
 | No telemetry | done | There is no network path out of this application other than to the endpoint the user chose |
-| Dependencies audited in CI | none | The brief promises it; CI runs fmt, clippy and tests only |
+| Dependencies audited in CI | done | `XONHO-0017`. A job of its own runs `cargo deny check advisories` on every push and pull request; a vulnerability fails the build. The four that existed were **removed** rather than accepted — two SDK crates were pulling a legacy TLS client this application replaces anyway — and the seven remaining warnings are accepted one by one with a reason and an expiry that `scripts/check-advisory-expiry.sh` enforces, because cargo-deny has no expiry of its own. **Done rather than partial** unlike the §4.1 region row: this requirement's exercise venue *is* CI, and CI runs it — there is no live behaviour left over for a real account to confirm |
 | One self-contained binary per platform | partial | It builds on both; there is no installer and nothing is signed |
 
 ## §4.4–4.6 — M2 and later
@@ -71,12 +71,15 @@ are not started. They are M2+ and are not late.
 
 Of the 24 `[M]` requirements in the three M1 areas: **11 done, 10 partial, 3 not
 started** — §4.1 has 2 done, 5 partial, 1 not started; §4.2 has 3, 3 and 1;
-§4.3, the headline, has 6, 2 and 1. Outside M1, §7–8 stands at 1 done, 3
-partial and 1 not started.
+§4.3, the headline, has 6, 2 and 1. Outside M1, §7–8 stands at 2 done, 3
+partial and nothing unstarted.
 
 The nearest gap is signing in to IAM Identity Center from the app — mandatory,
-unbuilt, and stepped over by three changes running. Entering a credential and
-opening a bucket both closed on 2026-08-20.
+unbuilt, and stepped over by four changes running. Entering a credential and
+opening a bucket both closed on 2026-08-20. It is worth saying why it keeps
+being stepped over rather than letting the count imply neglect: `XONHO-0011` is
+12/19 and every task left in it is a live check only the maintainer can run, so
+the changes that went ahead of it went ahead of a queue, not of a decision.
 
 Counted by `scripts/count-requirements.sh`, not from memory. That distinction
 is not pedantry: this line has now drifted **twice** in one day — first reading

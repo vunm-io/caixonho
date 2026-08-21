@@ -70,6 +70,11 @@ honest about permissions and fast on huge buckets*:
   the render thread.
 - **No telemetry. Ever.** No analytics, no phone-home, no exceptions. Crash reports
   are written to a local file that *you* choose to attach to an issue.
+- **The dependencies are audited on every change**, and a known vulnerability
+  stops it. Where an advisory cannot be resolved, the exception is written down
+  with the reason and the date it runs out — never a blanket ignore, and never
+  one that outlives its own justification. This is an application you hand
+  credentials to; what it links against is part of what it is.
 
 ## Platforms
 
