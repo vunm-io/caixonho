@@ -1,7 +1,8 @@
 use caixonho_core::{
-    Abandon, ActiveOutcome, Bucket, ConfigPaths, ConnectionId, ConnectionSource, Cursor,
-    DeviceAuthorization, Diagnostics, Error, HttpStack, Location, Outcome, Page, Prefix, Profile,
-    RegionChoice, Scope, Session, SignInOutcome, StoredCredential, TaggedOutcome, region_choices,
+    Abandon, ActiveOutcome, Bucket, BucketKind, ConfigPaths, ConnectionId, ConnectionSource,
+    Cursor, DeviceAuthorization, Diagnostics, Error, HttpStack, Location, Outcome, Page, Prefix,
+    Profile, RefusedListing, RegionChoice, Scope, Session, SignInOutcome, StoredCredential,
+    TaggedOutcome, region_choices,
 };
 use gpui::{
     AnyElement, App, AppContext, Context, Entity, InteractiveElement, IntoElement, ParentElement,
@@ -21,12 +22,13 @@ use gpui_component::{
     v_flex,
 };
 
-use crate::components::{empty_state, icon_tile, inline_message, skeleton_rows};
+use crate::components::{empty_state, icon_tile, inline_message, skeleton_rows, status_badge};
 use crate::scroll::{self, ScrollAccel};
 use crate::theme::{space, tile};
 use crate::views::buckets::{BucketsDelegate, RegionSelect, region_label};
 use crate::views::credential_form::CredentialForm;
-use crate::views::failure::{guidance_for, unavailable_reason};
+use crate::views::failure::{guidance_for, refusal_detail, refusal_headline, unavailable_reason};
+use crate::views::format::split_zonal_name;
 use crate::views::objects::ObjectsDelegate;
 
 /// Everything the window shows.
@@ -835,12 +837,34 @@ impl CaixonhoApp {
     }
 
     /// The region selector, offering only regions this account uses.
-    fn region_picker(&self) -> impl IntoElement {
-        h_flex().gap_2().pb_2().child(
-            div()
-                .w(px(240.))
-                .child(Select::new(&self.region_select).title_prefix("Region: ")),
-        )
+    fn region_picker(&self, cx: &Context<Self>) -> impl IntoElement {
+        // Said once, here, when every row is the same kind — instead of a
+        // badge repeated down the whole table. Silence for an account of
+        // ordinary buckets: that is the unremarkable case, and naming it would
+        // put a label on every screen to no purpose.
+        let all_directory = matches!(
+            self.table.read(cx).delegate().shown_kind(),
+            Some(BucketKind::Directory)
+        );
+
+        h_flex()
+            .gap_2()
+            .pb_2()
+            .items_center()
+            .child(
+                div()
+                    .w(px(240.))
+                    .child(Select::new(&self.region_select).title_prefix("Region: ")),
+            )
+            .children(all_directory.then(|| {
+                div()
+                    .debug_selector(|| "all-directory".into())
+                    .child(status_badge(
+                        IconName::LayoutDashboard,
+                        "All directory buckets",
+                        cx.theme().primary,
+                    ))
+            }))
     }
 
     /// One button per profile, the active one filled in.
@@ -918,6 +942,12 @@ impl CaixonhoApp {
     /// this the account disappears while you are inside one of its buckets.
     fn bucket_group(&self, cx: &mut Context<Self>) -> Option<SidebarGroup<SidebarMenu>> {
         self.active_profile?;
+        // Only while inside one. That is the whole reason this group exists —
+        // the main panel gives itself over to the contents, and without it the
+        // account disappears. At account level the table already lists every
+        // bucket, with room for the full name, so the rail was repeating it in
+        // a third of the width.
+        self.location.as_ref()?;
         let names = self.table.read(cx).delegate().shown_names();
         if names.is_empty() {
             return None;
@@ -926,9 +956,19 @@ impl CaixonhoApp {
 
         Some(
             SidebarGroup::new("Buckets").child(SidebarMenu::new().children(names.into_iter().map(
-                |name| {
+                |(name, kind)| {
                     let active = here.as_deref() == Some(name.as_str());
-                    SidebarMenuItem::new(name.clone())
+                    // The chosen half alone. The zone is identical on every
+                    // bucket in it, so in a 220px rail it is the half that
+                    // costs the most width and carries the least — and put in
+                    // the item's suffix it took priority over the label, which
+                    // shrank to three letters. The full name is on the row in
+                    // the table, which has the width for it.
+                    let label = match (kind, split_zonal_name(&name)) {
+                        (BucketKind::Directory, Some((chosen, _))) => chosen.to_owned(),
+                        _ => name.clone(),
+                    };
+                    SidebarMenuItem::new(label)
                         .icon(IconName::Folder)
                         .active(active)
                         .on_click(cx.listener(move |app, _, window, cx| {
@@ -1512,15 +1552,33 @@ impl CaixonhoApp {
                 let panel = self.failure_panel_from(rendered, error, cx);
                 panel.into_any_element()
             }
-            Outcome::Loaded(listing) if listing.buckets.is_empty() => empty_state(
-                IconName::Folder,
-                "This account has no buckets.",
-                "The listing succeeded — there is simply nothing in it yet.",
-                cx,
-            ),
-            Outcome::Loaded(_) => v_flex()
+            // Nothing came back, and the reason matters: an account that is
+            // empty and an account whose listing was refused look identical
+            // from here, and calling the second one empty is the lie this
+            // change exists to stop telling.
+            Outcome::Loaded(listing) if listing.buckets.is_empty() => match &listing.refused {
+                Some(refused) => empty_state(
+                    IconName::TriangleAlert,
+                    refusal_headline(refused),
+                    refusal_detail(refused),
+                    cx,
+                ),
+                None => empty_state(
+                    IconName::Folder,
+                    "This account has no buckets.",
+                    "The listing succeeded — there is simply nothing in it yet.",
+                    cx,
+                ),
+            },
+            Outcome::Loaded(listing) => v_flex()
                 .size_full()
-                .child(self.region_picker())
+                .child(self.region_picker(cx))
+                .children(
+                    listing
+                        .refused
+                        .as_ref()
+                        .map(|refused| Self::refusal_line(refused, cx)),
+                )
                 .child(
                     div()
                         .relative()
@@ -1531,6 +1589,39 @@ impl CaixonhoApp {
                 )
                 .into_any_element(),
         }
+    }
+
+    /// What was refused, stated beside what answered.
+    ///
+    /// Deliberately not the failure panel. The screen is not a failure —
+    /// buckets came back and they are real — so a panel in the list's place
+    /// would overstate it. This says what is missing without taking the
+    /// list's place, which is the difference between partial and broken.
+    fn refusal_line(refused: &RefusedListing, cx: &App) -> AnyElement {
+        h_flex()
+            .w_full()
+            .gap(space::TIGHT)
+            .items_start()
+            .pb_2()
+            .debug_selector(|| "listing-refused".into())
+            // The badge keeps its width; the sentence takes what is left and
+            // wraps inside it. Without `min_w_0` a flex child refuses to
+            // shrink below its own text, and the line runs off the window
+            // instead of folding — which is what it did.
+            .child(status_badge(
+                IconName::TriangleAlert,
+                refusal_headline(refused),
+                cx.theme().warning,
+            ))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(refusal_detail(refused)),
+            )
+            .into_any_element()
     }
 
     /// Borrow-splitting helper: the panel needs `&self` while `self.outcome`

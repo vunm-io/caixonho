@@ -1,14 +1,15 @@
 use std::ops::Range;
 
 use caixonho_core::{
-    Bucket, LIST_BUCKET_ACTION, Observation, ProbeTarget, Region, RegionChoice, Scope, Session,
+    Bucket, BucketKind, LIST_BUCKET_ACTION, Observation, ProbeTarget, Region, RegionChoice, Scope,
+    Session,
 };
 use gpui::{
     AnyElement, App, Context, InteractiveElement, IntoElement, ParentElement, SharedString,
     StatefulInteractiveElement, Styled, Window, div, px,
 };
 use gpui_component::{
-    ActiveTheme, IconName,
+    ActiveTheme, IconName, h_flex,
     select::{SearchableVec, SelectState},
     skeleton::Skeleton,
     table::{Column, TableDelegate, TableState},
@@ -16,6 +17,8 @@ use gpui_component::{
 };
 
 use crate::components::status_badge;
+use crate::theme::space;
+use crate::views::format::split_zonal_name;
 
 /// Displayed instead of a region the service never stated. A first-class
 /// value, not a placeholder: the alternative is showing the connection's own
@@ -88,12 +91,30 @@ impl BucketsDelegate {
         }
     }
 
-    /// Every bucket the current region choice admits, in listing order.
-    pub(crate) fn shown_names(&self) -> Vec<String> {
+    /// Every bucket the current region choice admits, in listing order, with
+    /// what each one is.
+    ///
+    /// The kind travels with the name because the sidebar renders it, and the
+    /// name is not evidence of it — that rule is the whole reason `Bucket`
+    /// carries a kind at all.
+    pub(crate) fn shown_names(&self) -> Vec<(String, BucketKind)> {
         self.shown
             .iter()
-            .map(|index| self.rows[*index].name.clone())
+            .map(|index| (self.rows[*index].name.clone(), self.rows[*index].kind))
             .collect()
+    }
+
+    /// The one kind every shown bucket is, when they are all the same.
+    ///
+    /// `None` for a mixed list, and for an empty one. This is what decides
+    /// whether a row needs marking at all: a badge repeated down every row of
+    /// a list that is entirely one kind says nothing any single row did not
+    /// already say, and the eye stops reading it — the same reason an
+    /// enterable bucket gets no badge in the access column.
+    pub(crate) fn shown_kind(&self) -> Option<BucketKind> {
+        let mut kinds = self.shown.iter().map(|index| self.rows[*index].kind);
+        let first = kinds.next()?;
+        kinds.all(|kind| kind == first).then_some(first)
     }
 
     /// The bucket a shown row names.
@@ -175,6 +196,53 @@ impl BucketsDelegate {
     }
 }
 
+/// The name cell: what the account holder chose, then what the service
+/// requires, then what the bucket is.
+///
+/// A directory bucket's zone suffix is identical on every bucket in that zone,
+/// so at full weight it is visual noise that also survives truncation while
+/// the distinguishing half is cut. Quietened, the eye lands on the part that
+/// differs — and the full name is still there, unaltered, which is what any
+/// policy or console will show.
+///
+/// The badge, not the suffix, is what says this is a directory bucket: reading
+/// a name for a suffix is exactly the work it exists to save. It appears only
+/// when the list holds more than one kind — `marked` — because a mark on every
+/// row of a list that is all one kind is noise, and the list says it once
+/// above the table instead.
+fn render_name(row: &Bucket, access: Access, marked: bool, cx: &mut App) -> AnyElement {
+    let muted = cx.theme().muted_foreground;
+    let name = match (row.kind, split_zonal_name(&row.name)) {
+        (BucketKind::Directory, Some((chosen, zone))) => h_flex()
+            .child(div().child(chosen.to_owned()))
+            .child(div().text_color(muted).child(format!("--{zone}")))
+            .into_any_element(),
+        _ => div().child(row.name.clone()).into_any_element(),
+    };
+
+    let cell = h_flex()
+        .gap(space::TIGHT)
+        .items_center()
+        .child(name)
+        .children((marked && row.kind == BucketKind::Directory).then(|| {
+            div()
+                .debug_selector(|| "directory-badge".into())
+                .child(status_badge(
+                    IconName::LayoutDashboard,
+                    "Directory",
+                    cx.theme().primary,
+                ))
+        }));
+
+    // Dimmed, not hidden: a bucket that cannot be entered stays in the list,
+    // because it is still a fact about the account.
+    if access == Access::Denied {
+        cell.text_color(muted).into_any_element()
+    } else {
+        cell.into_any_element()
+    }
+}
+
 impl TableDelegate for BucketsDelegate {
     fn columns_count(&self, _cx: &App) -> usize {
         self.columns.len()
@@ -219,6 +287,11 @@ impl TableDelegate for BucketsDelegate {
             return self.render_access(row_ix, access, cx);
         }
 
+        if col_ix == 0 {
+            let marked = self.shown_kind().is_none();
+            return render_name(row, access, marked, cx);
+        }
+
         let text: SharedString = match col_ix {
             0 => row.name.clone().into(),
             1 => row
@@ -243,5 +316,63 @@ impl TableDelegate for BucketsDelegate {
         } else {
             cell.into_any_element()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! `bucket-listing` spec — when a bucket has to be marked as its own kind,
+    //! and when marking it says nothing.
+
+    use super::*;
+
+    fn delegate(kinds: &[BucketKind]) -> BucketsDelegate {
+        let mut delegate = BucketsDelegate::new();
+        delegate.rows = kinds
+            .iter()
+            .enumerate()
+            .map(|(index, kind)| Bucket {
+                name: format!("bucket-{index}"),
+                created: None,
+                region: Region::Unknown,
+                kind: *kind,
+            })
+            .collect();
+        delegate.shown = (0..kinds.len()).collect();
+        delegate
+    }
+
+    #[test]
+    fn a_list_that_is_all_one_kind_needs_no_mark_on_any_row() {
+        let all_directory = delegate(&[BucketKind::Directory; 3]);
+
+        assert_eq!(all_directory.shown_kind(), Some(BucketKind::Directory));
+    }
+
+    #[test]
+    fn a_mixed_list_has_no_single_kind_so_rows_must_be_marked() {
+        let mixed = delegate(&[BucketKind::General, BucketKind::Directory]);
+
+        assert_eq!(
+            mixed.shown_kind(),
+            None,
+            "with both kinds present, a row that is not marked is ambiguous"
+        );
+    }
+
+    #[test]
+    fn an_empty_list_claims_no_kind() {
+        assert_eq!(delegate(&[]).shown_kind(), None);
+    }
+
+    #[test]
+    fn narrowing_to_one_kind_is_what_decides_it_not_the_whole_account() {
+        // `shown`, not `rows`: a region choice that leaves only directory
+        // buckets on screen is a list of one kind, whatever else the account
+        // holds.
+        let mut narrowed = delegate(&[BucketKind::General, BucketKind::Directory]);
+        narrowed.shown = vec![1];
+
+        assert_eq!(narrowed.shown_kind(), Some(BucketKind::Directory));
     }
 }

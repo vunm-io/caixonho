@@ -4,7 +4,8 @@
 //! is why they can be read — and tested — without one.
 
 use caixonho_core::{
-    ConnectionsProblem, CredentialStoreProblem, Error, SessionProblem, SignInProblem,
+    BucketKind, ConnectionsProblem, CredentialStoreProblem, Error, RefusedListing, SessionProblem,
+    SignInProblem,
 };
 use gpui::SharedString;
 
@@ -42,8 +43,14 @@ pub(crate) fn guidance_for(error: &Error, sign_in_offered: bool) -> SharedString
                      system trust store, or point AWS_CA_BUNDLE at the bundle your network uses."
                 )
                 .into(),
+                // Not "list buckets": this cause covers the account listing,
+                // one bucket's contents, and the session a directory bucket
+                // needs before it can be read at all. Naming the wrong one
+                // sends the user to ask for a permission that would change
+                // nothing — and the action already says which it was.
                 Error::AccessDenied { iam_action } => format!(
-                    "This profile is not allowed to list buckets. It needs the `{iam_action}` permission."
+                    "This profile does not have {iam_action}. Ask for that permission, or use a \
+                     profile that has it."
                 )
                 .into(),
                 Error::NoCredentials { profile } => {
@@ -123,6 +130,32 @@ pub(crate) fn guidance_for(error: &Error, sign_in_offered: bool) -> SharedString
                 .into(),
                 Error::Unexpected { .. } => "The call failed for an unrecognised reason.".into(),
     }
+}
+
+/// What to call the listing that was refused, when the other one answered.
+///
+/// A heading about the *kind that is missing*, not about the account: the
+/// account is fine, and what is on screen is real. What is absent is one half
+/// of the question, and the user cannot know that from a list that simply
+/// ends.
+pub(crate) fn refusal_headline(refused: &RefusedListing) -> SharedString {
+    match refused.kind {
+        BucketKind::General => "General purpose buckets were not listed".into(),
+        BucketKind::Directory => "Directory buckets were not listed".into(),
+    }
+}
+
+/// Why, and what would change it.
+///
+/// Names the permission plainly, without backticks: nothing here renders
+/// markdown, so a code span arrives as punctuation the reader has to look
+/// past.
+pub(crate) fn refusal_detail(refused: &RefusedListing) -> SharedString {
+    format!(
+        "This profile may not list them — that needs {}.",
+        refused.action
+    )
+    .into()
 }
 
 /// Why a connection cannot be used at all, if that is what happened.
@@ -205,6 +238,35 @@ mod tests {
         };
 
         assert_eq!(unavailable_reason(&error), Some("no credentials".into()));
+    }
+
+    #[test]
+    fn a_refusal_names_the_kind_that_is_missing_and_its_own_permission() {
+        let directory = RefusedListing {
+            kind: BucketKind::Directory,
+            action: "s3express:ListAllMyDirectoryBuckets",
+        };
+        let general = RefusedListing {
+            kind: BucketKind::General,
+            action: "s3:ListAllMyBuckets",
+        };
+
+        assert_eq!(
+            refusal_headline(&directory),
+            "Directory buckets were not listed"
+        );
+        assert_eq!(
+            refusal_headline(&general),
+            "General purpose buckets were not listed"
+        );
+        assert!(
+            refusal_detail(&directory).contains("s3express:ListAllMyDirectoryBuckets"),
+            "the action named must be the one that was refused"
+        );
+        assert!(
+            !refusal_detail(&directory).contains('`'),
+            "nothing renders markdown here, so a backtick arrives as punctuation"
+        );
     }
 
     #[test]
