@@ -128,6 +128,15 @@ pub(crate) fn guidance_for(error: &Error, sign_in_offered: bool) -> SharedString
                      for again. Check that the folder exists and is writable."
                 )
                 .into(),
+                // No backticks, and no permission in it. The service said
+                // "not here", which is a fact about the bucket rather than a
+                // judgement about the caller, and the one thing that changes
+                // the answer is the region this connection is pointed at.
+                Error::BucketElsewhere { bucket } => format!(
+                    "The bucket {bucket} lives in another region, and the service did not say \
+                     which one. Open a connection whose region is the one that bucket is in."
+                )
+                .into(),
                 Error::Unexpected { .. } => "The call failed for an unrecognised reason.".into(),
     }
 }
@@ -192,7 +201,12 @@ pub(crate) fn unavailable_reason(error: &Error) -> Option<SharedString> {
         // story from the other side: the connection works right now, and will
         // stop when the token lapses, which is not something to mark it with
         // today.
-        Error::SignIn { .. }
+        // A bucket somewhere else is a fact about that bucket. The
+        // connection authenticated, and every other bucket in its own region
+        // still reads — retiring it over one would be a worse answer than the
+        // one the user already has.
+        Error::BucketElsewhere { .. }
+        | Error::SignIn { .. }
         | Error::TokenCacheNotWritable { .. }
         | Error::Connections { .. }
         | Error::Network { .. }
@@ -267,6 +281,38 @@ mod tests {
             !refusal_detail(&directory).contains('`'),
             "nothing renders markdown here, so a backtick arrives as punctuation"
         );
+    }
+
+    #[test]
+    fn a_bucket_in_another_region_says_where_to_look_and_blames_nothing() {
+        let error = Error::BucketElsewhere {
+            bucket: "reports".into(),
+        };
+
+        let advice = guidance_for(&error, false);
+
+        assert!(advice.contains("reports"), "got: {advice}");
+        assert!(advice.contains("region"), "got: {advice}");
+        assert!(
+            !advice.contains('`'),
+            "nothing renders markdown here, so a backtick arrives as punctuation: {advice}"
+        );
+        // A redirect is the service saying "not here", never "not you".
+        for blame in ["permission", "Ask for", "denied"] {
+            assert!(!advice.contains(blame), "got: {advice}");
+        }
+    }
+
+    #[test]
+    fn a_bucket_in_another_region_does_not_make_the_connection_unusable() {
+        // The connection authenticated perfectly — it is pointed somewhere
+        // else. Marking it unusable would retire a working connection over a
+        // fact about one bucket.
+        let error = Error::BucketElsewhere {
+            bucket: "reports".into(),
+        };
+
+        assert_eq!(unavailable_reason(&error), None);
     }
 
     #[test]

@@ -1,6 +1,16 @@
 ## 1. Carrying what the redirect said
 
-- [ ] 1.1 Capture `x-amz-bucket-region` onto the failure [dispatch: main]
+- [x] 1.1 Capture `x-amz-bucket-region` onto the failure [dispatch: main]
+      - Done in `main` (2026-08-21); verified: `cargo test -p caixonho-core
+        classify::` — 28 pass, 4 of them new.
+      - `redirect_region_in` is a free function over the response rather than
+        an inline block, so the rule it encodes — 301 only, blank is nothing —
+        is one thing with one name instead of a condition buried in an arm.
+      - The tests go through `from_sdk` with a real `SdkError::ServiceError`,
+        not through the private builder the other tests use. The rule under
+        test lives in the *extraction*, so a hand-built failure would let a
+        misspelled header name or a dropped status check pass unnoticed.
+        `ServiceError::builder()` is public and needs no new dependency.
   - Paths: `crates/caixonho-core/src/classify.rs`
   - Done criteria: `SdkFailure` has `redirect_region: Option<String>` and a
     reader for it. `from_sdk` fills it in the `ServiceError` arm, from
@@ -14,7 +24,24 @@
     header yields `None`.
   - Verification: `cargo test -p caixonho-core classify::`
 
-- [ ] 1.2 A cause for a redirect that names nowhere [dispatch: main]
+- [x] 1.2 A cause for a redirect that names nowhere [dispatch: main]
+      - Done in `main` (2026-08-21); verified: `cargo test -p caixonho-core
+        classify::` and `capability::` green.
+      - `Error::BucketElsewhere { bucket }`, placed as step 8 of `classify` —
+        last of the specific causes, ahead of `Unexpected`.
+      - `CallContext` gained `bucket: Option<&str>`. All four call sites in
+        `adapter.rs` pass it explicitly rather than defaulting, and signing in
+        (`sso_adapter.rs`) passes `None` because it is about a session.
+      - A 301 on a call scoped to no bucket cannot state this cause, so it
+        falls through to `Unexpected` keeping code and status. Tested, because
+        it is a branch and not an impossibility.
+      - **Found in passing: `capability.rs` held a fixture that had become a
+        lie.** Its case named "a wrong-region redirect" and built
+        `Error::Unexpected { detail: "PermanentRedirect (HTTP 301)" }` — the
+        shape the classifier no longer produces. It would have gone on passing
+        for ever while testing nothing it claimed to. Corrected to
+        `BucketElsewhere`; the assertion it makes (a redirect is no evidence
+        about permission) is unchanged and still holds.
   - Paths: `crates/caixonho-core/src/error.rs`,
     `crates/caixonho-core/src/classify.rs`
   - Done criteria: an `Error` variant for "the bucket is in another region and
@@ -30,7 +57,25 @@
 
 ## 2. Following it
 
-- [ ] 2.1 Say which region served a page [dispatch: main]
+- [x] 2.1 Say which region served a page [dispatch: main]
+      - Done in `main` (2026-08-21); verified: `cargo test --workspace`.
+      - `page_at` takes `served_from` as a parameter: only the caller knows
+        which region it addressed, and that function sees an answer rather
+        than where it came from.
+      - The five test call sites pass a named constant,
+        `SERVED_FROM_THE_REGION_ASKED`, not a bare `None` — it would have sat
+        beside the `more` cursor, also `None`, and two anonymous `None`s in a
+        row tell a reader nothing.
+      - **Limit, recorded rather than fixed:** `served_from` is `Some` only on
+        the page that actually followed a redirect, which is what this change
+        specifies. A bucket already known is addressed to its own region, so
+        its later pages report `None` and carry no correction. Within a
+        session that is enough, because the row was corrected the first time.
+        It stops being enough if the bucket list is replaced by a fresh
+        listing that restates the old region — the row would then be wrong
+        with nothing arriving to correct it. Not changed here: the design was
+        reviewed with this reading, and widening it is a decision, not a
+        detail.
   - Paths: `crates/caixonho-core/src/types.rs`,
     `crates/caixonho-core/src/listing.rs`,
     `crates/caixonho-core/src/store.rs`
@@ -40,7 +85,26 @@
     forgetting silently.
   - Verification: `cargo test -p caixonho-core`
 
-- [ ] 2.2 Follow the redirect, once, and remember it [dispatch: main]
+- [x] 2.2 Follow the redirect, once, and remember it [dispatch: main]
+      - Done in `main` (2026-08-21); verified: `cargo test -p caixonho-core
+        adapter::` — 3 new tests over `StaticReplayClient`.
+      - `elsewhere: Arc<Mutex<HashMap<String, String>>>` beside `directory`,
+        same lock discipline: `region_learned_for` and `remember_region` each
+        hold it for one operation and never across an await.
+      - `read_page` hands back the SDK's own error instead of a cause, because
+        the caller has to look at the failure before deciding it is one —
+        classifying on the way past would throw the redirect away.
+      - **The region is remembered only after a read that worked.** Storing it
+        on the strength of the redirect alone would send every later page to a
+        region this connection has never successfully reached.
+      - Retries are disabled in the replaying config. These tests assert how
+        many times the request went out, and with a retry policy in the way
+        that number would be a fact about the retry policy instead of about
+        the code under test.
+      - The second request is asserted by its URI, not only by the result: a
+        reissue that went back to the same region would still have been
+        answered by the next scripted response and the result alone would have
+        passed.
   - Paths: `crates/caixonho-core/src/adapter.rs`
   - Done criteria: `S3ObjectStore` keeps `HashMap<String, String>` of
     bucket → discovered region, beside the existing directory-bucket set and
@@ -56,7 +120,16 @@
     correctly on the first request.
   - Verification: `cargo test -p caixonho-core adapter::`
 
-- [ ] 2.3 Add `test-util` for the replay client [dispatch: external-ok]
+- [x] 2.3 Add `test-util` for the replay client [dispatch: external-ok]
+      - Done in `main` (2026-08-21); verified by measurement, not by
+        argument. `cargo tree -p caixonho-core --edges features,no-dev` reports
+        `__rustls,default-client,hyper-014,legacy-rustls-ring,rustls-aws-lc`
+        both before and after — byte-identical, no `test-util`. With dev edges
+        included the same crate reports that set plus `test-util`.
+        `cargo build --release -p caixonho-gui` finished in 8.27s having
+        pulled no new crate.
+      - Follows the precedent already in the repository: `caixonho-gui` takes
+        `gpui` with `test-support` the same way.
   - Paths: `Cargo.toml`, `crates/caixonho-core/Cargo.toml`
   - Done criteria: `aws-smithy-http-client` with `features = ["test-util"]`
     under `[dev-dependencies]` only. Confirm the release build does not gain
@@ -65,10 +138,31 @@
     in the file **why** dev-only is safe here (resolver 2; not part of the
     `ADR-0001` frozen stack).
   - Verification: `cargo build --release -p caixonho-gui`; `cargo test -p caixonho-core`
+  - Routing (2026-08-21): kept in `main` despite the `external-ok` tag. This
+    change is a strictly sequential chain and `2.2` does not compile without
+    this task, so an external executor buys no wall-clock parallelism —
+    `cargo` holds a file lock on `target/`, so a second executor building here
+    would serialise behind this session anyway, and the result still needs
+    full local verification. The tag stays as planned; it is the routing, not
+    the plan, that was decided otherwise.
 
 ## 3. The window
 
-- [ ] 3.1 Correct the region on the row that was wrong [dispatch: main]
+- [x] 3.1 Correct the region on the row that was wrong [dispatch: main]
+      - Done in `main` (2026-08-21); verified: `cargo test -p caixonho-gui
+        buckets::` — 2 new tests.
+      - `BucketsDelegate::correct_region` matches **by name, not by index**:
+        the account listing can be replaced while a read is in flight, and an
+        index taken before that lands on whatever row inherited it. A bucket
+        the list no longer holds is simply not found.
+      - The narrowing is not re-applied, as designed.
+      - `debug_selector` `bucket-region` on the region cell — the one cell in
+        this table that another part of the application corrects after the
+        fact.
+      - **Asserted but not verified: the wiring.** The delegate is tested; that
+        `apply_page` calls it with the right bucket is not, because a test that
+        drives the window needs the seam `XONHO-0015` owes. Same wall as
+        `XONHO-0009` task 6.3.
   - Paths: `crates/caixonho-gui/src/app.rs`,
     `crates/caixonho-gui/src/views/buckets.rs`
   - Done criteria: when a page arrives with `served_from = Some(region)`, that
@@ -80,7 +174,18 @@
     others alone.
   - Verification: `cargo test -p caixonho-gui`
 
-- [ ] 3.2 State the unfollowable case where causes are stated [dispatch: main]
+- [x] 3.2 State the unfollowable case where causes are stated [dispatch: main]
+      - Done in `main` (2026-08-21), **out of the order this file lists**:
+        the match on `Error` in `failure.rs` is exhaustive, so adding the cause
+        in 1.2 stopped the GUI compiling until this was written. The compiler
+        decided the order, not the document — and the exhaustive match doing
+        exactly that is the design working.
+      - Verified: `cargo test -p caixonho-gui failure::` — 2 new tests, one
+        asserting the words and one asserting a bucket elsewhere does not mark
+        the connection unusable. The connection authenticated; it is pointed
+        somewhere else.
+      - No backticks, and no permission vocabulary — asserted in the test
+        rather than left to review.
   - Paths: `crates/caixonho-gui/src/views/failure.rs`
   - Done criteria: the new cause has guidance text naming what happened and
     what to change, in the vocabulary the other causes use, with no backticks
@@ -89,8 +194,11 @@
 
 ## 4. Close-out
 
-- [ ] 4.1 `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`,
+- [x] 4.1 `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`,
       `cargo test --workspace` green [dispatch: main]
+      - Done in `main` (2026-08-21); verified: all three exit zero.
+        `cargo fmt --all` clean, clippy reports nothing at `-D warnings`,
+        `cargo test --workspace` 263 core + 36 window.
   - Paths: whole workspace
   - Done criteria: all three exit zero
   - Verification: the commands themselves

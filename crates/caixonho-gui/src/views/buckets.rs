@@ -128,6 +128,24 @@ impl BucketsDelegate {
             .map(|index| self.rows[*index].name.clone())
     }
 
+    /// Say that `bucket` is in `region` after all.
+    ///
+    /// By name rather than by index: the account listing can be replaced
+    /// while a read is in flight, and an index taken before that would land
+    /// on whatever row inherited it. A bucket this list no longer holds is
+    /// simply not found, which is the right answer rather than a failure.
+    ///
+    /// The narrowing is deliberately *not* re-applied here. A correction can
+    /// move a bucket out of the region choice currently on, and pulling the
+    /// screen out from under someone as a reward for learning something true
+    /// is worse than a filter that is briefly out of date — the next listing
+    /// settles it.
+    pub(crate) fn correct_region(&mut self, bucket: &str, region: &Region) {
+        if let Some(row) = self.rows.iter_mut().find(|row| row.name == bucket) {
+            row.region = region.clone();
+        }
+    }
+
     /// The probe targets for a range of shown rows.
     pub(crate) fn targets(&self, rows: Range<usize>) -> Vec<ProbeTarget> {
         self.shown
@@ -308,6 +326,14 @@ impl TableDelegate for BucketsDelegate {
         };
 
         let cell = div().child(text);
+        // Named so a test can find the region a row reports — which is the
+        // one cell in this table another part of the application corrects
+        // after the fact.
+        let cell = if col_ix == 2 {
+            cell.debug_selector(|| "bucket-region".into())
+        } else {
+            cell
+        };
         // Dimmed, not hidden: a bucket that cannot be entered stays in the
         // list, because it is still a fact about the account.
         if access == Access::Denied {
@@ -340,6 +366,49 @@ mod tests {
             .collect();
         delegate.shown = (0..kinds.len()).collect();
         delegate
+    }
+
+    #[test]
+    fn a_corrected_region_lands_on_the_named_row_and_leaves_the_others_alone() {
+        let mut delegate = delegate(&[BucketKind::General; 3]);
+        delegate.rows[0].region = Region::Known("us-east-1".to_owned());
+
+        delegate.correct_region("bucket-1", &Region::Known("us-west-2".to_owned()));
+
+        assert_eq!(
+            delegate.rows[1].region,
+            Region::Known("us-west-2".to_owned()),
+            "the bucket that was read from elsewhere now says so"
+        );
+        assert_eq!(
+            delegate.rows[0].region,
+            Region::Known("us-east-1".to_owned()),
+            "a row nobody read is not touched"
+        );
+        assert_eq!(
+            delegate.rows[2].region,
+            Region::Unknown,
+            "and neither is a row that never stated one"
+        );
+    }
+
+    #[test]
+    fn correcting_a_bucket_this_list_does_not_hold_changes_nothing() {
+        // The account listing can be replaced while a read is in flight, so
+        // the page can arrive naming a bucket no row stands for. Searching
+        // and finding nothing is the answer; the alternative is an index
+        // into a list that has moved on.
+        let mut delegate = delegate(&[BucketKind::General; 2]);
+
+        delegate.correct_region("gone", &Region::Known("us-west-2".to_owned()));
+
+        assert!(
+            delegate
+                .rows
+                .iter()
+                .all(|row| row.region == Region::Unknown),
+            "no row is invented and none is altered"
+        );
     }
 
     #[test]

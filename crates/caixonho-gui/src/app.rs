@@ -422,6 +422,17 @@ impl CaixonhoApp {
                 self.listing = Listing::Failed(error);
             }
             Ok(page) => {
+                // The bucket answered from somewhere other than where it was
+                // looked for. The correction arrives with the data it
+                // corrects, so the row is put right here rather than by the
+                // window asking after every page whether anything moved.
+                if let Some(region) = &page.served_from {
+                    self.table.update(cx, |state, cx| {
+                        state.delegate_mut().correct_region(&asked.bucket, region);
+                        cx.notify();
+                    });
+                }
+
                 let continuing = self.more.is_some();
                 self.more = page.more.clone();
                 self.listing = Listing::Loaded;
