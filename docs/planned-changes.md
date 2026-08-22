@@ -615,9 +615,14 @@ be lost if they stay in a session log.
   and movable only by bumping the UI stack — which `ADR-0001` already makes a
   change of its own, green on both targets. Worth a line in that change rather
   than a change of its own.
-- **`cargo deny` is promised by the brief (§8) and absent from CI**, which
-  runs fmt, clippy and tests only. The `block` warning above is exactly the
-  class of thing it would have surfaced without anyone reading clippy output.
+- ~~**`cargo deny` is promised by the brief (§8) and absent from CI**, which
+  runs fmt, clippy and tests only.~~ **Done by `XONHO-0017` on 2026-08-21**:
+  CI has a `dependency audit` job on `cargo-deny-action@v2`, and the four
+  advisories that were being shipped were removed rather than accepted. Struck
+  through on 2026-08-22 rather than deleted, because the entry had gone stale
+  in place for a day — this file is where findings are kept so they are not
+  lost, and a finding that has since been *fixed* is a different kind of loss:
+  the next reader plans work that already exists.
 
 ## Storing credentials: keychain, not an app-managed cipher
 

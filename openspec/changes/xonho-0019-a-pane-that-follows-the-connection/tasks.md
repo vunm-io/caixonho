@@ -241,7 +241,20 @@ verification is not the task, and record the result in `executor notes`.
   - Done criteria: both commands exit zero with no diff left unstaged
   - Verification: the two commands
 
-- [ ] 4.3 CI green on both targets [dispatch: main]
+- [x] 4.3 CI green on both targets [dispatch: main]
+      - Dispatched: main (2026-08-22) — run **32565309335** on `main`,
+        conclusion `success`, all four jobs: rustfmt, `build (macos-latest)`,
+        `build (windows-latest)`, `dependency audit`.
+      - Counted rather than assumed, per the habit `XONHO-0015` left behind.
+        macOS **264 core + 43 window**; Windows **263 core + 42 window**. Both
+        gaps are the pre-existing ones and neither is new: core has been one
+        apart since before this change, and the window difference is
+        `a_real_view_renders_to_an_image`, which is `#[cfg(target_os =
+        "macos")]` because there is no headless renderer elsewhere.
+      - The number that mattered: window went 39 → 43 on macOS **and** 38 → 42
+        on Windows. All four tests added here are platform-neutral and ran on
+        both, which is the claim worth checking in a repo whose primary daily
+        driver is the target with no renderer.
   - Paths: none
   - Done criteria: the workflow's `cargo test --workspace` passes on macOS and
     on Windows. Record the run id here, and the test counts on both, so the
@@ -276,12 +289,27 @@ verification is not the task, and record the result in `executor notes`.
       Finding it is what this question is for; it was not going to surface
       from the task list, because every task was ticked.
 
-      **2. Do the reader-facing documents still tell the truth?** Yes.
-      `README.md`, `docs/architecture.md`, `docs/roadmap.md` and
-      `docs/design-language.md` were read for claims this change alters and
-      make none — their uses of the word "location" are the log and config
-      paths. The one document that did carry a claim,
-      `docs/requirements-status.md`, moved in task 4.1.
+      **2. Do the reader-facing documents still tell the truth?** ~~Yes.~~
+      **Answered too narrowly, corrected 2026-08-22 within the hour.** What
+      was checked: whether `README.md`, `docs/architecture.md`,
+      `docs/roadmap.md` and `docs/design-language.md` make claims about
+      *location behaviour* that this change alters. They do not — their uses of
+      the word "location" are the log and config paths — and
+      `docs/requirements-status.md`, the one that did, moved in task 4.1.
+
+      What that missed: `docs/roadmap.md` carries a per-change status table,
+      and a change that lands owes it a row whether or not it alters any prose.
+      `XONHO-0019` had none. Reading a document for "claims I contradict" is
+      not the same as reading it for "claims it now makes wrongly by my
+      absence", and the second is the reading that catches a table.
+
+      Correcting it turned up two more cells wrong for reasons that had nothing
+      to do with this change: `XONHO-0015` still said *in progress* after
+      archiving, and `XONHO-0006` still said *landed* while its live acceptance
+      was open — the second directly misleading about whether task 4.4 below is
+      blocked. All three are fixed, with the pattern written under the table.
+      Recorded here rather than quietly: the review question worked, and the
+      first answer to it did not.
 
       **3. Did we leave rubbish?** No. Grepped rather than recalled: `Position`
       appears at four sites, `end_location` at three (one definition, two
