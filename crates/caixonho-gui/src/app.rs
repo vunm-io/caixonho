@@ -2155,6 +2155,58 @@ mod tests {
         );
     }
 
+    #[gpui::test]
+    fn a_position_is_never_attributed_to_a_bucket_of_the_same_name_elsewhere(
+        cx: &mut TestAppContext,
+    ) {
+        // The motivating case from the proposal: a `-dev` and a `-prod`
+        // profile of one project, each holding a bucket of the same name.
+        // It passes by construction — the guard compares connection ids and
+        // never looks at a name — and is kept anyway, because it is the
+        // scenario the spec states and the one where being wrong would be
+        // worst: the screen would be confidently naming the wrong account.
+        // The test that would catch a guard rewritten to compare *profile
+        // index* is the re-selection one below, not this.
+        let (app, cx) = with_two_connections(cx);
+
+        app.update_in(cx, |app, window, cx| {
+            app.select_profile(0, window, cx);
+            app.go_to(
+                Location::at("reports".to_owned(), CorePrefix::root()),
+                window,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+
+        app.update_in(cx, |app, window, cx| app.select_profile(1, window, cx));
+        cx.run_until_parked();
+
+        assert_eq!(
+            position(&app, cx),
+            None,
+            "a bucket of the same name on the newly selected connection is a different \
+             place, and the trail from the previous one is being shown for it"
+        );
+
+        // And the same name, opened deliberately on the new connection, is
+        // this connection's position rather than a revival of the old one.
+        app.update_in(cx, |app, window, cx| {
+            app.go_to(
+                Location::at("reports".to_owned(), CorePrefix::root()),
+                window,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+
+        assert_eq!(
+            position(&app, cx).map(|at| at.bucket),
+            Some("reports".to_owned()),
+            "opening the bucket on the connection now selected should be a position again"
+        );
+    }
+
     /// A real view, rendered to an image — `XONHO-0009` task 6.3.
     ///
     /// macOS only, and not by preference. `gpui_platform::current_headless_renderer`

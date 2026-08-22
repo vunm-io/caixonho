@@ -53,10 +53,19 @@ position: Option<Position>,
 fn location(&self) -> Option<&Location> {
     self.position
         .as_ref()
-        .filter(|p| Some(p.connection) == self.outcome.active())
+        .filter(|p| p.connection == self.outcome.active())
         .map(|p| &p.at)
 }
 ```
+
+**Amended during implementation (2026-08-22).** This snippet first read
+`Some(p.connection) == self.outcome.active()`, which does not typecheck:
+`ActiveOutcome::active` returns a `ConnectionId`, not an `Option<ConnectionId>`
+(`caixonho-core/src/outcome.rs:66`). Corrected in place rather than only in
+`tasks.md`, because a design document that stays wrong is the version someone
+reads next. The slip is worth naming: `active_profile`, the field immediately
+beside this one in the window, *is* an `Option` — and conflating the two is
+the shape of the very defect this change removes.
 
 Every reader that derives the trail, the path text or the contents goes through
 `location()`. A stale value is then *harmless* rather than *avoided*: the
