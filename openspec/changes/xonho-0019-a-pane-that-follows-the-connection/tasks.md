@@ -6,6 +6,27 @@ Commit scope for every task here: `<type>(XONHO-0019): ...`. Branch:
 All paths are relative to the repository root
 (`/Users/vunm/Workspaces/vunm-workspace/caixonho`).
 
+## Routing (passdown-dispatch gate, 2026-08-22)
+
+Every task runs on `main`. The three tasks tagged `[dispatch: external-ok]`
+keep their tag — the tag records that the work *is* delegable, and the reason
+for not delegating it is specific to this sitting, not to the task:
+
+- **1.3 and 2.1** edit the same file and the same invariant chain as 1.2, which
+  is `main` work. Handing them out costs more context transfer than the edit
+  itself, and both refactors sit next to two traps this repo has already paid
+  for (a `#[cfg]` pair that ANDs, and a test that stopped checking what it
+  claimed while staying green).
+- **4.2** is verification-only. The dispatch contract requires the orchestrator
+  to re-run a task's done criteria before ticking it, and here the done
+  criteria *are* the commands — so dispatching it buys nothing.
+
+Unproven and worth a probe another day: `agy` is installed (1.1.16), but
+whether its sandbox can run `cargo` here is untested. The workspace `AGENTS.md`
+records the same failure mode for `flutter` (wrapper writes to an SDK cache
+outside the repo); `cargo` wants `~/.cargo/registry`. Probe it on a task whose
+verification is not the task, and record the result in `executor notes`.
+
 ## 1. A position that carries its connection
 
 - [ ] 1.1 Write the failing window test before the fix, and see it red
