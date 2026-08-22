@@ -261,7 +261,75 @@ verification is not the task, and record the result in `executor notes`.
   - Verification: `ls openspec/specs/object-browsing/spec.md` succeeds, then
     `openspec validate` passes
 
-- [ ] 4.5 Close-out review per `AGENTS.md` [dispatch: main]
+- [x] 4.5 Close-out review per `AGENTS.md` [dispatch: main]
+      - Dispatched: main (2026-08-22) — the five questions, asked and answered.
+
+      **1. Did we build what was asked, or what was convenient?** What the
+      proposal asked for is what landed: the connection travels with the
+      location, `Location` in core is untouched, the two ways of ending a
+      location became one, and a window test covers the switch. One departure,
+      and it is now an amendment in the document it departed from —
+      design.md's accessor snippet did not typecheck, and says so in place.
+      Against the spec delta: five scenarios, and only four had a test when
+      the review started. The fifth — two accounts holding a bucket of the
+      same name, which the proposal calls its motivating case — now has one.
+      Finding it is what this question is for; it was not going to surface
+      from the task list, because every task was ticked.
+
+      **2. Do the reader-facing documents still tell the truth?** Yes.
+      `README.md`, `docs/architecture.md`, `docs/roadmap.md` and
+      `docs/design-language.md` were read for claims this change alters and
+      make none — their uses of the word "location" are the log and config
+      paths. The one document that did carry a claim,
+      `docs/requirements-status.md`, moved in task 4.1.
+
+      **3. Did we leave rubbish?** No. Grepped rather than recalled: `Position`
+      appears at four sites, `end_location` at three (one definition, two
+      callers), the accessor at one definition with every former reader now
+      routed through it, and each of the three test helpers has callers. No
+      commented-out block, no unnamed `TODO`, no throwaway script — the two
+      temporary files used for the ablations were removed as part of them.
+
+      **4. What is asserted but not verified?** Three things, named plainly:
+      - **Nothing here has been run against a real account.** The defect was
+        found by driving the real application, and the fix is verified only
+        over `StoreDouble` — no test in this change touches a socket. This
+        change shipped without an owner live-check task at all, which is the
+        gap, not an oversight to argue about: task 4.6 below now exists for it.
+      - **"No trail is shown" is verified at the accessor, not at the pixel.**
+        The tests assert `location()` yields nothing; that the render branch
+        consequently draws the bucket table is read from a single `if let`
+        rather than from an image. Reasonable — it is one branch with one
+        consumer — but it is an inference, not an assertion.
+      - **`end_location` clears `fetching` and `more`, and no test says so.**
+        3.1 covers the position, the listing state and the contents table.
+        Those two are carried by the extraction being a copy of the reset
+        `leave_bucket` already performed, which is an argument, not a test.
+
+      **5. What is left, and where is it written?** 4.3 needs a pull request
+      before CI will run at all — the workflow triggers on `push` to `main`
+      and on `pull_request`, so a branch push alone runs nothing. 4.4 is
+      genuinely blocked: `openspec/specs/` holds five capabilities and
+      `object-browsing` is not among them, so `XONHO-0006` has not archived and
+      the delta must wait. 4.6 is the live check. design.md's open question —
+      whether position should be remembered per connection and restored on
+      return — stays where it was written, as a non-goal, not as a loose end.
+
+- [ ] 4.6 Live: a switch on a real account, in both directions
+      [dispatch: main]
+      - **Added during the 4.5 close-out review (2026-08-22), not planned.**
+        Every other change in this repo carries an owner live-check task and
+        this one carried none, which is hard to defend for a defect that was
+        found by driving the application and cannot be reproduced by any test
+        that does not open a window on a real account.
+  - Paths: none
+  - Done criteria: with two connections configured, open a bucket on the first,
+    switch to the second, and confirm the pane and the breadcrumb stop naming
+    the first connection's bucket — during the listing as well as after it.
+    Then switch back. Ideally with a bucket of the same name in both accounts,
+    which is the case the fix exists for.
+  - Verification: the application itself, and `~/Library/Logs/caixonho` showing
+    no `listed a location` for the connection left behind
   - Paths: none
   - Done criteria: the review in `AGENTS.md` is run and its findings recorded
     here — including, explicitly, whether any claim in proposal.md or design.md
