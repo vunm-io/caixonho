@@ -469,6 +469,10 @@ impl CaixonhoApp {
         // new one's arrives.
         self.outcome.switch_to(id);
         self.set_rows(Vec::new(), window, cx);
+        // Before the new listing is asked for, not after it arrives: the
+        // previous connection's bucket should not be on screen during the
+        // wait either.
+        self.end_location(cx);
         self.issue(id, source, cx);
     }
 
@@ -609,12 +613,30 @@ impl CaixonhoApp {
         self.go_to(Location::bucket(name), window, cx);
     }
 
-    /// Leave the bucket entirely, back to the account's listing.
-    fn leave_bucket(&mut self, cx: &mut Context<Self>) {
+    /// End the current location, whatever the reason for ending it.
+    ///
+    /// One method and not two. Leaving a bucket and switching connection both
+    /// end a location, and while they were written separately the switch
+    /// quietly omitted every part of it — which is the defect `XONHO-0019`
+    /// exists for. The read guard on [`Self::location`] makes this
+    /// belt-and-braces rather than load-bearing, and that split is deliberate:
+    /// the guard keeps the display correct, this keeps the state honest.
+    fn end_location(&mut self, cx: &mut Context<Self>) {
         self.position = None;
         self.listing = Listing::Idle;
         self.more = None;
         self.fetching = false;
+        self.objects.update(cx, |table, cx| {
+            table
+                .delegate_mut()
+                .show(Prefix::root(), Vec::new(), Vec::new());
+            cx.notify();
+        });
+    }
+
+    /// Leave the bucket entirely, back to the account's listing.
+    fn leave_bucket(&mut self, cx: &mut Context<Self>) {
+        self.end_location(cx);
         cx.notify();
     }
 
@@ -1853,7 +1875,8 @@ mod tests {
 
     use super::*;
     use caixonho_core::store::double::StoreDouble;
-    use caixonho_core::{Region, types::Prefix as CorePrefix};
+    use caixonho_core::{Object, Region, types::Prefix as CorePrefix};
+    use gpui_component::table::TableDelegate as _;
     use gpui::TestAppContext;
     use std::sync::Arc;
 
@@ -2039,6 +2062,97 @@ mod tests {
             "after switching connections the window still reports a position, so the trail, \
              the path bar and the contents of the previous connection's bucket are all still \
              on screen"
+        );
+    }
+
+    /// How many object rows the contents table is holding.
+    fn object_rows(app: &gpui::Entity<CaixonhoApp>, cx: &mut gpui::VisualTestContext) -> usize {
+        app.read_with(cx, |app, cx| app.objects.read(cx).delegate().rows_count(cx))
+    }
+
+    #[gpui::test]
+    fn a_switch_leaves_no_contents_behind_while_the_next_account_loads(cx: &mut TestAppContext) {
+        // The window the reproduction actually hit. The sidebar had already
+        // moved to the new connection and its listing had not answered yet —
+        // and in that gap the pane was still showing the previous account's
+        // objects. The read guard alone does not cover this: it stops the
+        // stale position being *shown*, and leaves it *held*.
+        let (app, cx) = with_two_connections(cx);
+
+        app.update_in(cx, |app, window, cx| {
+            app.select_profile(0, window, cx);
+            app.go_to(
+                Location::at("reports".to_owned(), CorePrefix::root()),
+                window,
+                cx,
+            );
+            app.apply_page(
+                Location::at("reports".to_owned(), CorePrefix::root()),
+                Ok(Page {
+                    objects: vec![Object {
+                        key: "march.csv".to_owned(),
+                        size: 12,
+                        last_modified: None,
+                        storage_class: None,
+                        etag: None,
+                    }],
+                    ..Page::default()
+                }),
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            object_rows(&app, cx),
+            1,
+            "the first connection's bucket should be holding its one object before the switch"
+        );
+
+        // The second connection's listing is never answered, so this asserts
+        // on the gap rather than on what comes after it.
+        app.update_in(cx, |app, window, cx| app.select_profile(1, window, cx));
+        cx.run_until_parked();
+
+        assert_eq!(
+            object_rows(&app, cx),
+            0,
+            "the previous connection's objects are still in the contents table while the new \
+             connection loads"
+        );
+        assert!(
+            app.read_with(cx, |app, _| matches!(app.listing, Listing::Idle)),
+            "the listing still reports the previous connection's read rather than resting"
+        );
+    }
+
+    #[gpui::test]
+    fn re_selecting_the_same_connection_also_ends_the_location(cx: &mut TestAppContext) {
+        // Accepted behaviour, not an accident: that click re-lists the
+        // account, so landing back on the bucket table is the coherent answer
+        // to it. The test exists so nobody later "fixes" it by comparing
+        // profile index instead of connection id — which would make the guard
+        // depend on a second notion of sameness, the shape of the original
+        // defect.
+        let (app, cx) = with_two_connections(cx);
+
+        app.update_in(cx, |app, window, cx| {
+            app.select_profile(0, window, cx);
+            app.go_to(
+                Location::at("reports".to_owned(), CorePrefix::root()),
+                window,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+
+        app.update_in(cx, |app, window, cx| app.select_profile(0, window, cx));
+        cx.run_until_parked();
+
+        assert_eq!(
+            position(&app, cx),
+            None,
+            "re-selecting the connection already selected kept the location, so a reconnect \
+             lands somewhere the fresh listing has not been read for"
         );
     }
 

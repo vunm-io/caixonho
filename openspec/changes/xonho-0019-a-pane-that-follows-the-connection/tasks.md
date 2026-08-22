@@ -124,8 +124,26 @@ verification is not the task, and record the result in `executor notes`.
 
 ## 2. One way to end a location
 
-- [ ] 2.1 Extract the reset and call it from both the switch and the exit
+- [x] 2.1 Extract the reset and call it from both the switch and the exit
       [dispatch: external-ok]
+      - Dispatched: main (2026-08-22) — done as `end_location`, called by
+        `leave_bucket` and by `select_profile` before it issues the new
+        listing.
+      - **Written before its test, then corrected.** The extraction went in
+        first and the suite stayed green — which proved nothing, because the
+        read guard from 1.2 already covered the only assertion then existing.
+        `AGENTS.md` invariant #7 is TDD, so the extraction was set aside
+        (`git checkout` of the one file), 3.1's test written against the code
+        *without* it, seen red — `left: 1, right: 0`, the previous
+        connection's object still in the contents table — and only then
+        restored. Recorded rather than tidied away: the failure mode here is
+        writing a belt-and-braces change and letting an unrelated green suite
+        pass for it.
+      - **The exit path gains behaviour, it is not purely extracted.**
+        `leave_bucket` never emptied the objects table; the reset does. No
+        visible difference today, because `go_to` clears the table on the way
+        in — so this closes a gap that was only ever invisible by luck.
+      - `cargo test --workspace` green: 264 core, 42 window.
   - Paths: `crates/caixonho-gui/src/app.rs`
   - Done criteria: the reset that `leave_bucket` performs — position cleared,
     `listing` set to `Listing::Idle`, `more` set to `None`, `fetching` set to
@@ -137,8 +155,28 @@ verification is not the task, and record the result in `executor notes`.
 
 ## 3. The two consequences worth a test of their own
 
-- [ ] 3.1 Nothing of the previous position survives the loading window
+- [x] 3.1 Nothing of the previous position survives the loading window
       [dispatch: main]
+      - Dispatched: main (2026-08-22) — done as
+        `a_switch_leaves_no_contents_behind_while_the_next_account_loads`.
+        Seen red before 2.1 was restored:
+
+        ```
+        assertion `left == right` failed: the previous connection's objects
+        are still in the contents table while the new connection loads
+          left: 1
+         right: 0
+        ```
+
+      - It asserts on the gap on purpose: the second connection's listing is
+        never answered in the test, so what it measures is the window the
+        reproduction actually hit — sidebar already switched, listing not back
+        yet. The page for the first connection is delivered through
+        `apply_page` rather than poked into the delegate, so the row it counts
+        got there the way a real one does.
+      - This is the test that gives 2.1 its teeth. The 1.2 guard stops a stale
+        position being *shown*; it leaves it *held*, and the contents table is
+        where that shows up.
   - Paths: `crates/caixonho-gui/src/app.rs` (its `#[cfg(test)]` module)
   - Done criteria: a test that selects a second connection whose account
     listing has **not** yet answered, and asserts that what is shown is that
@@ -147,8 +185,19 @@ verification is not the task, and record the result in `executor notes`.
     sidebar had already updated while the pane had not.
   - Verification: `cargo test -p caixonho-gui`
 
-- [ ] 3.2 Re-selecting the already-selected connection ends the location too
+- [x] 3.2 Re-selecting the already-selected connection ends the location too
       [dispatch: main]
+      - Dispatched: main (2026-08-22) — done as
+        `re_selecting_the_same_connection_also_ends_the_location`.
+      - **Green the moment it was written, and that is the correct result.**
+        `select_profile` mints a new `ConnectionId` on every call, so the 1.2
+        guard already ends the location on a re-select; no code was needed.
+        This is a characterisation test, not a red→green one — its job is to
+        put an accepted behaviour on the record so a later reader does not
+        "fix" it by comparing profile index instead of connection id, which
+        would reintroduce the second notion of sameness this change removed.
+        Said plainly here because a test that never failed is exactly the kind
+        that quietly stops meaning anything.
   - Paths: `crates/caixonho-gui/src/app.rs` (its `#[cfg(test)]` module)
   - Done criteria: a test asserting that clicking the connection that is
     already selected returns to the bucket table. design.md accepts this
