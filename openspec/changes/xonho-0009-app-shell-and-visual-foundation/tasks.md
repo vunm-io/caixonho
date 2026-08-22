@@ -133,3 +133,63 @@
         impossibility. Left unticked deliberately: the seam being open is not
         the same as the work being finished, and ticking it would have made a
         real defect-finding exercise disappear into a green checkbox.
+      - **2026-08-23: the loop is written and the twelve images exist.**
+        `every_state_is_written_for_judgement` in `app.rs`, `#[ignore]`d and
+        macOS-only, writes them to `target/screenshots/`. Run with
+        `cargo test -p caixonho-gui -- --ignored --nocapture every_state`.
+        Both screens, four states each plus the variants that only look alike:
+        account loading, empty, empty-because-refused, loaded,
+        loaded-but-partly-refused, and three failures chosen for their range
+        (one carrying an action, one an IAM action to read, one neither); then
+        inside a bucket, loading, empty, loaded and denied.
+      - Two things the seam did not hand over, both found by looking at the
+        images rather than by any assertion:
+        - **`NoopTextSystem` draws no glyphs.** Right for
+          `a_real_view_renders_to_an_image`, which asks only whether a frame
+          comes back; useless here, where most of what the design language
+          describes is type. `gpui_platform::current_platform(true).text_system()`
+          is the real one.
+        - **Two gates stand in front of every state below them.** `render`
+          returns "No connections yet." when the world has no profile, and
+          "Choose a connection." until one is selected — both *before* it
+          consults `outcome`. The first twelve images were the second of those
+          screens, twelve times, while a state probe printed
+          `Loaded(buckets=4)` and was telling the truth. The harness now gives
+          the world a profile and selects it through `select_profile`, the same
+          call the sidebar makes.
+      - The assertion that would have caught that is now in the test: **no two
+        images may be pixel-identical.** "Some pixel is opaque" passed on all
+        twelve copies. Ablated to confirm it bites — removing the
+        `select_profile` call turns it red on
+        `account-01-loading` vs `account-02-empty`.
+      - Still the owner's to do: **judge them.** That has not changed and is
+        why this stays unticked. One observation worth an eye while judging,
+        offered as a question rather than a finding: the expired-session panel
+        shows the cause, the `aws sso login` remedy and a **Retry** button, and
+        no in-app sign-in action — which is what `XONHO-0011` task 4.1 asks
+        for. That may be correct here (this world's `Profile` carries no
+        `sso_session`; only the error does), so it is evidence about a state,
+        not a defect report.
+
+- [ ] 6.4 [dispatch: main] The blurred-window comparison the design deferred.
+      - Split out of 6.3 on 2026-08-23, because the two halves have different
+        blockers and one of them is now done. Keeping them in one box would
+        have hidden this behind a task that reads as nearly finished.
+      - **The headless seam cannot produce this one, measured rather than
+        assumed.** `WindowBackgroundAppearance::Blurred` is documented as
+        "transparency, but the contents behind the window are blurred"
+        (`gpui/src/platform.rs:2081`) — a compositor effect over whatever the
+        window sits on, and a window rendered offscreen sits on nothing. Two
+        further facts close it off independently:
+        `HeadlessAppContext::open_window` hardcodes
+        `WindowOptions { ..Default::default() }` and takes no appearance
+        argument, and the test window's `set_background_appearance` is an empty
+        body (`gpui/src/platform/test/window.rs:280`). A screenshot pair
+        captured this way would differ in nothing at all.
+  - Paths: `crates/caixonho-gui/src/main.rs`
+  - Done criteria: the opaque window and one with
+    `WindowBackgroundAppearance::Blurred` captured on a real desktop, over
+    content that would show the difference, and a decision recorded in
+    `docs/design-language.md` with its per-platform cost — Windows is a
+    first-class target and the design deferred this on exactly that ground.
+  - Verification: the two images, and the recorded decision

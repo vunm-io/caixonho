@@ -37,3 +37,11 @@ gpui_platform = { workspace = true, features = ["test-support"] }
 # same binary; resolver 2 keeps a dev feature out of a build without dev
 # targets, and that was measured rather than assumed.
 caixonho-core = { workspace = true, features = ["test-support"] }
+# Only to write the captured frames out as files (`XONHO-0009` task 6.3).
+# `capture_screenshot` already returns an `image::RgbaImage` and gpui does not
+# re-export the crate, so the encoder has to be named here to be reachable.
+# Not a new dependency: gpui pulls the same `image` in and already turns `png`
+# on, so this adds an edge to the graph and nothing to the lockfile. `png` is
+# named anyway rather than inherited — a feature another crate happens to
+# enable is not a guarantee this code can rely on.
+image = { version = "0.25", default-features = false, features = ["png"] }

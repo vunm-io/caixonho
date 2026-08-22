@@ -2231,16 +2231,23 @@ mod tests {
         );
         cx.update(gpui_component::init);
 
+        // A world with one profile in it. `World::scripted` deliberately
+        // discovers none — a test that wants a connection should say so — and
+        // saying so is not optional here: `render` answers
+        // `connections().is_empty()` with "No connections yet." and returns
+        // **before** it ever consults `outcome`. Without this every state below
+        // is staged correctly, drawn faithfully, and invisible; the first
+        // twelve images were that screen twelve times, and the state probe
+        // said `Loaded(buckets=4)` while the pixels said otherwise.
+        let mut world = World::scripted(store);
+        world.profiles = vec![caixonho_core::Profile {
+            name: "example".to_owned(),
+            is_default: true,
+        }];
+
         let window = cx
             .open_window(size(px(WIDTH as f32), px(HEIGHT as f32)), |window, cx| {
-                cx.new(|cx| {
-                    CaixonhoApp::new(
-                        Diagnostics::without_a_log(),
-                        World::scripted(store),
-                        window,
-                        cx,
-                    )
-                })
+                cx.new(|cx| CaixonhoApp::new(Diagnostics::without_a_log(), world, window, cx))
             })
             .expect("a headless window opens");
         cx.run_until_parked();
@@ -2263,6 +2270,406 @@ mod tests {
         assert!(
             image.pixels().any(|p| p.0[3] != 0),
             "every pixel is transparent, so nothing was drawn at all"
+        );
+    }
+
+    /// Where [`every_state_is_written_for_judgement`] leaves its images.
+    ///
+    /// Under `target/`, so `.gitignore` already covers it: these are an
+    /// instrument's output, regenerated whenever the design moves, and a
+    /// screenshot committed beside the code it depicts is stale the first
+    /// time anyone edits a token.
+    #[cfg(target_os = "macos")]
+    fn judgement_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/screenshots")
+    }
+
+    /// Open the real window, drive it into one state, and write what it drew.
+    ///
+    /// A fresh context per state rather than one window walked through all of
+    /// them: a screenshot is meant to show what a user arriving at that state
+    /// sees, and a window that reached it by way of four others carries
+    /// whatever they left behind — a scroll offset, a selection, a region
+    /// filter. Cheap enough not to trade for that.
+    #[cfg(target_os = "macos")]
+    fn shoot(
+        name: &str,
+        store: Arc<dyn caixonho_core::ObjectStore>,
+        drive: impl FnOnce(&mut CaixonhoApp, &mut gpui::Window, &mut gpui::Context<CaixonhoApp>),
+    ) -> std::path::PathBuf {
+        use gpui::{HeadlessAppContext, px, size};
+
+        const WIDTH: u32 = 1280;
+        const HEIGHT: u32 = 800;
+
+        // The platform's own text system, not `NoopTextSystem`. The noop one
+        // is what `a_real_view_renders_to_an_image` uses and is right there:
+        // that test asks whether a frame comes back at all, and a text system
+        // rasterising nothing keeps it from depending on installed fonts. Here
+        // it would defeat the whole exercise — most of what
+        // `docs/design-language.md` describes is type, and screenshots with no
+        // glyphs in them are not evidence about any of it.
+        let text_system = gpui_platform::current_platform(true).text_system();
+
+        let mut cx = HeadlessAppContext::with_platform(
+            text_system,
+            Arc::new(gpui_component_assets::Assets),
+            gpui_platform::current_headless_renderer,
+        );
+        cx.update(gpui_component::init);
+
+        // A world with one profile in it. `World::scripted` deliberately
+        // discovers none — a test that wants a connection should say so — and
+        // saying so is not optional here: `render` answers
+        // `connections().is_empty()` with "No connections yet." and returns
+        // **before** it ever consults `outcome`. Without this every state below
+        // is staged correctly, drawn faithfully, and invisible; the first
+        // twelve images were that screen twelve times, and the state probe
+        // said `Loaded(buckets=4)` while the pixels said otherwise.
+        let mut world = World::scripted(store);
+        world.profiles = vec![caixonho_core::Profile {
+            name: "example".to_owned(),
+            is_default: true,
+        }];
+
+        let window = cx
+            .open_window(size(px(WIDTH as f32), px(HEIGHT as f32)), |window, cx| {
+                cx.new(|cx| CaixonhoApp::new(Diagnostics::without_a_log(), world, window, cx))
+            })
+            .expect("a headless window opens");
+        cx.run_until_parked();
+
+        // Choose it, through the same call the sidebar makes. A world with a
+        // profile in it is still not a window showing an account: `render`
+        // answers "Choose a connection." until one has been selected, which is
+        // the second gate in front of everything below. Selecting issues a
+        // listing, and parking lets the canned one land — so anything `drive`
+        // stages afterwards is staged over a settled screen rather than racing
+        // one.
+        window
+            .update(&mut cx, |app, window, cx| app.select_profile(0, window, cx))
+            .expect("the window is still open");
+        cx.run_until_parked();
+
+        window
+            .update(&mut cx, |app, window, cx| {
+                drive(app, window, cx);
+                cx.notify();
+            })
+            .expect("the window is still open");
+
+        // Draw, explicitly, and do **not** park again. Two separate traps sit
+        // here, and the first one cost this harness its first twelve images.
+        //
+        // `render_to_image` returns `rendered_frame` — the frame already
+        // built. `cx.notify()` only marks the view dirty, and in a headless
+        // context opened with `show: false` nothing comes along to redraw it,
+        // so a capture after a state change hands back the frame from *before*
+        // the change. All twelve came out byte-identical, and the assertion
+        // that some pixel was opaque held on every one of them.
+        //
+        // Parking is the second trap: the world's canned listing resolves
+        // through the real path and `accept`s an outcome, which would overwrite
+        // whatever this function just staged.
+        cx.update_window(window.into(), |_, window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx)
+        })
+        .expect("the window is still open");
+
+        let image = cx
+            .capture_screenshot(window.into())
+            .expect("the renderer produced an image");
+
+        let dir = judgement_dir();
+        std::fs::create_dir_all(&dir).expect("the screenshot directory is writable");
+        let path = dir.join(format!("{name}.png"));
+        image.save(&path).expect("the screenshot is written");
+        path
+    }
+
+    /// Put an outcome on screen as though it had arrived for the active
+    /// connection — which is the only way it is ever allowed on screen.
+    #[cfg(target_os = "macos")]
+    fn arriving(app: &mut CaixonhoApp, outcome: Outcome) {
+        let active = app.outcome.active();
+        assert!(
+            app.outcome
+                .accept(caixonho_core::TaggedOutcome::new(active, outcome)),
+            "an outcome tagged with the active connection is never stale"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    fn a_few_buckets() -> Vec<Bucket> {
+        vec![
+            bucket("reports"),
+            bucket("logs"),
+            bucket("archive"),
+            bucket("media-assets"),
+        ]
+    }
+
+    /// Every state the two screens can be in, written to disk for the owner
+    /// to judge against `docs/design-language.md` — `XONHO-0009` task 6.3.
+    ///
+    /// `#[ignore]`d, and not because it is slow. It asserts almost nothing and
+    /// is not trying to: the question it serves — does what is drawn match the
+    /// language that document describes — is one no assertion can answer, so
+    /// it produces evidence for a person and stays out of the suite that gates
+    /// merges. What little it does assert is that each state drew *something*,
+    /// because an all-transparent image is the failure that would otherwise be
+    /// mistaken for a design opinion.
+    ///
+    /// Run it with:
+    ///
+    /// ```text
+    /// cargo test -p caixonho-gui -- --ignored --nocapture every_state
+    /// ```
+    ///
+    /// **macOS only**, for the reason `a_real_view_renders_to_an_image`
+    /// records: `current_headless_renderer` answers `None` off macOS, so there
+    /// is no renderer to capture with. These images are therefore evidence
+    /// about what macOS draws and about nothing else — worth saying twice,
+    /// because `AGENTS.md` names Windows this project's primary daily driver,
+    /// and the states judged here are judged on the platform it is not used on.
+    ///
+    /// The window background comparison the design deferred is **not** here,
+    /// and cannot be: see the note on task 6.3 in the change's `tasks.md`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "writes screenshots for the owner to judge; run explicitly"]
+    fn every_state_is_written_for_judgement() {
+        use caixonho_core::types::{AccountListing, Folder, RefusedListing};
+        use caixonho_core::{BucketKind, Object};
+
+        let refused = || RefusedListing {
+            kind: BucketKind::Directory,
+            action: "s3:ListAllMyDirectoryBuckets",
+        };
+        let object = |key: &str, size: u64| Object {
+            key: key.to_owned(),
+            size,
+            last_modified: Some("2026-08-22T09:14:00Z".to_owned()),
+            storage_class: Some("STANDARD".to_owned()),
+            etag: None,
+        };
+        // Opening a location is what puts the second screen on screen — but
+        // an account that is still listing while one of its buckets is open is
+        // not a state a user can reach, and it shows: the rail down the left
+        // renders the connection's buckets, so an account left `Loading` draws
+        // the second screen beside an empty rail and a status line that reads
+        // "Listing buckets…". Both were in the first honest set of images, and
+        // both would have been judged as design.
+        let settled = |app: &mut CaixonhoApp, cx: &mut gpui::Context<CaixonhoApp>| {
+            arriving(
+                app,
+                Outcome::Loaded(AccountListing::complete(a_few_buckets())),
+            );
+            app.table.update(cx, |state, _| {
+                let delegate = state.delegate_mut();
+                delegate.rows = a_few_buckets();
+                delegate.shown = (0..a_few_buckets().len()).collect();
+            });
+        };
+        let inside = |app: &mut CaixonhoApp, cx: &mut gpui::Context<CaixonhoApp>| {
+            settled(app, cx);
+            app.position = Some(Position {
+                connection: app.outcome.active(),
+                at: Location::at("reports".to_owned(), CorePrefix::root()),
+            });
+        };
+
+        let mut written = Vec::new();
+
+        // ---- The account screen, in the order the document names them ----
+
+        // Loading is the state the window opens in, so it needs no driving —
+        // which is also the only way to be sure this is the real one.
+        written.push(shoot(
+            "account-01-loading",
+            Arc::new(StoreDouble::allows_listing()),
+            |_, _, _| {},
+        ));
+
+        written.push(shoot(
+            "account-02-empty",
+            Arc::new(StoreDouble::empty_account()),
+            |app, _, _| arriving(app, Outcome::Loaded(AccountListing::complete(Vec::new()))),
+        ));
+
+        // Empty and refused are the two the change exists to keep apart: the
+        // same blank list, and calling the second one empty is the lie.
+        written.push(shoot(
+            "account-03-empty-because-refused",
+            Arc::new(StoreDouble::allows_listing()),
+            |app, _, _| {
+                arriving(
+                    app,
+                    Outcome::Loaded(AccountListing {
+                        buckets: Vec::new(),
+                        refused: Some(refused()),
+                    }),
+                )
+            },
+        ));
+
+        written.push(shoot(
+            "account-04-loaded",
+            Arc::new(StoreDouble::allows_listing()),
+            |app, _, cx| settled(app, cx),
+        ));
+
+        // Partial: buckets came back and something else did not. Kept apart
+        // from the failure panel on purpose, so the line has to be judged
+        // beside a list rather than in place of one.
+        written.push(shoot(
+            "account-05-loaded-but-partly-refused",
+            Arc::new(StoreDouble::allows_listing()),
+            |app, _, cx| {
+                arriving(
+                    app,
+                    Outcome::Loaded(AccountListing {
+                        buckets: a_few_buckets(),
+                        refused: Some(refused()),
+                    }),
+                );
+                app.table.update(cx, |state, _| {
+                    let delegate = state.delegate_mut();
+                    delegate.rows = a_few_buckets();
+                    delegate.shown = (0..a_few_buckets().len()).collect();
+                });
+            },
+        ));
+
+        // Three failures rather than one: the panel is a vocabulary, and the
+        // document asks for a cause and at most a single action. Expired
+        // carries an action, denied carries an IAM action to read, and the
+        // network one carries neither — which is the range to judge.
+        for (name, error) in [
+            (
+                "account-06-error-session-expired",
+                caixonho_core::Error::SessionRejected {
+                    profile: "example".into(),
+                    sso_session: Some("example-sso".into()),
+                    problem: caixonho_core::error::SessionProblem::Expired,
+                },
+            ),
+            (
+                "account-07-error-access-denied",
+                caixonho_core::Error::AccessDenied {
+                    iam_action: "s3:ListAllMyBuckets",
+                },
+            ),
+            (
+                "account-08-error-network",
+                caixonho_core::Error::Network {
+                    detail: "connection refused".into(),
+                },
+            ),
+        ] {
+            written.push(shoot(
+                name,
+                Arc::new(StoreDouble::allows_listing()),
+                move |app, _, _| arriving(app, Outcome::Failed(error)),
+            ));
+        }
+
+        // ---- Inside a bucket: the denser row, and the same four states ----
+
+        written.push(shoot(
+            "bucket-01-loading",
+            Arc::new(StoreDouble::allows_listing()),
+            |app, _, cx| {
+                inside(app, cx);
+                app.listing = Listing::Loading;
+            },
+        ));
+
+        written.push(shoot(
+            "bucket-02-empty",
+            Arc::new(StoreDouble::allows_listing()),
+            |app, _, cx| {
+                inside(app, cx);
+                app.listing = Listing::Loaded;
+            },
+        ));
+
+        written.push(shoot(
+            "bucket-03-loaded",
+            Arc::new(StoreDouble::allows_listing()),
+            |app, _, cx| {
+                inside(app, cx);
+                app.listing = Listing::Loaded;
+                app.objects.update(cx, |state, _| {
+                    state.delegate_mut().show(
+                        CorePrefix::root(),
+                        vec![
+                            Folder {
+                                prefix: CorePrefix::parse("daily/"),
+                            },
+                            Folder {
+                                prefix: CorePrefix::parse("monthly/"),
+                            },
+                        ],
+                        vec![
+                            object("summary.csv", 20_184),
+                            object("totals.parquet", 4_919_233),
+                            object("readme.txt", 812),
+                        ],
+                    );
+                });
+            },
+        ));
+
+        written.push(shoot(
+            "bucket-04-error-denied",
+            Arc::new(StoreDouble::allows_listing()),
+            |app, _, cx| {
+                inside(app, cx);
+                app.listing = Listing::Failed(caixonho_core::Error::AccessDenied {
+                    iam_action: "s3:ListBucket",
+                });
+            },
+        ));
+
+        // Two assertions, both about the instrument rather than the design.
+        //
+        // The second one is the one that matters, and it is here because its
+        // absence cost a whole sitting. "Some pixel is opaque" passed on twelve
+        // byte-identical copies of a screen none of these states was on — the
+        // window was rendering `Choose a connection.` every time, because
+        // nothing had selected one, while a state probe printed
+        // `Loaded(buckets=4)` and agreed with itself. Distinctness is what
+        // catches a harness that stages a state faithfully and photographs
+        // something else: no two of these screens should look alike, so if two
+        // files match, the capture is wrong even when every state is right.
+        let mut seen: std::collections::HashMap<Vec<u8>, &std::path::Path> =
+            std::collections::HashMap::new();
+        for path in &written {
+            let decoded = image::open(path)
+                .expect("the written file decodes as an image")
+                .to_rgba8();
+            assert!(
+                decoded.pixels().any(|p| p.0[3] != 0),
+                "{} is entirely transparent, so nothing was drawn",
+                path.display()
+            );
+            if let Some(other) = seen.insert(decoded.into_raw(), path.as_path()) {
+                panic!(
+                    "{} and {} are pixel-identical — the states differ, so the capture \
+                     is showing something neither of them set",
+                    other.display(),
+                    path.display()
+                );
+            }
+            println!("{}", path.display());
+        }
+
+        println!(
+            "\n{} screenshots in {}",
+            written.len(),
+            judgement_dir().display()
         );
     }
 }
