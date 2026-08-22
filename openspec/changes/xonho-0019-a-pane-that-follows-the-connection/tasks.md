@@ -67,8 +67,22 @@ verification is not the task, and record the result in `executor notes`.
   - Verification: `cargo test -p caixonho-gui` — the new test fails, and no
     other test changes result
 
-- [ ] 1.2 Hold the location together with the connection it was read on
+- [x] 1.2 Hold the location together with the connection it was read on
       [dispatch: main]
+      - Dispatched: main (2026-08-22) — done; verified by 1.1's test going
+        green (40 window tests pass, 264 core) **and** by ablation: deleting
+        the accessor's `.filter(...)` line puts the test back to the exact
+        panic recorded under 1.1. The guard carries the test, which is the
+        claim worth checking — this repo has already shipped one test that
+        stopped checking what it claimed while staying green.
+      - **Correction to design.md.** Its snippet reads
+        `Some(p.connection) == self.outcome.active()`. `ActiveOutcome::active`
+        returns `ConnectionId`, not `Option<ConnectionId>`
+        (`caixonho-core/src/outcome.rs:66`), so the comparison is
+        `position.connection == self.outcome.active()`. Recorded rather than
+        quietly fixed: the design was written from the shape of
+        `active_profile`, which *is* an `Option`, and the two are easy to
+        conflate at exactly the place this change is about.
   - Paths: `crates/caixonho-gui/src/app.rs`
   - Done criteria: the window's `location: Option<Location>` field is replaced
     by a position that also carries the `ConnectionId` it was read on, and one
@@ -79,8 +93,25 @@ verification is not the task, and record the result in `executor notes`.
     see design.md for why the connection stays out of the addressing form.
   - Verification: `cargo test -p caixonho-gui` — 1.1's test now passes
 
-- [ ] 1.3 Move every reader of the position onto the accessor
+- [x] 1.3 Move every reader of the position onto the accessor
       [dispatch: external-ok]
+      - Dispatched: main (2026-08-22) — done **inside 1.2, not after it**, and
+        not by choice: replacing `location: Option<Location>` with
+        `position: Option<Position>` stops the crate compiling until every
+        reader has moved, so the two tasks are one edit. Splitting the commit
+        would have meant inventing a broken intermediate state to commit.
+      - Verified by grep rather than by reading: `self.position` appears at
+        exactly four sites — the accessor (the only *read*), `go_to`,
+        `leave_bucket`, and one write in the test helper `looking_at`. The
+        eight former readers (`apply_page`'s guard, the load-more path, the
+        prefix-entry path, two in `bucket_group`, the render branch, and the
+        two test helpers) all call `location()`.
+      - The done criteria named five expected sites and did not anticipate the
+        sixth: `looking_at` in the test module *writes* the field to stand the
+        window inside a bucket. Left as a write rather than routed through
+        `go_to`, because `go_to` also issues a read — a helper that wanted to
+        set up a position would have been setting up a network call too.
+      - `cargo test --workspace` green: 264 core, 40 window.
   - Paths: `crates/caixonho-gui/src/app.rs`
   - Done criteria: every site that derives the breadcrumb trail, the path bar
     text or the contents pane calls the accessor from 1.2 rather than reading

@@ -84,7 +84,11 @@ pub(crate) struct CaixonhoApp {
     /// is read from it rather than kept beside it, because a second record of
     /// where you are is a second thing that can be wrong. `None` means a
     /// connection is chosen and no bucket is — the bucket table.
-    location: Option<Location>,
+    ///
+    /// Read through [`CaixonhoApp::location`] rather than directly: a position
+    /// is the current one only while the connection it was read on is still
+    /// active, and saying so is the accessor's job.
+    position: Option<Position>,
     /// What one location holds.
     objects: Entity<TableState<ObjectsDelegate>>,
     /// How the current location's listing is going.
@@ -133,6 +137,20 @@ enum SignInEvent {
     Started(DeviceAuthorization),
     /// It ended, one way or another.
     Settled(Result<SignInOutcome, Error>),
+}
+
+/// Where the user is, and the connection they got there on.
+///
+/// The two travel together because the spec's location *is* the pair: the
+/// `object-browsing` requirement names a connection, a bucket and a prefix as
+/// one answer, while `Location` — core's addressing form — carries only the
+/// last two. Keeping the connection *beside* the location instead of with it
+/// is what let a pane outlive the connection it belonged to (`XONHO-0019`).
+struct Position {
+    /// The connection the location was read on.
+    connection: ConnectionId,
+    /// Bucket and prefix, in core's addressing form.
+    at: Location,
 }
 
 /// How reading the current location is going.
@@ -421,7 +439,7 @@ impl CaixonhoApp {
             region: RegionChoice::All,
             region_options: vec![RegionChoice::All],
             region_select,
-            location: None,
+            position: None,
             objects,
             listing: Listing::Idle,
             more: None,
@@ -454,6 +472,20 @@ impl CaixonhoApp {
         self.issue(id, source, cx);
     }
 
+    /// Where the user is, or nothing when they are not inside a bucket.
+    ///
+    /// Nothing, too, when the position was read on a connection that is no
+    /// longer active: a location reached on one account is not a location on
+    /// the next, so it is not shown as though it were. The guard is what makes
+    /// a forgotten reset harmless rather than merely unlikely — every reader
+    /// of position comes through here.
+    fn location(&self) -> Option<&Location> {
+        self.position
+            .as_ref()
+            .filter(|position| position.connection == self.outcome.active())
+            .map(|position| &position.at)
+    }
+
     /// Go to `location` and read it.
     ///
     /// Everything shown about position is derived from the location this sets,
@@ -471,7 +503,10 @@ impl CaixonhoApp {
                 .show(location.prefix.clone(), Vec::new(), Vec::new());
             cx.notify();
         });
-        self.location = Some(location.clone());
+        self.position = Some(Position {
+            connection: self.outcome.active(),
+            at: location.clone(),
+        });
         self.read(location, None, cx);
     }
 
@@ -496,7 +531,7 @@ impl CaixonhoApp {
         outcome: Result<Page, Error>,
         cx: &mut Context<Self>,
     ) {
-        if self.location.as_ref() != Some(&asked) {
+        if self.location() != Some(&asked) {
             return; // A page for a screen nobody is looking at.
         }
         self.fetching = false;
@@ -539,7 +574,8 @@ impl CaixonhoApp {
 
     /// Ask for the next page, if there is one and none is already in flight.
     fn read_more(&mut self, cx: &mut Context<Self>) {
-        let (Some(location), Some(cursor)) = (self.location.clone(), self.more.clone()) else {
+        let (Some(location), Some(cursor)) = (self.location().cloned(), self.more.clone())
+        else {
             return;
         };
         if self.fetching {
@@ -552,7 +588,7 @@ impl CaixonhoApp {
     /// Enter the row at `index`, when it is something that can be entered.
     fn enter(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let (Some(location), Some(entry)) = (
-            self.location.clone(),
+            self.location().cloned(),
             self.objects.read(cx).delegate().row(index).cloned(),
         ) else {
             return;
@@ -575,7 +611,7 @@ impl CaixonhoApp {
 
     /// Leave the bucket entirely, back to the account's listing.
     fn leave_bucket(&mut self, cx: &mut Context<Self>) {
-        self.location = None;
+        self.position = None;
         self.listing = Listing::Idle;
         self.more = None;
         self.fetching = false;
@@ -1044,12 +1080,12 @@ impl CaixonhoApp {
         // account disappears. At account level the table already lists every
         // bucket, with room for the full name, so the rail was repeating it in
         // a third of the width.
-        self.location.as_ref()?;
+        self.location()?;
         let names = self.table.read(cx).delegate().shown_names();
         if names.is_empty() {
             return None;
         }
-        let here = self.location.as_ref().map(|at| at.bucket.clone());
+        let here = self.location().map(|at| at.bucket.clone());
 
         Some(
             SidebarGroup::new("Buckets").child(SidebarMenu::new().children(names.into_iter().map(
@@ -1635,7 +1671,7 @@ impl CaixonhoApp {
         // Inside a bucket, the panel shows what that location holds. This is
         // the one branch browsing adds here; everything it renders lives in
         // `views/objects.rs` (task 1.1, amended).
-        if let Some(location) = self.location.clone() {
+        if let Some(location) = self.location().cloned() {
             return self.contents(location, cx).into_any_element();
         }
 
@@ -1853,7 +1889,10 @@ mod tests {
                 delegate.rows = vec![bucket("reports"), bucket("logs")];
                 delegate.shown = vec![0, 1];
             });
-            app.location = Some(looking);
+            app.position = Some(Position {
+                connection: app.outcome.active(),
+                at: looking,
+            });
             cx.notify();
         });
         (app, cx)
@@ -1965,7 +2004,7 @@ mod tests {
         app: &gpui::Entity<CaixonhoApp>,
         cx: &mut gpui::VisualTestContext,
     ) -> Option<Location> {
-        app.read_with(cx, |app, _| app.location.clone())
+        app.read_with(cx, |app, _| app.location().cloned())
     }
 
     #[gpui::test]
