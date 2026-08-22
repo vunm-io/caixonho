@@ -29,8 +29,32 @@ verification is not the task, and record the result in `executor notes`.
 
 ## 1. A position that carries its connection
 
-- [ ] 1.1 Write the failing window test before the fix, and see it red
+- [x] 1.1 Write the failing window test before the fix, and see it red
       [dispatch: main]
+      - Dispatched: main (2026-08-22) — done; verified by running it against
+        the unfixed code and reading the panic:
+
+        ```
+        assertion `left == right` failed: after switching connections the
+        window still reports a position, so the trail, the path bar and the
+        contents of the previous connection's bucket are all still on screen
+          left: Some(Location { bucket: "reports", prefix: Prefix("") })
+         right: None
+        ```
+
+        The test is `app::tests::switching_connections_ends_the_position`, and
+        it drives `select_profile` and `go_to` rather than setting fields — the
+        defect is precisely what one of those two forgets, so a test that poked
+        the field would have assumed away what it was written to catch. Its
+        *first* assertion, the one before the switch, passed: the window really
+        was inside the first connection's bucket, so the failure below it is
+        about the switch and not about a setup that never arrived.
+
+        One deliberate seam: the test reads position through a `position()`
+        helper in the test module rather than touching `app.location` inline.
+        Task 1.2 replaces the field with an accessor, and that is a one-line
+        change to the helper instead of an edit to the assertions — so the red
+        recorded here and the green recorded there are the same test.
   - Paths: `crates/caixonho-gui/src/app.rs` (its `#[cfg(test)]` module)
   - Done criteria: a test builds a window over two connections using the
     `World` seam from `XONHO-0015` (`caixonho-core` feature `test-support`,

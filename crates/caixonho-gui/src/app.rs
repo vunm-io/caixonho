@@ -1925,6 +1925,84 @@ mod tests {
         );
     }
 
+    /// A window over two connections, with no profile chosen and no bucket
+    /// open. Two `profiles` rather than stored credentials, because that is
+    /// the shorter of the two paths into `connections()`.
+    fn with_two_connections(
+        cx: &mut TestAppContext,
+    ) -> (gpui::Entity<CaixonhoApp>, &mut gpui::VisualTestContext) {
+        cx.update(gpui_component::init);
+        let store: Arc<dyn caixonho_core::ObjectStore> = Arc::new(StoreDouble::allows_listing());
+        let (app, cx) = cx.add_window_view(|window, cx| {
+            CaixonhoApp::new(
+                Diagnostics::without_a_log(),
+                World::scripted(store),
+                window,
+                cx,
+            )
+        });
+        app.update(cx, |app, cx| {
+            app.profiles = vec![
+                Profile {
+                    name: "first".to_owned(),
+                    is_default: true,
+                },
+                Profile {
+                    name: "second".to_owned(),
+                    is_default: false,
+                },
+            ];
+            cx.notify();
+        });
+        (app, cx)
+    }
+
+    /// Where the window says it is.
+    ///
+    /// Read in one place on purpose: the change that moves the position behind
+    /// an accessor moves this line, and not the tests that ask the question.
+    fn position(
+        app: &gpui::Entity<CaixonhoApp>,
+        cx: &mut gpui::VisualTestContext,
+    ) -> Option<Location> {
+        app.read_with(cx, |app, _| app.location.clone())
+    }
+
+    #[gpui::test]
+    fn switching_connections_ends_the_position(cx: &mut TestAppContext) {
+        // The defect the owner found by driving the real application on
+        // 2026-08-21: the sidebar follows the switch and the pane does not.
+        // `leave_bucket` clears the position; `select_profile` never learned
+        // to, and nothing in the types made it.
+        let (app, cx) = with_two_connections(cx);
+
+        app.update_in(cx, |app, window, cx| {
+            app.select_profile(0, window, cx);
+            app.go_to(
+                Location::at("reports".to_owned(), CorePrefix::root()),
+                window,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            position(&app, cx).map(|at| at.bucket),
+            Some("reports".to_owned()),
+            "the window should be inside the first connection's bucket before the switch"
+        );
+
+        app.update_in(cx, |app, window, cx| app.select_profile(1, window, cx));
+        cx.run_until_parked();
+
+        assert_eq!(
+            position(&app, cx),
+            None,
+            "after switching connections the window still reports a position, so the trail, \
+             the path bar and the contents of the previous connection's bucket are all still \
+             on screen"
+        );
+    }
+
     /// A real view, rendered to an image — `XONHO-0009` task 6.3.
     ///
     /// macOS only, and not by preference. `gpui_platform::current_headless_renderer`
