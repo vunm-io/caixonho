@@ -166,6 +166,14 @@ records that work happened; this records that nothing was left behind.
 2. **Do the reader-facing documents still tell the truth?** `README.md`,
    `docs/architecture.md`, `docs/roadmap.md`, `docs/design-language.md`. A change
    that alters what the app does for a user carries its own documentation.
+   Two readings, and the second is the one that gets skipped: *claims this
+   change contradicts*, and *claims made wrong by this change's absence*.
+   `docs/roadmap.md` carries a row per change and `docs/planned-changes.md`
+   holds sections written while a decision was open — neither is caught by the
+   first reading. Check your own row, then the rows either side of it: this
+   question is asked per-change, so a cell belonging to a *different* change
+   goes stale with nobody scheduled to look at it. On 2026-08-22 that was three
+   cells and two sections, the oldest wrong for two days.
 3. **Did we leave rubbish?** Dead code and unused API, throwaway scripts and
    diagnostic files, commented-out blocks, `TODO`s with nobody's name on them,
    duplicated constants that will drift. Delete it now — API kept "for later"

@@ -7,6 +7,25 @@ changes under `openspec/changes/`.
 Requirements live in [`PROJECT_BRIEF.md`](PROJECT_BRIEF.md); this file only
 decides how they are cut into changes.
 
+**Entries go stale in two directions, and only one of them is obvious.** A
+finding can be overtaken by work that fixed it, and a section written while a
+decision was open can go on reading as though it still were. Both leave the
+next reader planning work that exists — which is the opposite of what a
+staging list is for.
+
+*Audited 2026-08-22 against `XONHO-0015` through `XONHO-0019`.* Corrected:
+the `cargo deny` entry (delivered by `XONHO-0017` the day before), the
+`XONHO-0006` folder section (decided, shipped, and still titled *has to
+decide*), and *Where the bucket list should live* (built, and built
+deliberately differently from its own first bullet). Checked against the code
+and found still true, so that the next audit can start after them: R2 reachable
+on the profile path only — `StoredCredential` is still `{name, region,
+access_key_id}` with nowhere for an endpoint; no filter by access and no sort,
+so the buried-openable-buckets problem stands; no listing or object cache in
+the brief; and both mechanisms deferred out of `XONHO-0016` still unstarted —
+`Scope` is still `{bucket, prefix}`, and `shown_kind` is a badging rule rather
+than the narrowing-by-kind that section describes.
+
 ## Why these four, separately
 
 Each owns a subsystem with its own interface, and each is testable on its own.
@@ -126,7 +145,21 @@ ran into: permission to work inside a bucket, none to enumerate the account.
 Without this the app is a dead end for those keys — it can only offer a
 listing the credential is not allowed to make.
 
-## What `XONHO-0006` has to decide: S3 has no folders
+## What `XONHO-0006` had to decide: S3 has no folders
+
+> **Decided and shipped. Retitled 2026-08-22** — it read *has to decide* for
+> two days after the deciding was done. Each of the four now has a test
+> carrying it in `caixonho-core/src/listing.rs`, and the names are the map:
+> `a_folder_marker_is_the_folder_rather_than_an_entry_inside_it`,
+> `a_prefix_nothing_stands_behind_is_still_a_folder`,
+> `an_object_and_a_prefix_may_share_a_name_and_both_survive`, and
+> `the_marker_rule_does_not_touch_a_key_that_merely_starts_the_same` — the
+> last being a guard nothing below asked for, added because the marker rule is
+> a prefix comparison and prefix comparisons over-reach.
+>
+> The reasoning is kept in full, in the present tense it was written in. It is
+> why the code looks the way it does, and a reader who meets only the tests
+> gets the rule without the four ordinary situations that produced it.
 
 Recorded 2026-08-20, while putting a test fixture together. `ListObjectsV2`
 with `delimiter=/` answers in two separate fields — `CommonPrefixes` are the
@@ -355,6 +388,24 @@ Either way the honest thing is the same: **unknown is not a third shade of
 denied**, and whichever ordering exists must keep it visible as its own state.
 
 ## Where the bucket list should live
+
+> **Decided and built, and not quite as proposed. Noted 2026-08-22.** What
+> shipped follows this section everywhere except its first bullet. The rail
+> does *not* hold the chosen connection's buckets whenever a connection is
+> chosen: it appears **only while inside a bucket**, and at account level the
+> main-panel table carries them alone.
+>
+> The reason is better than the proposal and lived only in a code comment on
+> `bucket_group` until now — at account level the table already lists every
+> bucket with room for the full name, so a rail there repeats it in a third of
+> the width. The rail exists for the case the table cannot serve: once the main
+> panel gives itself over to a bucket's contents, the account would otherwise
+> disappear from the screen entirely.
+>
+> Written down because a proposal left standing next to a different
+> implementation reads as a plan not yet carried out, and the next person to
+> "finish" it would widen the rail back into the case that was deliberately
+> declined.
 
 Asked 2026-08-20, together with the observation that clicking a bucket does
 nothing: should buckets stay in the main panel, should they move left, and
