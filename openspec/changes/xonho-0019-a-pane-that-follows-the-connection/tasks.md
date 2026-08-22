@@ -208,8 +208,17 @@ verification is not the task, and record the result in `executor notes`.
 
 ## 4. Close-out
 
-- [ ] 4.1 Update the reader-facing documents in this change, not after it
+- [x] 4.1 Update the reader-facing documents in this change, not after it
       [dispatch: main]
+      - Dispatched: main (2026-08-22) — done; the §4.2 breadcrumb row keeps
+        **done** and gains the note, naming `XONHO-0019` and saying in the row
+        itself why it did not move to partial.
+      - `./scripts/count-requirements.sh` re-run and compared against the
+        prose totals on lines 72–73: 11 done, 10 partial, 3 not started, and
+        §4.1/§4.2/§4.3 split 2-5-1 / 3-3-1 / 6-2-1. Identical before and after,
+        which is the expected result of a note-only edit — checked rather than
+        assumed, because this file has drifted twice in one day with the total
+        right and the split wrong.
   - Paths: `docs/requirements-status.md`
   - Done criteria: the §4.2 row *"Breadcrumbs plus an editable path bar"* keeps
     its **done** state and gains a note that the trail is now shown only for
@@ -219,8 +228,15 @@ verification is not the task, and record the result in `executor notes`.
     before, both times with the total right and the split wrong.
   - Verification: `./scripts/count-requirements.sh` agrees with the tables
 
-- [ ] 4.2 `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`
+- [x] 4.2 `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`
       [dispatch: external-ok]
+      - Dispatched: main (2026-08-22) — both exit zero. `fmt` touched two
+        places, both mine: a `let ... else` I had wrapped by hand, and an
+        import out of order. `clippy` had nothing to say; its only output is
+        the pre-existing future-incompat notice for `block v0.1.6`, which is a
+        dependency notice and not a lint.
+      - Suite re-run *after* formatting rather than before: 264 core, 42
+        window, green.
   - Paths: whatever the tools change
   - Done criteria: both commands exit zero with no diff left unstaged
   - Verification: the two commands

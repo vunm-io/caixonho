@@ -34,7 +34,7 @@ gap is named. **none** — not started.
 | Prefix navigation as folders (`ListObjectsV2`, `delimiter=/`), paginated and lazy | done | `XONHO-0006`. A page at a time, the next fetched on reaching the end; an empty location and a refused one are never drawn alike |
 | Virtualized table, 100k+ rows at ~60fps | partial | Virtualized, measured once on a synthetic feed in M0, and now rendering real listings — but never a long one. The claim stands unmeasured |
 | Columns name, size, last modified, storage class, ETag; sortable, resizable, persisted | partial | `XONHO-0006` renders name, size and last modified, and carries storage class and ETag across the port unrendered. Nothing is sortable, resizable or persisted |
-| Breadcrumbs plus an editable path bar | done | `XONHO-0006`. The trail is read from the location rather than stored; the path bar is the mode it turns into, and is also how a bucket is opened when the account cannot be listed |
+| Breadcrumbs plus an editable path bar | done | `XONHO-0006`. The trail is read from the location rather than stored; the path bar is the mode it turns into, and is also how a bucket is opened when the account cannot be listed. `XONHO-0019`: the trail is shown only for the connection it was read on — a switch ends the location instead of leaving the previous account's bucket named. Still **done**: the requirement was built, and this repaired a defect in it rather than delivering it |
 | Client-side filter of loaded rows **and** server-side prefix search, saying which is happening | partial | Region narrowing exists. No name filter, no prefix search |
 | Sort honesty — say when a sort covers only loaded rows | none | Nothing sorts yet, so nothing lies yet |
 

@@ -578,8 +578,7 @@ impl CaixonhoApp {
 
     /// Ask for the next page, if there is one and none is already in flight.
     fn read_more(&mut self, cx: &mut Context<Self>) {
-        let (Some(location), Some(cursor)) = (self.location().cloned(), self.more.clone())
-        else {
+        let (Some(location), Some(cursor)) = (self.location().cloned(), self.more.clone()) else {
             return;
         };
         if self.fetching {
@@ -1876,8 +1875,8 @@ mod tests {
     use super::*;
     use caixonho_core::store::double::StoreDouble;
     use caixonho_core::{Object, Region, types::Prefix as CorePrefix};
-    use gpui_component::table::TableDelegate as _;
     use gpui::TestAppContext;
+    use gpui_component::table::TableDelegate as _;
     use std::sync::Arc;
 
     fn bucket(name: &str) -> Bucket {
