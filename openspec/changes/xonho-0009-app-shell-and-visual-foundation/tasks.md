@@ -89,6 +89,14 @@
       - Run `32333149778` on `e57015c`: `build (windows-latest)` success,
         `build (macos-latest)` success, `rustfmt` success. The shell commits
         were green when pushed; `32322529073` is the most recent of them.
+      - **2026-08-23:** task 6.3 has since added code to this change, so the
+        run above is no longer the change's tip. Re-verified rather than
+        assumed — run `32587011027` on `d65d051`, all four jobs success
+        (`dependency audit` is the job `XONHO-0017` added after the run above,
+        which is why the job count differs). Recorded here because a ticked box
+        naming a superseded commit is the shape this repo keeps being caught
+        by; this box closes for real at close-out, against whatever the tip is
+        then.
 - [ ] 6.3 [dispatch: main] Screenshots of every state for the owner to judge
       against `docs/design-language.md`, and the blurred-window comparison the
       design deferred.
