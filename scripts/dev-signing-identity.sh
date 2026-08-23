@@ -40,6 +40,28 @@
 # are per-machine too, so a new machine re-enters its credentials anyway. What
 # it needs is to be reproducible, which is what this file is for.
 #
+# WHAT THIS BUYS, MEASURED — AND WHAT IT CANNOT
+#
+# The keychain puts two gates in front of an item, and they fail differently:
+#
+# - The ACL entry records the app by its designated requirement. With this
+#   certificate that requirement is the certificate, so the grant survives
+#   rebuilds. This gate is fully solved here.
+# - The partition list records the accessor's *partition ID*. That is
+#   `teamid:<TeamIdentifier>` for Apple-issued certificates and falls back to
+#   `cdhash:<hash>` for everything else — including this one (measured
+#   2026-08-23: items created under this identity carry the creating build's
+#   CDHash, and an OU on the cert does not change it, see below). A rebuild
+#   changes the CDHash, so the FIRST access per item after a rebuild asks for
+#   the login password once; **Always Allow** re-records the new hash and it
+#   is quiet again until the next rebuild.
+#
+# So: same binary — silent. Rebuild — one password per stored credential, once.
+# The only way to zero prompts across rebuilds is an Apple-issued certificate:
+# sign in to Xcode with any Apple ID (a free one works) and create an
+# "Apple Development" certificate under Settings > Accounts > Manage
+# Certificates. `mac-app.sh` prefers one automatically when it exists.
+#
 # WHAT IT TOUCHES
 #
 # The login keychain and this user's trust settings — nothing system-wide, and
@@ -69,6 +91,13 @@ x509_extensions = ext
 prompt = no
 [dn]
 CN = $NAME
+# The OU stays for identification only. The hypothesis that it would become
+# the code's TeamIdentifier — and so a stable `teamid:` keychain partition —
+# was tested on 2026-08-23 and REFUTED: signed with this exact certificate,
+# `codesign -dvvv` still reports `TeamIdentifier=not set`. Only Apple-issued
+# certificates carry a team into the signature. See the WHAT THIS BUYS block
+# above for what that means in practice.
+OU = CAIXONHODEV
 [ext]
 basicConstraints = critical,CA:false
 keyUsage = critical,digitalSignature

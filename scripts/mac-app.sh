@@ -43,8 +43,21 @@ cp target/release/caixonho-gui "$APP/Contents/MacOS/"
 # every rebuild is a new identity to the keychain and every "Always Allow"
 # stops matching. That reads to whoever is using the app as the login password
 # being demanded over and over, twice per connection and again on every switch.
-IDENTITY="Caixonho Dev"
-if security find-identity -v -p codesigning 2>/dev/null | grep -qF "$IDENTITY"; then
+# An Apple-issued identity outranks the local one when both exist: it is the
+# only kind whose signature carries a TeamIdentifier, and the keychain's
+# partition list keys on that — so grants survive rebuilds with zero prompts.
+# The local self-signed identity keys the partition on the build's own hash
+# instead, which costs one password per stored credential after each rebuild
+# (measured 2026-08-23; the why is in dev-signing-identity.sh).
+identities="$(security find-identity -v -p codesigning 2>/dev/null)"
+if printf '%s' "$identities" | grep -q "Apple Development"; then
+    IDENTITY="Apple Development"
+elif printf '%s' "$identities" | grep -qF "Caixonho Dev"; then
+    IDENTITY="Caixonho Dev"
+else
+    IDENTITY=""
+fi
+if [ -n "$IDENTITY" ]; then
     codesign --force --sign "$IDENTITY" "$APP"
     signed="signed as $IDENTITY"
 else
