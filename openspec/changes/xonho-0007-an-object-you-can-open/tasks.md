@@ -243,7 +243,12 @@
   - Done criteria: all three exit zero
   - Verification: the commands themselves
 
-- [ ] 6.2 CI green on both targets, run id recorded here [dispatch: main]
+- [x] 6.2 CI green on both targets, run id recorded here [dispatch: main]
+      - Run `32697982638` on `87b79ba` (this change's final code commit):
+        `build (windows-latest)`, `build (macos-latest)`, `dependency audit`
+        and `rustfmt` all success. The Windows run is the one that executes
+        `promotion_replaces_an_existing_final_file` on the platform whose
+        rename semantics it pins.
   - Paths: none
   - Done criteria: all four jobs successful for the tip; run id written here
   - Verification: `gh run list --limit 1 --repo vunm-io/caixonho`
