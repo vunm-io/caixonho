@@ -199,6 +199,10 @@ pub mod double {
         /// Every conditional write meets a taken key; an unconditional one
         /// succeeds — the shape a real bucket has when the key exists.
         KeyTaken,
+        /// The first `n` conditional writes meet a taken key; the one after
+        /// that is free. What keep-both actually walks into, and what
+        /// `KeyTaken` alone cannot express.
+        TakenUntil(std::sync::atomic::AtomicU32),
         /// The endpoint does not implement the condition.
         ConditionUnsupported,
         /// The write itself is refused.
@@ -362,6 +366,15 @@ pub mod double {
             double
         }
 
+        /// The first `taken` conditional writes are refused; the next
+        /// succeeds. A bucket where `x.csv` and `x (2).csv` exist and
+        /// `x (3).csv` does not is `taken_until(2)`.
+        pub fn taken_until(taken: u32) -> Self {
+            let mut double = Self::allows_listing();
+            double.writes = Writes::TakenUntil(std::sync::atomic::AtomicU32::new(taken));
+            double
+        }
+
         /// The endpoint does not implement conditional writes.
         pub fn condition_unsupported() -> Self {
             let mut double = Self::allows_listing();
@@ -464,6 +477,23 @@ pub mod double {
                     super::PutOutcome::ConditionUnsupported
                 }
                 (Writes::KeyTaken, super::IfAbsent::Refuse) => super::PutOutcome::KeyTaken,
+                (Writes::TakenUntil(left), super::IfAbsent::Refuse) => {
+                    // Counts down across calls, so a caller walking
+                    // candidates meets a run of taken keys and then a free
+                    // one — which is the shape keep-both is written for.
+                    if left
+                        .fetch_update(
+                            std::sync::atomic::Ordering::SeqCst,
+                            std::sync::atomic::Ordering::SeqCst,
+                            |n| n.checked_sub(1),
+                        )
+                        .is_ok()
+                    {
+                        super::PutOutcome::KeyTaken
+                    } else {
+                        super::PutOutcome::Created
+                    }
+                }
                 // Unconditional writes land whatever is there — including
                 // under `ConditionUnsupported`, where the condition was never
                 // the question.

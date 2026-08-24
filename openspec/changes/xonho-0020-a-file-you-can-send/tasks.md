@@ -201,8 +201,10 @@
 
 ## 6. Close-out
 
-- [ ] 6.1 `cargo fmt --all`, `cargo clippy --workspace --all-targets --
+- [x] 6.1 `cargo fmt --all`, `cargo clippy --workspace --all-targets --
       -D warnings`, `cargo test --workspace` green [dispatch: main]
+      - Done in `main` (2026-08-24): fmt clean, clippy zero at
+        `-D warnings`, 309 core + 50 window green (6 + 1 ignored).
   - Paths: whole workspace
   - Done criteria: all three exit zero
   - Verification: the commands themselves
@@ -224,7 +226,41 @@
   - Verification: the log shows the outcomes with no keys and no local paths
     in any line
 
-- [ ] 6.4 Close-out review per `AGENTS.md` [dispatch: main]
+- [x] 6.4 Close-out review per `AGENTS.md` [dispatch: main]
+      - Run 2026-08-24, before the live check for the same reason as last
+        time: its findings needed code while the change was warm.
+      - **Q4, the catch: keep-both's success path had no test.** The only
+        keep-both test drove the double that refuses *every* conditional
+        write, so it asserted the exhaustion end — the path a user actually
+        walks, where a candidate is free and `stepped_aside` comes back
+        true, was never exercised. The double gained `taken_until(n)`
+        (counts down across calls, so a caller meets a run of taken keys and
+        then a free one) and the test asserts `daily/summary (4).csv` with
+        `stepped_aside`. It passed first try, so it was **ablated** —
+        reporting `stepped_aside: false` turns it red — because a test that
+        was never red is a claim, not a guard.
+      - **Q4, checked and found sound:** the key is built as
+        `location.prefix.as_str()` + the file name, which is correct only
+        because `Prefix::parse` guarantees a trailing separator and root is
+        empty (`types.rs:201`, `:207`). Resting on an existing invariant
+        rather than an untested assumption — no new test, because the right
+        place for that assertion is `Prefix`'s own tests, where it is.
+      - **Q3:** `then_open` is only meaningful for downloads and is `false`
+        and unread on the upload path. Left as-is deliberately: it is one
+        bool, and the queue change is what re-cuts this struct. Named here
+        so it is a known asymmetry rather than a discovery.
+      - **Q1 departures:** none beyond what design.md already records. The
+        spec scenario that could not be implemented was fixed during
+        planning, not here.
+      - **Q2:** roadmap and requirements-status were written in 5.1 in the
+        commit that made them true. Rows either side checked: `XONHO-0007`'s
+        row still correctly reads *awaiting live acceptance*, and M1's rows
+        are untouched by this change.
+      - **Q4 residue for 6.3:** the conditional write itself. Every unit
+        test proves the *double* refuses a taken key; whether the real
+        endpoint enforces `If-None-Match` is unprovable from here, which is
+        what `this_machine_writing_one_object_twice` exists for. Also
+        unexercised headless: `prompt_for_paths` with `files: true`.
   - Paths: this change
   - Done criteria: the review is run and its findings recorded here,
     including question 2 read the wide way — the rows either side of this

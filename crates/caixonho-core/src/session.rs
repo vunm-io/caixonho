@@ -1689,6 +1689,42 @@ mod tests {
         }
     }
 
+    /// Keep-both's **success** path, which the exhaustion test above cannot
+    /// reach: two candidates taken, the third free. Added by the close-out
+    /// review, which asked what was asserted but not verified and found this
+    /// — the path a user actually walks was covered only at its failure end.
+    #[tokio::test]
+    async fn keep_both_takes_the_first_free_key_and_says_it_stepped_aside() {
+        let fixture = Fixture::new("upload-keep-both-succeeds");
+        let session = fixture.session("work");
+        let credentials = session.credentials_changed("work");
+        // `summary (2).csv` and `summary (3).csv` are taken; the fourth
+        // candidate is free.
+        session.install_object_store(Arc::new(StoreDouble::taken_until(2)), credentials);
+
+        let told = uploading(
+            &session,
+            a_local_file("keep-both-ok", b"new"),
+            transfer::Collision::KeepBoth,
+        );
+
+        match told.await.expect("delivered") {
+            UploadOutcome::Finished {
+                key,
+                stepped_aside,
+                bytes,
+            } => {
+                assert_eq!(
+                    key, "daily/summary (4).csv",
+                    "numbering starts at 2 and walks up past what is taken"
+                );
+                assert!(stepped_aside, "the window has to be able to say so");
+                assert_eq!(bytes, 3);
+            }
+            other => panic!("expected Finished, got {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn replace_is_the_only_way_an_object_is_overwritten() {
         let fixture = Fixture::new("upload-replace");
