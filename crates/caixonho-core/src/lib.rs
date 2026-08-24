@@ -70,6 +70,7 @@ pub mod session;
 pub mod sso;
 pub mod sso_adapter;
 pub mod store;
+pub mod transfer;
 pub(crate) mod tls;
 pub mod types;
 

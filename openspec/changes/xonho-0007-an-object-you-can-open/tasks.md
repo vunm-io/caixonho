@@ -8,8 +8,16 @@
 
 ## 1. The name a key gets on disk
 
-- [ ] 1.1 The mapping, as one pure function with property tests
+- [x] 1.1 The mapping, as one pure function with property tests
       [dispatch: main]
+      - Done in `main` (2026-08-24), red first: five tests failed on a
+        `todo!()` body, then the scheme. Property tests are hand-rolled
+        loops over a corpus dense in the touched characters — proptest is
+        not this crate's dependency and the space is small enough to walk.
+      - One deliberate narrowing, recorded in the test itself: injectivity
+        is promised for distinct *final segments*. Two keys sharing a
+        segment (`a/x.txt`, `b/x.txt`) meet at the destination as the
+        existing-file question — no function of one key can see the other.
   - Paths: `crates/caixonho-core/src/transfer.rs` (new module),
     `crates/caixonho-core/src/lib.rs`
   - Done criteria: `local_name(key) -> Mapped` where `Mapped` carries the name
@@ -22,8 +30,12 @@
     reporting it.
   - Verification: `cargo test -p caixonho-core transfer::`
 
-- [ ] 1.2 ADR for the scheme [dispatch: main]
-  - Paths: `docs/adr/0002-key-to-filename-scheme.md` (number: next free under
+- [x] 1.2 ADR for the scheme [dispatch: main]
+      - Done in `main` (2026-08-24) as **ADR-0004** — the plan's `0002` guess
+        was stale; 0002 and 0003 already exist. Percent-encoding over
+        replacement for injectivity, `%` encoded to keep it, FNV-1a inline
+        for a suffix stable across releases, one scheme with no `cfg`.
+  - Paths: `docs/adr/0004-key-to-filename-scheme.md` (number: next free under
     `docs/adr/`)
   - Done criteria: the encoding, the suffix rule, why percent-encoding over
     replacement characters (reversibility of *reading* a name back), and the
