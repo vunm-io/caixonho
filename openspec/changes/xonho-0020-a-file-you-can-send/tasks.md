@@ -209,7 +209,10 @@
   - Done criteria: all three exit zero
   - Verification: the commands themselves
 
-- [ ] 6.2 CI green on both targets, run id recorded here [dispatch: main]
+- [x] 6.2 CI green on both targets, run id recorded here [dispatch: main]
+      - Run `32746594420` on `ee33499` (this change's final code commit):
+        `build (windows-latest)`, `build (macos-latest)`, `dependency audit`
+        and `rustfmt` all success.
   - Paths: none
   - Done criteria: all four jobs successful for the tip; run id written here
   - Verification: `gh run list --limit 1 --repo vunm-io/caixonho`
