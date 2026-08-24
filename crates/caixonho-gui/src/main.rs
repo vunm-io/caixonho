@@ -39,6 +39,15 @@ fn main() {
             // wrote instead (`XONHO-0015`).
             let world = World::from_env();
 
+            // The open-cache's bound is a startup sweep (`object-transfer`
+            // spec, "Managed locations do not accumulate") — and the close-out
+            // review is why this line exists: the sweep was written, tested,
+            // and called by nothing. A green suite says the function works;
+            // only a call site makes the promise true.
+            if let Some(cache) = caixonho_core::transfer::open_cache_dir() {
+                caixonho_core::transfer::sweep_open_cache(&cache, std::time::SystemTime::now());
+            }
+
             cx.spawn(async move |cx| {
                 let options = cx.update(|cx| WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(Bounds::centered(

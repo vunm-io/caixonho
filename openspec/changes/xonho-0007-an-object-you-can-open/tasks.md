@@ -234,8 +234,11 @@
 
 ## 6. Close-out
 
-- [ ] 6.1 `cargo fmt --all`, `cargo clippy --workspace --all-targets --
+- [x] 6.1 `cargo fmt --all`, `cargo clippy --workspace --all-targets --
       -D warnings`, `cargo test --workspace` green [dispatch: main]
+      - Done in `main` (2026-08-24): fmt clean via `--check`, clippy zero
+        errors at `-D warnings`, 294 core + 47 window green (5 + 1 ignored,
+        the live and screenshot ones).
   - Paths: whole workspace
   - Done criteria: all three exit zero
   - Verification: the commands themselves
@@ -257,7 +260,46 @@
   - Verification: the log shows the transfers' outcomes with no keys in any
     line
 
-- [ ] 6.4 Close-out review per `AGENTS.md` [dispatch: main]
+- [x] 6.4 Close-out review per `AGENTS.md` [dispatch: main]
+      - Run 2026-08-24, before 6.3 rather than after, because three of its
+        findings needed code and docs while the change was still warm. What
+        it caught:
+      - **Q1/Q4, the real one: the sweep was written, tested, and called by
+        nothing.** The spec's "Managed locations do not accumulate" had a
+        green unit test and no call site — the exact shape of the lesson
+        this repo keeps re-learning: a green suite reads as approval for
+        things it never touched. Wired at startup in `main.rs`; the comment
+        there names this review as why the line exists.
+      - **Q4: promote-over-existing rode on Windows rename semantics with no
+        test.** `Collision::Replace` promotes onto an existing file, which
+        on Windows depends on `MOVEFILE_REPLACE_EXISTING`; pinned with a
+        test that CI executes on the platform whose semantics differ.
+      - **Q5: a finding lived only in a conversation.** The R2 connection
+        listing 2 buckets in 12.3s (2026-08-23 log) had been "noted" in
+        chat and written nowhere — now parked in `planned-changes.md` with
+        the numbers and a suspicion, unverified and labeled as such.
+      - **Q2, both directions:** roadmap and requirements-status were
+        updated in 5.1 in the same commits that made them true;
+        `planned-changes.md`'s Order section still read as a future plan
+        and now carries the landed note. Rows either side checked: M1
+        rows unchanged and still true (0006/0018/0019 awaiting live
+        acceptance, correctly).
+      - **Q1 departures, all written where they belong:** cooperative
+        cancel (amended in design.md), ADR numbered 0004 not the guessed
+        0002 (noted in 1.2), opener refusal invisible to gpui so the
+        where-it-is report is unconditional (noted in 4.3; the spec's
+        scenario is satisfied as a superset — when the opener refuses, the
+        user is told where the file is, because they always are).
+      - **Q3: no rubbish found** — no dead API, no leftover diagnostics;
+        the temporary state-probe from the screenshot harness session was
+        already removed in-session.
+      - **Q4 residue, named for 6.3:** the GET redirect follow-once path
+        has no canned test of its own (the listing path's has; the
+        machinery is shared but the match block is not) — a real
+        cross-region object read in 6.3 is what exercises it; the
+        `#[ignore]`d live test exists for exactly that. `prompt_for_paths`
+        and the OS opener handoff are untestable headless and are 6.3's
+        second and third reasons to exist.
   - Paths: this change
   - Done criteria: the review is run and findings recorded here, including
     the second question read the wide way: rows either side of this change's

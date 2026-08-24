@@ -709,6 +709,28 @@ mod tests {
         );
     }
 
+    /// Replace, chosen by the user, promotes **over** the existing file —
+    /// pinned as a test because it rides on `std::fs::rename` replacing on
+    /// Windows (`MOVEFILE_REPLACE_EXISTING`), and CI runs this file there:
+    /// the platform whose semantics differ is the one that executes this
+    /// assertion.
+    #[test]
+    fn promotion_replaces_an_existing_final_file() {
+        let dir = a_dir("replaces");
+        let final_path = dir.join("report.csv");
+        std::fs::write(&final_path, b"the old version").expect("fixture");
+
+        let mut writer = Writer::begin(&final_path).expect("begins");
+        writer.write(b"the new version").expect("writes");
+        writer.promote().expect("promotes over the old file");
+
+        assert_eq!(
+            std::fs::read(&final_path).expect("exists"),
+            b"the new version"
+        );
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+    }
+
     #[test]
     fn a_stale_working_file_is_replaced_not_resumed() {
         let dir = a_dir("stale");

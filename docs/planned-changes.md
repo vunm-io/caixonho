@@ -47,6 +47,22 @@ asking for the first N KB instead of the whole object.
 
 **0009 → 0004 → 0006 → 0007 → 0008.**
 
+> **`XONHO-0007` landed 2026-08-24** — single-object download plus
+> open-with-the-system; uploads and the queue are M2's remaining body. Noted
+> here because this section reads as a future plan, and the two-directions
+> lesson in the header is about exactly this sentence going stale.
+
+### A finding parked here so it is not lost (2026-08-23)
+
+Listing the R2 connection took **12.3 seconds for 2 buckets** (log,
+2026-08-23: `connection opened` 07:03:01.6 → `listed the account` 07:03:13.9)
+while the same build listed an AWS account in 0.7s and stored-credential
+connections in ~60ms. Suspicion, unverified: the parallel directory-bucket
+listing against an endpoint that does not implement it may be burning a
+timeout before the combine — `XONHO-0016` relieved exactly this case for
+*errors*, but a slow non-answer is not an error until it times out. Worth a
+look when anything next touches the listing path; measure before deciding.
+
 Credential entry moved ahead of browsing on 2026-08-19, reversing the earlier
 decision. The argument for browsing first was that a bucket list alone is a dead
 end and opening objects is why anyone launches an S3 client. That is still true,
