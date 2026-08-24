@@ -465,6 +465,22 @@ pub(crate) fn transfer_settled(bucket: &str, bytes: u64, settled: TransferSettle
     }
 }
 
+/// What one upload came to (`XONHO-0020`).
+///
+/// Same rule as [`transfer_settled`] and stated again because this direction
+/// carries a *second* thing that must not be written: the local path the
+/// bytes came from names the user's machine, and the key names their data.
+/// Neither is here.
+pub(crate) fn upload_settled(bucket: &str, bytes: u64, settled: TransferSettled<'_>) {
+    match settled {
+        TransferSettled::Finished => tracing::info!(bucket, bytes, "uploaded an object"),
+        TransferSettled::Cancelled => tracing::info!(bucket, bytes, "upload cancelled"),
+        TransferSettled::Failed(error) => {
+            tracing::warn!(bucket, bytes, cause = %error, "upload failed")
+        }
+    }
+}
+
 /// How a transfer settled, for [`transfer_settled`].
 pub(crate) enum TransferSettled<'a> {
     /// Complete, at the destination.
@@ -1171,6 +1187,53 @@ mod tests {
         assert_undisclosed(&log, KEY, "the object's key");
         assert_undisclosed(&log, "salaries-2026", "the key's filename half");
         assert_undisclosed(&log, DIR, "the destination path");
+    }
+
+    /// The upload direction of the same requirement — and it carries a
+    /// second thing that must not be written: the local path the bytes came
+    /// from names the user's own machine.
+    #[test]
+    fn an_upload_logs_its_outcome_and_never_the_key_or_the_local_path() {
+        const KEY: &str = "quarterly/board-minutes.docx";
+        const DIR: &str = "caixonho-diag-upload-source";
+
+        let (log, ()) = recording(everything(), || {
+            runtime().block_on(async {
+                let session = session(Arc::new(SecretStoreDouble::open()));
+                let credentials = session.credentials_changed("work");
+                session.install_object_store(
+                    Arc::new(crate::store::double::StoreDouble::allows_listing()),
+                    credentials,
+                );
+                let dir = std::env::temp_dir().join(DIR);
+                let _ = std::fs::remove_dir_all(&dir);
+                std::fs::create_dir_all(&dir).expect("fixture dir");
+                let path = dir.join("board-minutes.docx");
+                std::fs::write(&path, b"minutes").expect("fixture file");
+
+                let (tell, told) = tokio::sync::oneshot::channel();
+                session.spawn_upload(
+                    "finance".to_owned(),
+                    KEY.to_owned(),
+                    path,
+                    crate::transfer::Collision::Ask,
+                    move |outcome| {
+                        let _ = tell.send(outcome);
+                    },
+                );
+                told.await.expect("delivered");
+                let _ = std::fs::remove_dir_all(&dir);
+            });
+        });
+
+        assert!(
+            log.contains("uploaded an object"),
+            "the outcome itself is recorded:\n{log}"
+        );
+        assert!(log.contains("finance"), "the bucket is the scope:\n{log}");
+        assert_undisclosed(&log, KEY, "the object's key");
+        assert_undisclosed(&log, "board-minutes", "the key's filename half");
+        assert_undisclosed(&log, DIR, "the local source path");
     }
 
     #[test]

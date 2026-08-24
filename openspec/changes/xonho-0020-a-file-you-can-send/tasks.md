@@ -81,7 +81,16 @@
 
 ## 3. The upload itself
 
-- [ ] 3.1 Size gate before anything is sent [dispatch: main]
+- [x] 3.1 Size gate before anything is sent [dispatch: main]
+      - Done in `main` (2026-08-24), red first. The boundary check is split
+        out as `within_one_request(bytes)` so it can be tested at exactly
+        the limit and one byte over **without writing five gibibytes** to a
+        temp directory — the file check is then a `stat` plus that
+        comparison. A `stat` that fails is a read failure, not a size
+        verdict, and its detail carries no path.
+      - `readable()` is duplicated from the GUI's formatter rather than
+        shared: core must not depend on the GUI, and a refusal that says
+        `5368709121` helps nobody. Small and deliberate.
   - Paths: `crates/caixonho-core/src/transfer.rs`
   - Done criteria: `SINGLE_REQUEST_LIMIT` (5 GiB, the service's documented
     figure, named and commented as such) and a pre-flight check returning a
@@ -90,8 +99,24 @@
     Tests at the boundary: exactly at the limit sends, one byte over refuses.
   - Verification: `cargo test -p caixonho-core transfer::`
 
-- [ ] 3.2 `Session::spawn_upload`, with the taken-key question
+- [x] 3.2 `Session::spawn_upload`, with the taken-key question
       [dispatch: main]
+      - Done in `main` (2026-08-24). Contract identical to
+        `spawn_download`'s. A taken key and an unsupported condition are
+        delivered **without logging**: nothing moved, and the log records
+        transfers, so writing a line for a question would put an event in it
+        that never happened.
+      - Keep-both is a bounded loop of conditional attempts, and its test is
+        the one that carries this change: the double refuses every
+        conditional write and accepts every unconditional one, so keep-both
+        **exhausting its bound and reporting that** proves it never once
+        fell back to an unconditional write to make progress. A green happy
+        path could not have shown that.
+      - `upload_settled` beside `transfer_settled` rather than a shared
+        function with a direction flag — two call sites, two verbs in the
+        log, and the assertion test reads better for it. The no-key test has
+        a third subject here: the local source path names the user's own
+        machine, and it is asserted absent too.
   - Paths: `crates/caixonho-core/src/transfer.rs`,
     `crates/caixonho-core/src/session.rs`
   - Done criteria: follows `spawn_download`'s contract exactly — deliver once

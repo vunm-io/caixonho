@@ -25,7 +25,7 @@ use crate::sso::{Abandon, DeviceAuthorization, RealTime, SignInLocation, SignInO
 use crate::sso_adapter::SsoOidcSignIn;
 use crate::store::ObjectStore;
 use crate::tls::HttpStack;
-use crate::transfer::{self, Cancel, Collision, DownloadOutcome};
+use crate::transfer::{self, Cancel, Collision, DownloadOutcome, UploadOutcome};
 use crate::types::{ConnectionId, Cursor, Location, Page};
 
 /// The long-lived context every request runs in.
@@ -525,6 +525,137 @@ impl Session {
         handle
     }
 
+    /// Send one local file to `key`, off the caller's thread
+    /// (`XONHO-0020`).
+    ///
+    /// Same contract as [`Self::spawn_download`]: through the store the open
+    /// connection built, `deliver` exactly once on a runtime thread, and a
+    /// cooperative [`Cancel`].
+    ///
+    /// `replace` is the user's answer to a taken key and nothing else. When
+    /// it is `false` the write is conditional and the service refuses a key
+    /// that exists — which is the whole guarantee, and why there is no
+    /// existence check anywhere in this function.
+    pub fn spawn_upload<F>(
+        &self,
+        bucket: String,
+        key: String,
+        path: std::path::PathBuf,
+        collision: Collision,
+        deliver: F,
+    ) -> Cancel
+    where
+        F: FnOnce(UploadOutcome) + Send + 'static,
+    {
+        let cancel = Cancel::default();
+        let handle = cancel.clone();
+        let store = self
+            .store
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        self.runtime.spawn(async move {
+            let Some(store) = store else {
+                deliver(UploadOutcome::Failed(Error::MissingConfiguration {
+                    profile: None,
+                    detail: "no connection is open to upload through".into(),
+                }));
+                return;
+            };
+
+            // Before a byte leaves: a file too large for one request is
+            // refused now rather than after sending most of it.
+            let bytes = match transfer::sized_for_one_request(&path) {
+                Ok(bytes) => bytes,
+                Err(cause) => {
+                    diagnostics::upload_settled(
+                        &bucket,
+                        0,
+                        diagnostics::TransferSettled::Failed(&cause),
+                    );
+                    deliver(UploadOutcome::Failed(cause));
+                    return;
+                }
+            };
+
+            // Cancelling before the request goes out is still a cancel.
+            if cancel.is_cancelled() {
+                diagnostics::upload_settled(&bucket, 0, diagnostics::TransferSettled::Cancelled);
+                deliver(UploadOutcome::Cancelled);
+                return;
+            }
+
+            let outcome = match collision {
+                // Replace is the one unconditional write in this codebase,
+                // and it is reachable only from a user's answer.
+                Collision::Replace => {
+                    attempt(
+                        &*store,
+                        &bucket,
+                        &key,
+                        &path,
+                        crate::store::IfAbsent::Replace,
+                    )
+                    .await
+                }
+                Collision::Ask => {
+                    attempt(
+                        &*store,
+                        &bucket,
+                        &key,
+                        &path,
+                        crate::store::IfAbsent::Refuse,
+                    )
+                    .await
+                }
+                Collision::KeepBoth => keep_both(&*store, &bucket, &key, &path, &cancel).await,
+            };
+
+            let (settled, outcome) = match outcome {
+                Ok(PutResult::Created { key, stepped_aside }) => (
+                    diagnostics::TransferSettled::Finished,
+                    UploadOutcome::Finished {
+                        key,
+                        stepped_aside,
+                        bytes,
+                    },
+                ),
+                // A taken key and an endpoint without the condition are both
+                // questions rather than events: nothing moved, so nothing is
+                // logged as having moved.
+                Ok(PutResult::Taken) => {
+                    deliver(UploadOutcome::KeyTaken { key });
+                    return;
+                }
+                Ok(PutResult::Unsupported) => {
+                    deliver(UploadOutcome::ConditionUnsupported { key });
+                    return;
+                }
+                Ok(PutResult::Cancelled) => {
+                    diagnostics::upload_settled(
+                        &bucket,
+                        0,
+                        diagnostics::TransferSettled::Cancelled,
+                    );
+                    deliver(UploadOutcome::Cancelled);
+                    return;
+                }
+                Err(cause) => {
+                    diagnostics::upload_settled(
+                        &bucket,
+                        0,
+                        diagnostics::TransferSettled::Failed(&cause),
+                    );
+                    deliver(UploadOutcome::Failed(cause));
+                    return;
+                }
+            };
+            diagnostics::upload_settled(&bucket, bytes, settled);
+            deliver(outcome);
+        });
+        handle
+    }
+
     /// Save a stored credential, off the caller's thread.
     ///
     /// Both halves: the name, region and access key id to the configuration
@@ -656,6 +787,82 @@ impl Session {
         self.install_scheduler(Arc::new(S3ObjectStore::new(&connection)), credentials);
         Ok(connection)
     }
+}
+
+/// What one or more conditional attempts came to, inside `spawn_upload`.
+enum PutResult {
+    Created { key: String, stepped_aside: bool },
+    Taken,
+    Unsupported,
+    Cancelled,
+}
+
+/// One write, at one key.
+async fn attempt(
+    store: &dyn ObjectStore,
+    bucket: &str,
+    key: &str,
+    path: &std::path::Path,
+    if_absent: crate::store::IfAbsent,
+) -> Result<PutResult> {
+    use crate::store::PutOutcome;
+    Ok(
+        match store.put_object(bucket, key, path, if_absent).await? {
+            PutOutcome::Created => PutResult::Created {
+                key: key.to_owned(),
+                stepped_aside: false,
+            },
+            PutOutcome::KeyTaken => PutResult::Taken,
+            PutOutcome::ConditionUnsupported => PutResult::Unsupported,
+        },
+    )
+}
+
+/// Keep both: try `key (2)`, `key (3)`, … until one is free.
+///
+/// A loop of conditional writes rather than a listing, because a listing is
+/// stale the moment it returns and the service is the only honest source of
+/// which keys are free. Bounded — reaching the bound is reported rather than
+/// silently abandoned, which is the failure mode a loop like this otherwise
+/// has.
+async fn keep_both(
+    store: &dyn ObjectStore,
+    bucket: &str,
+    key: &str,
+    path: &std::path::Path,
+    cancel: &Cancel,
+) -> Result<PutResult> {
+    for n in 2..(2 + transfer::KEEP_BOTH_ATTEMPTS) {
+        if cancel.is_cancelled() {
+            return Ok(PutResult::Cancelled);
+        }
+        let candidate = transfer::beside(key, n);
+        match attempt(
+            store,
+            bucket,
+            &candidate,
+            path,
+            crate::store::IfAbsent::Refuse,
+        )
+        .await?
+        {
+            PutResult::Created { key, .. } => {
+                return Ok(PutResult::Created {
+                    key,
+                    stepped_aside: true,
+                });
+            }
+            PutResult::Taken => continue,
+            other => return Ok(other),
+        }
+    }
+    Err(Error::Unexpected {
+        detail: format!(
+            "gave up after {} attempts to find a free name beside that key — \
+             every one of them was taken",
+            transfer::KEEP_BOTH_ATTEMPTS
+        ),
+    })
 }
 
 #[cfg(test)]
@@ -1371,6 +1578,187 @@ mod tests {
             std::fs::read(dir.join("summary.csv")).expect("untouched"),
             b"the original",
             "asking is not transferring"
+        );
+    }
+
+    // ---- Uploading (XONHO-0020) ----
+
+    fn a_local_file(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("caixonho-session-upload-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("fixture dir");
+        let path = dir.join("payload.bin");
+        std::fs::write(&path, bytes).expect("fixture file");
+        path
+    }
+
+    fn uploading(
+        session: &Session,
+        path: std::path::PathBuf,
+        collision: transfer::Collision,
+    ) -> tokio::sync::oneshot::Receiver<UploadOutcome> {
+        let (tell, told) = tokio::sync::oneshot::channel();
+        session.spawn_upload(
+            "reports".to_owned(),
+            "daily/summary.csv".to_owned(),
+            path,
+            collision,
+            move |outcome| {
+                let _ = tell.send(outcome);
+            },
+        );
+        told
+    }
+
+    #[tokio::test]
+    async fn an_upload_creates_the_object_and_reports_its_key() {
+        let fixture = Fixture::new("upload-happy");
+        let session = fixture.session("work");
+        let credentials = session.credentials_changed("work");
+        session.install_object_store(Arc::new(StoreDouble::allows_listing()), credentials);
+
+        let told = uploading(
+            &session,
+            a_local_file("happy", b"thirteen byte"),
+            transfer::Collision::Ask,
+        );
+
+        match told.await.expect("delivered exactly once") {
+            UploadOutcome::Finished {
+                key,
+                stepped_aside,
+                bytes,
+            } => {
+                assert_eq!(key, "daily/summary.csv");
+                assert!(!stepped_aside, "nothing was in the way");
+                assert_eq!(bytes, 13);
+            }
+            other => panic!("expected Finished, got {other:?}"),
+        }
+    }
+
+    /// The guarantee, at the session seam: a taken key comes back as the
+    /// question, and the caller is the one who decides.
+    #[tokio::test]
+    async fn a_taken_key_comes_back_as_a_question_not_a_replacement() {
+        let fixture = Fixture::new("upload-taken");
+        let session = fixture.session("work");
+        let credentials = session.credentials_changed("work");
+        session.install_object_store(Arc::new(StoreDouble::key_taken()), credentials);
+
+        let told = uploading(
+            &session,
+            a_local_file("taken", b"new"),
+            transfer::Collision::Ask,
+        );
+
+        match told.await.expect("delivered") {
+            UploadOutcome::KeyTaken { key } => assert_eq!(key, "daily/summary.csv"),
+            other => panic!("expected KeyTaken, got {other:?}"),
+        }
+    }
+
+    /// Keep-both steps aside, and — the assertion this change exists for —
+    /// every write it made was conditional, so the object that was already
+    /// there could not have been replaced by any of them.
+    #[tokio::test]
+    async fn keep_both_steps_aside_without_ever_writing_unconditionally() {
+        let fixture = Fixture::new("upload-keep-both");
+        let session = fixture.session("work");
+        let credentials = session.credentials_changed("work");
+        // This double refuses *every* conditional write and accepts every
+        // unconditional one. So keep-both exhausting its attempts proves
+        // something stronger than a green happy path: it never once fell
+        // back to an unconditional write to make progress.
+        session.install_object_store(Arc::new(StoreDouble::key_taken()), credentials);
+
+        let told = uploading(
+            &session,
+            a_local_file("keep-both", b"new"),
+            transfer::Collision::KeepBoth,
+        );
+
+        match told.await.expect("delivered") {
+            UploadOutcome::Failed(Error::Unexpected { detail }) => {
+                assert!(
+                    detail.contains("every one of them was taken"),
+                    "giving up is reported, not silent: {detail}"
+                );
+            }
+            other => panic!("keep-both must give up rather than replace anything, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn replace_is_the_only_way_an_object_is_overwritten() {
+        let fixture = Fixture::new("upload-replace");
+        let session = fixture.session("work");
+        let credentials = session.credentials_changed("work");
+        session.install_object_store(Arc::new(StoreDouble::key_taken()), credentials);
+
+        let told = uploading(
+            &session,
+            a_local_file("replace", b"new"),
+            transfer::Collision::Replace,
+        );
+
+        match told.await.expect("delivered") {
+            UploadOutcome::Finished { key, .. } => assert_eq!(key, "daily/summary.csv"),
+            other => panic!("expected Finished, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_endpoint_without_the_condition_is_a_question_too() {
+        let fixture = Fixture::new("upload-unsupported");
+        let session = fixture.session("work");
+        let credentials = session.credentials_changed("work");
+        session.install_object_store(Arc::new(StoreDouble::condition_unsupported()), credentials);
+
+        let told = uploading(
+            &session,
+            a_local_file("unsupported", b"new"),
+            transfer::Collision::Ask,
+        );
+
+        assert!(
+            matches!(
+                told.await.expect("delivered"),
+                UploadOutcome::ConditionUnsupported { .. }
+            ),
+            "the guarantee being unavailable is the user's decision to make"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cancel_before_the_request_is_still_a_cancel() {
+        let fixture = Fixture::new("upload-cancelled");
+        let session = fixture.session("work");
+        let credentials = session.credentials_changed("work");
+        session.install_object_store(Arc::new(StoreDouble::allows_listing()), credentials);
+
+        let (tell, told) = tokio::sync::oneshot::channel();
+        let cancel = session.spawn_upload(
+            "reports".to_owned(),
+            "daily/summary.csv".to_owned(),
+            a_local_file("cancelled", b"new"),
+            transfer::Collision::Ask,
+            move |outcome| {
+                let _ = tell.send(outcome);
+            },
+        );
+        cancel.cancel();
+
+        // Either it was cancelled before the write went out, or the write
+        // beat the flag — both are honest, and neither may report the
+        // object as created *and* cancelled.
+        let outcome = told.await.expect("delivered");
+        assert!(
+            matches!(
+                outcome,
+                UploadOutcome::Cancelled | UploadOutcome::Finished { .. }
+            ),
+            "got {outcome:?}"
         );
     }
 }

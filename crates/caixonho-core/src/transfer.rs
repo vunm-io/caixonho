@@ -300,6 +300,47 @@ pub enum DownloadOutcome {
     Failed(crate::error::Error),
 }
 
+/// How one upload ended. Mirrors [`DownloadOutcome`] deliberately: the
+/// window renders one transfer line for both directions, and two shapes
+/// that differ for no reason would make it two.
+#[derive(Debug)]
+pub enum UploadOutcome {
+    /// The object is at `key` — which is not always the key the user's file
+    /// name implied, so it is reported rather than assumed.
+    Finished {
+        /// Where it actually landed.
+        key: String,
+        /// Whether keep-both had to step aside from the asked-for key.
+        stepped_aside: bool,
+        /// Bytes sent.
+        bytes: u64,
+    },
+    /// Something is already at the key, and the caller asked to be asked.
+    KeyTaken {
+        /// The key that is taken.
+        key: String,
+    },
+    /// This endpoint does not implement the conditional write, so the
+    /// no-clobber guarantee is unavailable here. Not a failure: nothing was
+    /// written and the choice is the user's.
+    ConditionUnsupported {
+        /// The key the upload was for.
+        key: String,
+    },
+    /// Cancelled by the user; no object was created.
+    Cancelled,
+    /// Failed; the classified cause.
+    Failed(crate::error::Error),
+}
+
+/// How many keys keep-both will try before giving up and saying so.
+///
+/// Bounded because each attempt is a conditional write against the service:
+/// an unbounded loop against a prefix holding thousands of `name (n)` keys
+/// would hammer the endpoint. Reaching it is reported, never silently
+/// abandoned.
+pub(crate) const KEEP_BOTH_ATTEMPTS: u32 = 100;
+
 /// Cancels a download in flight.
 ///
 /// Cooperative, checked between chunks — so the task itself sees the
@@ -501,6 +542,71 @@ pub fn beside(key: &str, n: u32) -> String {
             format!("{prefix}{} ({n}){}", &segment[..dot], &segment[dot..])
         }
         _ => format!("{key} ({n})"),
+    }
+}
+
+/// The largest object a single `PutObject` may carry.
+///
+/// 5 GiB, the service's documented figure — a constant rather than something
+/// discovered by being refused, because discovering it that way means having
+/// already sent gigabytes toward a certain rejection. Multipart is what
+/// lifts it.
+pub const SINGLE_REQUEST_LIMIT: u64 = 5 * 1024 * 1024 * 1024;
+
+/// Whether a length fits one request. Split out from the file check so the
+/// boundary can be tested without writing five gibibytes to a temp
+/// directory.
+pub(crate) fn within_one_request(bytes: u64) -> bool {
+    bytes <= SINGLE_REQUEST_LIMIT
+}
+
+/// The refusal an oversized file gets, naming the limit and the way past it.
+pub(crate) fn too_large(bytes: u64) -> crate::error::Error {
+    crate::error::Error::Destination {
+        detail: format!(
+            "this file is {} and a single upload request carries at most 5 GiB — \
+             sending it needs multipart upload, which this version does not do yet",
+            readable(bytes)
+        ),
+    }
+}
+
+/// Bytes as a person reads them. Mirrors the window's own formatter; the
+/// duplication is deliberate and small — core must not depend on the GUI,
+/// and an error message that says `5368709121` helps nobody.
+fn readable(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["KiB", "MiB", "GiB", "TiB", "PiB"];
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    let mut size = bytes as f64 / 1024.0;
+    let mut unit = 0;
+    while size >= 1024.0 && unit + 1 < UNITS.len() {
+        size /= 1024.0;
+        unit += 1;
+    }
+    format!("{size:.1} {}", UNITS[unit])
+}
+
+/// Whether this file can go in one request, and how big it is.
+///
+/// The size is established **before** anything is sent: a file the request
+/// cannot carry is refused up front rather than after transferring bytes
+/// toward a rejection that was certain from the start.
+///
+/// A file that cannot be `stat`ed is a read failure and says so — not a
+/// size verdict, which would be a guess dressed as a measurement.
+pub fn sized_for_one_request(path: &std::path::Path) -> crate::error::Result<u64> {
+    let bytes = std::fs::metadata(path)
+        .map_err(|error| crate::error::Error::Destination {
+            detail: error.to_string(),
+        })?
+        .len();
+
+    if within_one_request(bytes) {
+        Ok(bytes)
+    } else {
+        Err(too_large(bytes))
     }
 }
 
@@ -1032,6 +1138,56 @@ mod tests {
             local_name(key).name,
             "12%3A30.log",
             "while the local side must encode it — the two rules are separate"
+        );
+    }
+
+    // ---- The size gate (XONHO-0020 task 3.1) ----
+
+    #[test]
+    fn an_ordinary_file_passes_and_reports_its_size() {
+        let dir = a_dir("size-ok");
+        let path = dir.join("small.bin");
+        std::fs::write(&path, b"twelve bytes").unwrap();
+
+        assert_eq!(sized_for_one_request(&path).expect("passes"), 12);
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_is_a_read_failure_not_a_size_verdict() {
+        let dir = a_dir("size-missing");
+        let missing = dir.join("not-here.bin");
+
+        match sized_for_one_request(&missing) {
+            Err(crate::error::Error::Destination { detail }) => {
+                assert!(
+                    !detail.contains("not-here"),
+                    "the cause reaches the log; the path may not: {detail}"
+                );
+            }
+            other => panic!("expected Destination, got {other:?}"),
+        }
+    }
+
+    /// The boundary, asserted without writing five gibibytes: the check is a
+    /// pure comparison against a length, so the length is what is tested.
+    #[test]
+    fn the_boundary_is_inclusive_and_one_byte_over_refuses() {
+        assert!(within_one_request(SINGLE_REQUEST_LIMIT));
+        assert!(within_one_request(SINGLE_REQUEST_LIMIT - 1));
+        assert!(
+            !within_one_request(SINGLE_REQUEST_LIMIT + 1),
+            "one byte over is over"
+        );
+    }
+
+    #[test]
+    fn an_oversized_file_is_refused_with_a_reason_that_names_the_way_out() {
+        let error = too_large(SINGLE_REQUEST_LIMIT + 1);
+        let rendered = error.to_string();
+        assert!(rendered.contains("5 GiB"), "the limit is named: {rendered}");
+        assert!(
+            rendered.to_lowercase().contains("multipart"),
+            "and what lifts it: {rendered}"
         );
     }
 }
