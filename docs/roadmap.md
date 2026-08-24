@@ -84,6 +84,7 @@ that only that arrangement produced. The full reasoning is in
 | Change | Delivers | State |
 |---|---|---|
 | `XONHO-0007` | Downloading one object to a chosen folder, and opening one with the system's own application via a bounded cache — progress, cancel, no partial files, deterministic key→filename mapping (ADR-0004) | landed, awaiting live acceptance |
+| `XONHO-0020` | Sending one local file, with the no-clobber guarantee made by the service (`If-None-Match`) rather than by a check — replace/keep-both/abandon, cancel, and an up-front refusal above the single-request size | landed, awaiting live acceptance |
 
 ## What this project will not do
 

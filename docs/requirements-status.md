@@ -69,12 +69,12 @@ the first one moved.
 
 | Requirement | State | Notes |
 |---|---|---|
-| Upload/download files and folders, preserving prefix structure | partial | `XONHO-0007`: one object downloads to a chosen folder, whole-or-nothing (working path, promoted by rename), and "open" rides the same path through a bounded cache. Uploads, folders and prefix-structure preservation are not started |
+| Upload/download files and folders, preserving prefix structure | partial | `XONHO-0007` down, `XONHO-0020` up: one object each way — download is whole-or-nothing (working path, promoted by rename) and "open" rides the same path through a bounded cache; upload sends one local file into the location on screen. Folders and prefix-structure preservation are not started, and neither is multipart, so uploads are capped at 5 GiB |
 | Multipart upload with configurable part size/concurrency | none | Upload territory |
 | Transfer queue panel: per-item and aggregate progress, throughput, ETA, pause, resume, cancel, retry, clear | partial | The narrowest honest slice: one transfer at a time, cumulative progress against stated size, cancel that leaves nothing behind. No queue, no aggregate, no pause/resume/retry — the panel is its own change |
 | Retry with backoff + jitter; adaptive concurrency on throttle | none | Needs the queue |
 | Drag and drop OS → app; app → OS after download | none | M0's API question still stands |
-| Collision policy: overwrite / skip / keep both / ask — remembered per session | partial | Ask is the shipped default and the user chooses replace / keep both / abandon per collision; keep-both takes the first free ` (n)` name. "Remembered per session" waits for the queue, where remembering has something to attach to |
+| Collision policy: overwrite / skip / keep both / ask — remembered per session | partial | Ask is the shipped default on **both** sides and the user chooses replace / keep both / abandon per collision; keep-both takes the first free ` (n)` name. The remote side (`XONHO-0020`) is the stronger of the two: the refusal comes from the service via `If-None-Match`, so there is no window in which another writer's object could be destroyed, where the local side is a filesystem check. "Remembered per session" waits for the queue, where remembering has something to attach to |
 | Key↔filesystem safety: sanitize deterministically, report every collision | done | `XONHO-0007`, ADR-0004. Percent-encoding (injective, `%` itself encoded), reserved-device and overlong names suffixed by full-key FNV-1a, one scheme on every platform with no `cfg`; every substitution is reported in the window. Property-tested; same-segment and case collisions surface as the existing-file question at the destination |
 
 ## §4.5–4.6 — M3 and later

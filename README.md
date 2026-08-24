@@ -44,6 +44,14 @@ Working today:
   given access, and one most clients treat as a dead end.
 - Never draws an empty folder and a refused one the same way, one level below
   where it already does that for buckets.
+- **Sends a local file into the folder you are looking at — and never
+  replaces an object without asking.** The no-clobber promise is made by the
+  service, not by a check this app performs and hopes to win: the write is
+  conditional, so a key that is already taken is refused by S3 itself and
+  you are asked whether to replace it, keep both, or stop. Replacing is the
+  only way an object here is ever overwritten. An endpoint that will not
+  make that promise says so instead of quietly proceeding. Files above 5 GiB
+  are refused up front — those need multipart, which is not built yet.
 - Downloads an object to a folder you choose, and **opens** one with whatever
   your machine already opens that kind of file with — the app renders no
   format itself; it downloads to a cache it owns
@@ -59,8 +67,9 @@ Working today:
   instead of a description. The file is bounded and rolls daily; `CAIXONHO_LOG`
   turns the detail up for an investigation. No secret is ever written to it.
 
-Not there yet: uploads and the transfer queue, previewing an object without
-downloading it, sorting or searching a listing,
+Not there yet: uploading folders, multipart for large files, the transfer
+queue, previewing an object without downloading it, sorting or searching a
+listing,
 and signing in to IAM Identity Center from the app rather than through the AWS
 CLI. Those are the next changes — see [`docs/planned-changes.md`](docs/planned-changes.md),
 and [`docs/requirements-status.md`](docs/requirements-status.md) for every

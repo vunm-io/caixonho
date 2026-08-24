@@ -180,7 +180,16 @@
 
 ## 5. Reader-facing documents, in this change
 
-- [ ] 5.1 README, roadmap, requirements-status [dispatch: main]
+- [x] 5.1 README, roadmap, requirements-status [dispatch: main]
+      - Done in `main` (2026-08-24). README leads with the guarantee rather
+        than the verb, because that is what the change is: the promise is
+        made by the service, not by a check. Roadmap's M2 table gains this
+        change's row in the commit that makes it true.
+      - The §4.4 counts are **unchanged** (1 done, 3 partial, 3 not started)
+        and that is the correct outcome, not a missed update: this change
+        moved content within two `partial` rows without moving either across
+        a state. The collision row now says which of the two sides carries
+        the stronger guarantee and why. Recounted by the script.
   - Paths: `README.md`, `docs/roadmap.md`, `docs/requirements-status.md`
   - Done criteria: README says a file can be sent and that an existing object
     is never replaced without asking; roadmap's M2 rows carry this change;
