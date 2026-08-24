@@ -12,7 +12,13 @@
 
 ## 1. The key a taken key steps aside to
 
-- [ ] 1.1 Deriving a free object key, as its own rule [dispatch: main]
+- [x] 1.1 Deriving a free object key, as its own rule [dispatch: main]
+      - Done in `main` (2026-08-24), red first: four tests on a `todo!()`
+        body. The dot is searched in the last segment only, and a segment
+        ending in a dot is left alone — `name (2).` reads as broken and the
+        dot is no extension boundary there. The design's claim that this is
+        not `local_name` is now a test rather than prose: the same key goes
+        through both and only the local side encodes the colon.
   - Paths: `crates/caixonho-core/src/transfer.rs`
   - Done criteria: `beside(key, n) -> String` inserting ` (n)` before the
     final dot of the key's last segment, leaving the prefix untouched;
@@ -26,8 +32,14 @@
 
 ## 2. The port writes
 
-- [ ] 2.1 `ObjectStore::put_object`, conditional, with the double
+- [x] 2.1 `ObjectStore::put_object`, conditional, with the double
       [dispatch: main]
+      - Done in `main` (2026-08-24), red first. `PutOutcome` is
+        `Created | KeyTaken | ConditionUnsupported` and none of them is an
+        `Err`. The double reads the file before answering, so a test
+        scripting a path that does not exist hears about it instead of
+        getting a false success — and `Writes` is scripted independently of
+        `Outcome`/`Content` for the reason those two already are.
   - Paths: `crates/caixonho-core/src/store.rs`
   - Done criteria: `put_object(bucket, key, body_path, IfAbsent) -> Result<PutOutcome>`
     where `IfAbsent` is a two-valued "refuse if the key exists" / "replace"
@@ -38,8 +50,22 @@
     (`s3:PutObject` denied), and a mid-request failure. Test red first.
   - Verification: `cargo test -p caixonho-core store::`
 
-- [ ] 2.2 The adapter maps it to `PutObject` with `if_none_match`
+- [x] 2.2 The adapter maps it to `PutObject` with `if_none_match`
       [dispatch: main]
+      - Done in `main` (2026-08-24). `412` is read through a new
+        `SdkFailure::precondition_failed()`, sitting beside
+        `redirect_region()` and reading the same status field — asked
+        *before* classification, so a precondition that did its job never
+        enters the failure vocabulary. `ConditionUnsupported` reuses the
+        existing `Error::NotImplemented` classification rather than a new
+        code path: `classify.rs` already maps that S3 code, and R2 is
+        documented there as a service that returns it.
+      - The live test `this_machine_writing_one_object_twice` writes the same
+        key twice and asserts the second is `KeyTaken`. It is the **only**
+        place this change's central guarantee can be checked: every unit test
+        proves the double refuses a taken key, which says nothing about the
+        service. A second `Created` is design.md's undetectable case, and
+        this is where it stops being undetectable.
   - Paths: `crates/caixonho-core/src/adapter.rs`
   - Done criteria: body via `ByteStream::from_path` (streamed, never read
     whole); `if_none_match("*")` present for `IfAbsent::Refuse` and **absent**

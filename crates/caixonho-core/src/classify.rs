@@ -221,6 +221,9 @@ const BUCKET_REGION_HEADER: &str = "x-amz-bucket-region";
 
 /// The status that makes that header a redirect rather than a statement.
 const PERMANENT_REDIRECT: u16 = 301;
+/// A conditional write refused because the key already exists
+/// (`If-None-Match: *`) — `XONHO-0020`.
+const PRECONDITION_FAILED: u16 = 412;
 
 /// The region a response redirected to, if it redirected at all.
 ///
@@ -336,6 +339,17 @@ impl SdkFailure {
     /// elsewhere, so the adapter asks here before it classifies. Classifying
     /// first and unpicking it afterwards would model a followable redirect as
     /// a failure, which is what it stops being the moment this answers.
+    /// Whether this failure is a precondition that did its job.
+    ///
+    /// Read the same way [`Self::redirect_region`] reads a 301: off the
+    /// status the SDK already carried here. It is deliberately *not*
+    /// classified into an `Error` — a conditional write refusing a taken key
+    /// is the mechanism working, and putting it in the failure vocabulary
+    /// would send the user to fix something.
+    pub(crate) fn precondition_failed(&self) -> bool {
+        self.status == Some(PRECONDITION_FAILED)
+    }
+
     pub(crate) fn redirect_region(&self) -> Option<&str> {
         self.redirect_region.as_deref()
     }

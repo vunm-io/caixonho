@@ -474,6 +474,36 @@ pub fn sweep_open_cache(directory: &std::path::Path, now: std::time::SystemTime)
     }
 }
 
+/// The key a taken key steps aside to (`XONHO-0020`).
+///
+/// ` (n)` before the last segment's final dot, prefix untouched — the
+/// numbering every file manager already taught people, so the local side
+/// (`Collision::KeepBoth`) and this one read alike.
+///
+/// **Deliberately not [`local_name`].** That scheme percent-encodes because
+/// filesystems refuse things; S3 refuses almost nothing, and a key is bytes.
+/// Encoding here would file the object under a name that is not the one the
+/// user sent. The shared thing is the numbering convention, not the code —
+/// asserted by a test that puts the same key through both.
+///
+/// The dot searched is in the **last segment**: a prefix like `v1.2/` must
+/// not capture the split, or the number lands in a folder name. A segment
+/// ending in a dot is left alone for the same reason — `name (2).` reads as
+/// broken, and the dot is not an extension boundary there.
+pub fn beside(key: &str, n: u32) -> String {
+    let split = key.rfind('/').map_or(0, |at| at + 1);
+    let (prefix, segment) = key.split_at(split);
+
+    match segment.rfind('.') {
+        // `..rfind` excludes a dot that ends the segment: nothing follows it
+        // to be an extension.
+        Some(dot) if dot + 1 < segment.len() && dot > 0 => {
+            format!("{prefix}{} ({n}){}", &segment[..dot], &segment[dot..])
+        }
+        _ => format!("{key} ({n})"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! `object-transfer` spec, "Keys map to filenames deterministically and
@@ -941,5 +971,67 @@ mod tests {
         // creating anything.
         sweep_open_cache(&ghost, std::time::SystemTime::now());
         assert!(!ghost.exists());
+    }
+
+    // ---- Deriving a free object key (XONHO-0020 task 1.1) ----
+
+    /// The numbering people already know, applied to a *key* rather than a
+    /// filename — prefix untouched, the number before the last segment's
+    /// final dot.
+    #[test]
+    fn a_key_steps_aside_by_numbering_its_last_segment() {
+        assert_eq!(
+            beside("reports/daily/summary.csv", 2),
+            "reports/daily/summary (2).csv"
+        );
+        assert_eq!(beside("summary.csv", 3), "summary (3).csv");
+        // No dot: the number goes at the end, not inside a name that has no
+        // extension to sit before.
+        assert_eq!(beside("reports/README", 2), "reports/README (2)");
+        // A trailing dot is not an extension boundary worth splitting on —
+        // "name." would otherwise become "name (2)." which reads as broken.
+        assert_eq!(beside("logs/name.", 2), "logs/name. (2)");
+    }
+
+    /// The dot searched is in the **last segment**. A prefix that contains a
+    /// dot must not capture the split, or the number lands in a folder name.
+    #[test]
+    fn a_dot_in_a_prefix_never_captures_the_split() {
+        assert_eq!(
+            beside("archive/v1.2/notes", 2),
+            "archive/v1.2/notes (2)",
+            "the dot in `v1.2` belongs to a prefix segment"
+        );
+        assert_eq!(
+            beside("archive/v1.2/notes.txt", 2),
+            "archive/v1.2/notes (2).txt"
+        );
+    }
+
+    #[test]
+    fn stepping_aside_is_deterministic() {
+        for key in ["a/b.csv", "b", "c.", "x/y/z.tar.gz"] {
+            assert_eq!(beside(key, 4), beside(key, 4), "key: {key}");
+        }
+        // The *last* dot, so a double extension keeps its tail intact.
+        assert_eq!(beside("x/y/z.tar.gz", 2), "x/y/z.tar (2).gz");
+    }
+
+    /// The design's own claim, asserted rather than left in prose: this is
+    /// not `local_name`. Object keys are bytes and the service refuses almost
+    /// nothing, so encoding here would rename what the user sent.
+    #[test]
+    fn an_object_key_is_not_put_through_the_filename_scheme() {
+        let key = "logs/12:30.log";
+        assert_eq!(
+            beside(key, 2),
+            "logs/12:30 (2).log",
+            "the colon survives: S3 accepts it and the user's key is theirs"
+        );
+        assert_eq!(
+            local_name(key).name,
+            "12%3A30.log",
+            "while the local side must encode it — the two rules are separate"
+        );
     }
 }

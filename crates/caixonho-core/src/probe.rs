@@ -429,6 +429,21 @@ pub(crate) mod double {
             (self.answer)()
         }
 
+        /// And nothing here writes one. Refusing loudly for the same
+        /// reason: a double that silently reports success would let a test
+        /// believe an object exists.
+        async fn put_object(
+            &self,
+            _bucket: &str,
+            _key: &str,
+            _path: &std::path::Path,
+            _if_absent: crate::store::IfAbsent,
+        ) -> Result<crate::store::PutOutcome> {
+            Err(crate::error::Error::Unexpected {
+                detail: "HeldProbes serves probes, not writes".into(),
+            })
+        }
+
         /// Nothing here reads an object either; refusing loudly beats a
         /// silent empty body a test would then have to explain.
         async fn get_object(

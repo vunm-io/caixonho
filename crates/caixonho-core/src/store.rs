@@ -76,6 +76,55 @@ pub trait ObjectStore: Send + Sync {
     /// cause; a failure *after* the first chunk arrives through the stream
     /// itself, as an error and never as a shorter object.
     async fn get_object(&self, bucket: &str, key: &str) -> Result<ObjectContent>;
+
+    /// Write one local file to `key` (`XONHO-0020`).
+    ///
+    /// `if_absent` decides whether the write is conditional. With
+    /// [`IfAbsent::Refuse`] the *service* refuses a key that already exists,
+    /// which is the whole guarantee: a check this application performs before
+    /// an unconditional write is stale the moment it returns, and the race it
+    /// loses is one that loses rarely — the worst frequency, because no live
+    /// check will ever show it.
+    ///
+    /// A taken key is therefore [`PutOutcome::KeyTaken`] and **not** an
+    /// `Err`: a precondition that did its job is not a failure, and reporting
+    /// it as one would put it in the vocabulary the failure panel reserves
+    /// for things that went wrong.
+    ///
+    /// The body is read from `path` as a stream; the caller has already
+    /// established the file's size and refused anything a single request
+    /// cannot carry.
+    async fn put_object(
+        &self,
+        bucket: &str,
+        key: &str,
+        path: &std::path::Path,
+        if_absent: IfAbsent,
+    ) -> Result<PutOutcome>;
+}
+
+/// Whether a write refuses to replace what is already at the key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IfAbsent {
+    /// Conditional: the service refuses a key that exists.
+    Refuse,
+    /// Unconditional. Reachable only from a user answering a question about
+    /// that specific object — this is the one way this application ever
+    /// replaces one.
+    Replace,
+}
+
+/// What a write came to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PutOutcome {
+    /// The object is at the key.
+    Created,
+    /// Something is already there, and [`IfAbsent::Refuse`] was asked for.
+    KeyTaken,
+    /// The endpoint answered that it does not implement the condition — so
+    /// the guarantee is unavailable here, and this is not the same as the
+    /// write failing.
+    ConditionUnsupported,
 }
 
 /// One object's content, being read.
@@ -131,11 +180,29 @@ pub mod double {
         /// What `get_object` serves. `Unscripted` unless a test says
         /// otherwise, for the same reason `page` defaults empty.
         content: Content,
+        /// What `put_object` does. Accepting by default: a test about a
+        /// write's *outcome* should say so, and one that merely writes
+        /// should not have to.
+        writes: Writes,
     }
 
     enum Outcome {
         Buckets(Vec<Bucket>),
         Fail(fn() -> Error),
+    }
+
+    /// What `put_object` answers with. Independent of the rest for the same
+    /// reason `Content` is.
+    enum Writes {
+        /// Accepts every write.
+        Accepts,
+        /// Every conditional write meets a taken key; an unconditional one
+        /// succeeds — the shape a real bucket has when the key exists.
+        KeyTaken,
+        /// The endpoint does not implement the condition.
+        ConditionUnsupported,
+        /// The write itself is refused.
+        Refused(fn() -> Error),
     }
 
     /// What `get_object` answers with. Independent of `Outcome`: a test
@@ -160,6 +227,7 @@ pub mod double {
                 outcome: Outcome::Buckets(buckets),
                 page: Page::default(),
                 content: Content::Unscripted,
+                writes: Writes::Accepts,
             }
         }
 
@@ -287,6 +355,30 @@ pub mod double {
             double
         }
 
+        /// Every conditional write meets a taken key.
+        pub fn key_taken() -> Self {
+            let mut double = Self::allows_listing();
+            double.writes = Writes::KeyTaken;
+            double
+        }
+
+        /// The endpoint does not implement conditional writes.
+        pub fn condition_unsupported() -> Self {
+            let mut double = Self::allows_listing();
+            double.writes = Writes::ConditionUnsupported;
+            double
+        }
+
+        /// Refuses `put_object` the way a policy without `s3:PutObject`
+        /// answers.
+        pub fn put_refused() -> Self {
+            let mut double = Self::allows_listing();
+            double.writes = Writes::Refused(|| Error::AccessDenied {
+                iam_action: "s3:PutObject",
+            });
+            double
+        }
+
         /// Refuses `get_object` the way a policy without `s3:GetObject`
         /// answers.
         pub fn get_refused() -> Self {
@@ -302,6 +394,7 @@ pub mod double {
                 outcome: Outcome::Fail(make),
                 page: Page::default(),
                 content: Content::Unscripted,
+                writes: Writes::Accepts,
             }
         }
     }
@@ -350,6 +443,32 @@ pub mod double {
                 Outcome::Buckets(_) => Ok(()),
                 Outcome::Fail(make) => Err(make()),
             }
+        }
+
+        /// Writes answer from the scripted `Writes`. The double reads the
+        /// file, so a test that scripts a path which does not exist hears
+        /// about it here rather than getting a false success.
+        async fn put_object(
+            &self,
+            _bucket: &str,
+            _key: &str,
+            path: &std::path::Path,
+            if_absent: super::IfAbsent,
+        ) -> Result<super::PutOutcome> {
+            std::fs::metadata(path).map_err(|error| Error::Destination {
+                detail: error.to_string(),
+            })?;
+            Ok(match (&self.writes, if_absent) {
+                (Writes::Refused(make), _) => return Err(make()),
+                (Writes::ConditionUnsupported, super::IfAbsent::Refuse) => {
+                    super::PutOutcome::ConditionUnsupported
+                }
+                (Writes::KeyTaken, super::IfAbsent::Refuse) => super::PutOutcome::KeyTaken,
+                // Unconditional writes land whatever is there — including
+                // under `ConditionUnsupported`, where the condition was never
+                // the question.
+                _ => super::PutOutcome::Created,
+            })
         }
 
         /// Content comes from the scripted `Content`, not from `Outcome`:
@@ -404,8 +523,8 @@ mod tests {
     //! all exercised through the port as the GUI will use it: a
     //! `dyn ObjectStore`, no SDK, no network.
 
-    use super::ObjectStore;
     use super::double::StoreDouble;
+    use super::{IfAbsent, ObjectStore, PutOutcome};
     use crate::capability::{CapabilityStore, Observation, Scope, observation_for};
     use crate::error::Error;
     use crate::types::{
@@ -770,5 +889,73 @@ mod tests {
             Err(Error::AccessDenied { iam_action }) => assert_eq!(iam_action, "s3:GetObject"),
             other => panic!("expected AccessDenied, got {other:?}"),
         }
+    }
+
+    /// `object-transfer` delta (`XONHO-0020`) — the port half of the
+    /// guarantee: a taken key comes back as an outcome the caller can ask
+    /// the user about, never as an error.
+    #[tokio::test]
+    async fn a_taken_key_is_an_outcome_and_not_a_failure() {
+        let file = a_file("port-taken", b"contents");
+        let store: Box<dyn ObjectStore> = Box::new(StoreDouble::key_taken());
+
+        let outcome = store
+            .put_object("reports", "daily/summary.csv", &file, IfAbsent::Refuse)
+            .await
+            .expect("a refused precondition is not an Err");
+        assert_eq!(outcome, PutOutcome::KeyTaken);
+    }
+
+    /// And the only way past it: an unconditional write, which the same
+    /// double accepts because the key existing was never the obstacle.
+    #[tokio::test]
+    async fn replacing_is_the_unconditional_write() {
+        let file = a_file("port-replace", b"contents");
+        let store: Box<dyn ObjectStore> = Box::new(StoreDouble::key_taken());
+
+        let outcome = store
+            .put_object("reports", "daily/summary.csv", &file, IfAbsent::Replace)
+            .await
+            .expect("writes");
+        assert_eq!(outcome, PutOutcome::Created);
+    }
+
+    #[tokio::test]
+    async fn an_endpoint_without_the_condition_says_so_rather_than_writing() {
+        let file = a_file("port-unsupported", b"contents");
+        let store: Box<dyn ObjectStore> = Box::new(StoreDouble::condition_unsupported());
+
+        let outcome = store
+            .put_object("reports", "k", &file, IfAbsent::Refuse)
+            .await
+            .expect("not an error either");
+        assert_eq!(
+            outcome,
+            PutOutcome::ConditionUnsupported,
+            "the guarantee being unavailable is its own answer, not a write"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_write_names_the_put_permission() {
+        let file = a_file("port-denied", b"contents");
+        let store: Box<dyn ObjectStore> = Box::new(StoreDouble::put_refused());
+
+        match store
+            .put_object("reports", "k", &file, IfAbsent::Refuse)
+            .await
+        {
+            Err(Error::AccessDenied { iam_action }) => assert_eq!(iam_action, "s3:PutObject"),
+            other => panic!("expected AccessDenied, got {other:?}"),
+        }
+    }
+
+    fn a_file(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("caixonho-store-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("fixture dir");
+        let path = dir.join("file.bin");
+        std::fs::write(&path, bytes).expect("fixture file");
+        path
     }
 }

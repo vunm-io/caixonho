@@ -28,7 +28,7 @@ use crate::connection::Connection;
 use crate::error::{Error, Result};
 use crate::listing;
 use crate::store::ObjectStore;
-use crate::store::{ObjectContent, ObjectRead};
+use crate::store::{IfAbsent, ObjectContent, ObjectRead, PutOutcome};
 use crate::types::{
     AccountListing, Bucket, BucketKind, Cursor, Location, Object, Page, RefusedListing, Region,
 };
@@ -464,6 +464,64 @@ impl ObjectStore for S3ObjectStore {
             size,
             body: Box::new(SdkRead { body: answer.body }),
         })
+    }
+
+    async fn put_object(
+        &self,
+        bucket: &str,
+        key: &str,
+        path: &std::path::Path,
+        if_absent: IfAbsent,
+    ) -> Result<PutOutcome> {
+        let region = self.region_learned_for(bucket);
+        let client = match &region {
+            Some(region) => self.client_for(region),
+            None => self.client.clone(),
+        };
+
+        let body = aws_sdk_s3::primitives::ByteStream::from_path(path)
+            .await
+            .map_err(|error| Error::Destination {
+                detail: error.to_string(),
+            })?;
+
+        let mut request = client.put_object().bucket(bucket).key(key).body(body);
+        if if_absent == IfAbsent::Refuse {
+            // The guarantee, in the request the service executes rather than
+            // in a check this process performs and hopes to win.
+            request = request.if_none_match("*");
+        }
+
+        match request.send().await {
+            Ok(_) => Ok(PutOutcome::Created),
+            Err(error) => {
+                let failure = SdkFailure::from_sdk(&error);
+                // Asked before classification, exactly as the redirect is:
+                // a precondition that refused a taken key is the mechanism
+                // working, and it must not become a failure the user is sent
+                // to fix.
+                if if_absent == IfAbsent::Refuse && failure.precondition_failed() {
+                    return Ok(PutOutcome::KeyTaken);
+                }
+                let endpoint = match &region {
+                    Some(region) => self.endpoint_for(region),
+                    None => self.endpoint.clone(),
+                };
+                let classified = classify(
+                    &failure,
+                    &self.call("s3:PutObject", &endpoint, Some(bucket)),
+                );
+                // An endpoint that will not do conditional writes is its own
+                // answer rather than a failed write — nothing was written,
+                // and the user is owed the choice, not an error.
+                if if_absent == IfAbsent::Refuse
+                    && matches!(classified, Error::NotImplemented { .. })
+                {
+                    return Ok(PutOutcome::ConditionUnsupported);
+                }
+                Err(classified)
+            }
+        }
     }
 
     async fn list_objects(&self, location: &Location, cursor: Option<&Cursor>) -> Result<Page> {
@@ -1218,6 +1276,68 @@ mod tests {
         if let Some(stated) = content.size {
             assert_eq!(total, stated, "the stream and the stated size disagree");
         }
+    }
+
+    /// Whether a real endpoint honours `If-None-Match: *`, observed rather
+    /// than trusted.
+    ///
+    /// `#[ignore]`d: it needs an account and it **writes**. It is the only
+    /// place the central guarantee of `XONHO-0020` can be checked at all —
+    /// every unit test proves that the *double* refuses a taken key, which
+    /// says nothing about whether the service does. It writes the key twice:
+    /// the first conditional write should be `Created`, the second
+    /// `KeyTaken`. A second `Created` means this endpoint ignores the
+    /// condition, which is the undetectable-in-production case design.md
+    /// names — and this test is where it stops being undetectable.
+    ///
+    /// It leaves an object behind on purpose: deleting it is
+    /// `XONHO-0021`'s verb and this change has no business having one.
+    ///
+    /// ```text
+    /// CAIXONHO_PROFILE=<profile> CAIXONHO_PUT_BUCKET=<name> CAIXONHO_PUT_KEY=<key> \
+    ///   cargo test -p caixonho-core this_machine_writing -- --ignored --nocapture
+    /// ```
+    #[tokio::test]
+    #[ignore = "needs a real account, and writes to it"]
+    async fn this_machine_writing_one_object_twice() {
+        let profile = std::env::var("CAIXONHO_PROFILE").expect("CAIXONHO_PROFILE");
+        let bucket = std::env::var("CAIXONHO_PUT_BUCKET").expect("CAIXONHO_PUT_BUCKET");
+        let key = std::env::var("CAIXONHO_PUT_KEY").expect("CAIXONHO_PUT_KEY");
+
+        let config = aws_config::defaults(BehaviorVersion::latest())
+            .profile_name(&profile)
+            .load()
+            .await;
+        let region = config
+            .region()
+            .map(|region| region.to_string())
+            .expect("the profile states a region");
+        let store = S3ObjectStore::over(config, &profile, &region, None);
+
+        let dir = std::env::temp_dir().join("caixonho-live-put");
+        std::fs::create_dir_all(&dir).expect("fixture dir");
+        let path = dir.join("probe.txt");
+        std::fs::write(&path, b"caixonho conditional-write probe").expect("fixture file");
+
+        let first = store
+            .put_object(&bucket, &key, &path, IfAbsent::Refuse)
+            .await
+            .expect("the first write is allowed");
+        println!("first conditional write: {first:?}");
+
+        let second = store
+            .put_object(&bucket, &key, &path, IfAbsent::Refuse)
+            .await
+            .expect("the second is answered, not failed");
+        println!("second conditional write: {second:?}");
+
+        assert_eq!(
+            second,
+            PutOutcome::KeyTaken,
+            "this endpoint does not enforce If-None-Match — the no-clobber guarantee is \
+             not real here, which is exactly what this test exists to find out"
+        );
+        let _ = first;
     }
 
     /// What a real refusal of a directory bucket looks like, end to end.
