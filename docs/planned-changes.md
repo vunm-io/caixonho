@@ -39,6 +39,7 @@ branch nobody can land.
 | `XONHO-0007` | Downloading objects to disk | §4.4 | M2 |
 | `XONHO-0008` | Previewing text and images without a full download (ranged GET) | §4.5 `[S]` | M3 |
 | `XONHO-0013` | Editing a saved connection: its region, its key, and renaming it | §4.1 | M1 |
+| `XONHO-0020` | Uploading one file, and never silently replacing an object | §4.4 | M2 |
 
 `XONHO-0008` depends on `XONHO-0007`: a preview is the same download path
 asking for the first N KB instead of the whole object.
@@ -47,6 +48,10 @@ asking for the first N KB instead of the whole object.
 
 **0009 → 0004 → 0006 → 0007 → 0008.**
 
+> **`XONHO-0020` issued 2026-08-24** for the upload direction, and planned
+> the same day — the number is anchored in the table above rather than only
+> in a change directory, which is what this table is for.
+>
 > **`XONHO-0007` landed 2026-08-24** — single-object download plus
 > open-with-the-system; uploads and the queue are M2's remaining body. Noted
 > here because this section reads as a future plan, and the two-directions
