@@ -135,7 +135,11 @@
 
 ## 4. The window
 
-- [ ] 4.1 "Upload…" beside the other two verbs [dispatch: main]
+- [x] 4.1 "Upload…" beside the other two verbs [dispatch: main]
+      - Done in `main` (2026-08-24). No `disabled` on this one, unlike Open
+        and Download…: it acts on the location rather than on a row, and
+        being in a location is what enables it. The key is
+        `location.prefix + file name`.
   - Paths: `crates/caixonho-gui/src/app.rs`
   - Done criteria: enabled whenever a location is open (unlike Open and
     Download…, it needs no selection); `cx.prompt_for_paths` with
@@ -143,7 +147,25 @@
     the chosen file's name. Selector `upload-action`.
   - Verification: `cargo test -p caixonho-gui`
 
-- [ ] 4.2 The transfer line grows the upload states [dispatch: main]
+- [x] 4.2 The transfer line grows the upload states [dispatch: main]
+      - Done in `main` (2026-08-24). `Transfer` gained a `direction` and a
+        `source`, not a twin — the running, cancelled and failed lines choose
+        their words from the direction, and three phases are new:
+        `KeyTaken`, `ConditionUnsupported`, `Sent`.
+      - `KeyTaken` is deliberately a separate phase from `NameTaken` rather
+        than a shared "something is in the way": what is in the way is
+        someone else's data in a bucket, not a file on this machine, and the
+        sentence has to read like it.
+      - The running line shows an upload's **total with no fraction**. The
+        alternative was a bar that does not move, which reads as a stall.
+      - `Sent { stepped_aside }` is carried into the phase and said loudly,
+        because a user not told that keep-both renamed the object will look
+        for it under the name they sent. Window test asserts the flag
+        survives the trip.
+      - The exhaustive match on `TransferPhase` caught all three new states
+        at compile time — the reason it has no wildcard arm.
+      - Both decision-carrying states are in the screenshot harness: 16
+        images now.
   - Paths: `crates/caixonho-gui/src/app.rs`
   - Done criteria: `Transfer` gains a direction rather than acquiring a
     twin — running (total shown, indeterminate, cancel), key-taken (Replace /

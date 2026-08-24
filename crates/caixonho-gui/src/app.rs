@@ -143,10 +143,17 @@ enum SignInEvent {
     Settled(Result<SignInOutcome, Error>),
 }
 
-/// What one download reports back to the window.
+/// What one transfer reports back to the window.
 enum TransferEvent {
-    Progress { bytes: u64, total: Option<u64> },
+    Progress {
+        bytes: u64,
+        total: Option<u64>,
+    },
     Settled(caixonho_core::transfer::DownloadOutcome),
+    /// Uploads settle once and report no progress — see `XONHO-0020`
+    /// design: the SDK offers no counting hook that survives a retried
+    /// body, and a counter that jumps backwards is worse than none.
+    UploadSettled(caixonho_core::transfer::UploadOutcome),
 }
 
 /// The one transfer this slice allows, and everything the window says about
@@ -162,10 +169,23 @@ struct Transfer {
     /// Open with the system once finished, and clean up the question of
     /// where: `true` only for downloads into the open-cache.
     then_open: bool,
+    /// Which way the bytes are going. A direction rather than a second
+    /// struct: the states are the same five, the collision question is the
+    /// same three buttons, and the queue change should replace one holder
+    /// rather than two.
+    direction: Direction,
+    /// The local file being sent, for an upload.
+    source: Option<std::path::PathBuf>,
     bytes: u64,
     total: Option<u64>,
     cancel: caixonho_core::transfer::Cancel,
     phase: TransferPhase,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Direction {
+    Down,
+    Up,
 }
 
 enum TransferPhase {
@@ -173,6 +193,23 @@ enum TransferPhase {
     /// The destination already has a file of this name; the user decides.
     NameTaken {
         name: String,
+    },
+    /// The bucket already has an object at this key; the user decides.
+    /// Distinct from `NameTaken` because what is in the way is someone
+    /// else's data rather than a file on this machine, and the words differ.
+    KeyTaken {
+        key: String,
+    },
+    /// This endpoint will not do the conditional write, so nothing can
+    /// promise the object at that key survives. Proceeding is the user's
+    /// explicit second act.
+    ConditionUnsupported {
+        key: String,
+    },
+    /// The object is up, at `key` — which is not always the key asked for.
+    Sent {
+        key: String,
+        stepped_aside: bool,
     },
     Finished {
         name: String,
@@ -722,6 +759,8 @@ impl CaixonhoApp {
                 key,
                 directory: std::path::PathBuf::new(),
                 then_open: true,
+                direction: Direction::Down,
+                source: None,
                 bytes: 0,
                 total: None,
                 cancel: caixonho_core::transfer::Cancel::default(),
@@ -739,6 +778,8 @@ impl CaixonhoApp {
                 key,
                 directory: cache,
                 then_open: true,
+                direction: Direction::Down,
+                source: None,
                 bytes: 0,
                 total: None,
                 cancel: caixonho_core::transfer::Cancel::default(),
@@ -760,6 +801,103 @@ impl CaixonhoApp {
             true,
             cx,
         );
+    }
+
+    /// Send a local file into the location on screen (`XONHO-0020` task
+    /// 4.1). Unlike Open and Download…, this needs no selection — the
+    /// destination is the location, not a row.
+    fn upload_here(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(location) = self.location().cloned() else {
+            return;
+        };
+        let ask = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Upload".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(mut chosen))) = ask.await else {
+                return; // Cancelled dialog, or the platform refused it.
+            };
+            let Some(path) = chosen.pop() else {
+                return;
+            };
+            let Some(name) = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(ToOwned::to_owned)
+            else {
+                return;
+            };
+            let key = format!("{}{name}", location.prefix.as_str());
+            let _ = this.update_in(cx, |app, _, cx| {
+                app.start_upload(
+                    location.bucket.clone(),
+                    key,
+                    path,
+                    caixonho_core::transfer::Collision::Ask,
+                    cx,
+                );
+            });
+        })
+        .detach();
+    }
+
+    /// Start one upload and hold it as the window's transfer.
+    fn start_upload(
+        &mut self,
+        bucket: String,
+        key: String,
+        path: std::path::PathBuf,
+        collision: caixonho_core::transfer::Collision,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.session.clone() else {
+            return;
+        };
+        let total = std::fs::metadata(&path).ok().map(|meta| meta.len());
+        let inbox = self.transfers.clone();
+        let cancel = session.spawn_upload(
+            bucket.clone(),
+            key.clone(),
+            path.clone(),
+            collision,
+            move |outcome| {
+                let _ = inbox.send(TransferEvent::UploadSettled(outcome));
+            },
+        );
+        self.transfer = Some(Transfer {
+            bucket,
+            key,
+            directory: path.parent().map(ToOwned::to_owned).unwrap_or_default(),
+            then_open: false,
+            direction: Direction::Up,
+            source: Some(path),
+            bytes: 0,
+            // Known up front and shown as a total, with no fraction: an
+            // upload reports no progress in this slice, and the size is
+            // still worth saying.
+            total,
+            cancel,
+            phase: TransferPhase::Running,
+        });
+        cx.notify();
+    }
+
+    /// Answer the taken-*key* question by sending again with the answer.
+    fn answer_key_collision(
+        &mut self,
+        collision: caixonho_core::transfer::Collision,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(transfer) = self.transfer.take() else {
+            return;
+        };
+        let Some(source) = transfer.source else {
+            return;
+        };
+        self.start_upload(transfer.bucket, transfer.key, source, collision, cx);
     }
 
     /// Start one download and hold it as the window's transfer.
@@ -794,6 +932,8 @@ impl CaixonhoApp {
             key,
             directory,
             then_open,
+            direction: Direction::Down,
+            source: None,
             bytes: 0,
             total: None,
             cancel,
@@ -812,6 +952,25 @@ impl CaixonhoApp {
             TransferEvent::Progress { bytes, total } => {
                 transfer.bytes = bytes;
                 transfer.total = total;
+            }
+            TransferEvent::UploadSettled(outcome) => {
+                use caixonho_core::transfer::UploadOutcome;
+                transfer.phase = match outcome {
+                    UploadOutcome::Finished {
+                        key,
+                        stepped_aside,
+                        bytes,
+                    } => {
+                        transfer.bytes = bytes;
+                        TransferPhase::Sent { key, stepped_aside }
+                    }
+                    UploadOutcome::KeyTaken { key } => TransferPhase::KeyTaken { key },
+                    UploadOutcome::ConditionUnsupported { key } => {
+                        TransferPhase::ConditionUnsupported { key }
+                    }
+                    UploadOutcome::Cancelled => TransferPhase::Cancelled,
+                    UploadOutcome::Failed(error) => TransferPhase::Failed(error),
+                };
             }
             TransferEvent::Settled(outcome) => {
                 use caixonho_core::transfer::DownloadOutcome;
@@ -1799,6 +1958,19 @@ impl CaixonhoApp {
                     ),
                 )
                 .child(
+                    div().debug_selector(|| "upload-action".into()).child(
+                        Button::new("upload-action")
+                            .label("Upload…")
+                            .ghost()
+                            // No `disabled`: unlike the other two verbs this
+                            // one acts on the location, not on a row, and a
+                            // location is what being here means.
+                            .on_click(
+                                cx.listener(|app, _, window, cx| app.upload_here(window, cx)),
+                            ),
+                    ),
+                )
+                .child(
                     Button::new("edit-path")
                         .label("Type a location")
                         .ghost()
@@ -1949,17 +2121,28 @@ impl CaixonhoApp {
                 .w_full()
                 .gap(space::TIGHT)
                 .items_center()
-                .child(div().text_sm().child(format!(
-                    "Downloading — {}",
-                    match transfer.total {
-                        Some(total) => format!(
-                            "{} of {}",
-                            crate::views::objects::readable(transfer.bytes),
-                            crate::views::objects::readable(total)
-                        ),
-                        None => crate::views::objects::readable(transfer.bytes),
-                    }
-                )))
+                .child(div().text_sm().child(match transfer.direction {
+                    // An upload reports no fraction because it has none to
+                    // report (`XONHO-0020` design): the size is said, the
+                    // progress is not invented.
+                    Direction::Up => match transfer.total {
+                        Some(total) => {
+                            format!("Uploading — {}", crate::views::objects::readable(total))
+                        }
+                        None => "Uploading…".to_owned(),
+                    },
+                    Direction::Down => format!(
+                        "Downloading — {}",
+                        match transfer.total {
+                            Some(total) => format!(
+                                "{} of {}",
+                                crate::views::objects::readable(transfer.bytes),
+                                crate::views::objects::readable(total)
+                            ),
+                            None => crate::views::objects::readable(transfer.bytes),
+                        }
+                    ),
+                }))
                 .child(div().flex_1())
                 .child(
                     div().debug_selector(|| "transfer-cancel".into()).child(
@@ -2044,16 +2227,108 @@ impl CaixonhoApp {
                     .child(dismiss())
                     .into_any_element()
             }
+            TransferPhase::KeyTaken { key } => {
+                h_flex()
+                    .debug_selector(|| "transfer-key-taken".into())
+                    .w_full()
+                    .gap(space::TIGHT)
+                    .items_center()
+                    // "already has an object", not "already exists": what is in
+                    // the way is data someone put there, and the sentence should
+                    // read like it.
+                    .child(
+                        div()
+                            .text_sm()
+                            .child(format!("`{key}` already has an object in this bucket.")),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("key-replace")
+                            .label("Replace")
+                            .ghost()
+                            .on_click(cx.listener(|app, _, _, cx| {
+                                app.answer_key_collision(
+                                    caixonho_core::transfer::Collision::Replace,
+                                    cx,
+                                )
+                            })),
+                    )
+                    .child(
+                        Button::new("key-keep-both")
+                            .label("Keep both")
+                            .ghost()
+                            .on_click(cx.listener(|app, _, _, cx| {
+                                app.answer_key_collision(
+                                    caixonho_core::transfer::Collision::KeepBoth,
+                                    cx,
+                                )
+                            })),
+                    )
+                    .child(Button::new("key-abandon").label("Cancel").ghost().on_click(
+                        cx.listener(|app, _, _, cx| {
+                            app.transfer = None;
+                            cx.notify();
+                        }),
+                    ))
+                    .into_any_element()
+            }
+            TransferPhase::ConditionUnsupported { key } => h_flex()
+                .debug_selector(|| "transfer-condition-unsupported".into())
+                .w_full()
+                .gap(space::TIGHT)
+                .items_center()
+                // The one screen where this application says it cannot keep
+                // the promise the rest of the feature is built on.
+                .child(div().text_sm().text_color(cx.theme().danger).child(format!(
+                    "This endpoint will not promise to leave an existing object \
+                             alone. Sending `{key}` may replace one."
+                )))
+                .child(div().flex_1())
+                .child(
+                    Button::new("send-anyway")
+                        .label("Send anyway")
+                        .ghost()
+                        .on_click(cx.listener(|app, _, _, cx| {
+                            app.answer_key_collision(
+                                caixonho_core::transfer::Collision::Replace,
+                                cx,
+                            )
+                        })),
+                )
+                .child(
+                    Button::new("unsupported-abandon")
+                        .label("Cancel")
+                        .ghost()
+                        .on_click(cx.listener(|app, _, _, cx| {
+                            app.transfer = None;
+                            cx.notify();
+                        })),
+                )
+                .into_any_element(),
+            TransferPhase::Sent { key, stepped_aside } => h_flex()
+                .debug_selector(|| "transfer-sent".into())
+                .w_full()
+                .gap(space::TIGHT)
+                .items_center()
+                .child(div().text_sm().child(if *stepped_aside {
+                    // Loudly: the object is not where its file name implies,
+                    // and a user who is not told will look for it there.
+                    format!("Uploaded as `{key}` — the name you sent was already taken.")
+                } else {
+                    format!("Uploaded `{key}`.")
+                }))
+                .child(div().flex_1())
+                .child(dismiss())
+                .into_any_element(),
             TransferPhase::Cancelled => h_flex()
                 .debug_selector(|| "transfer-cancelled".into())
                 .w_full()
                 .gap(space::TIGHT)
                 .items_center()
-                .child(
-                    div()
-                        .text_sm()
-                        .child("Download cancelled — nothing was written."),
-                )
+                .child(div().text_sm().child(match transfer.direction {
+                    Direction::Up => "Upload cancelled.",
+                    Direction::Down => "Download cancelled — nothing was written.",
+                }))
                 .child(div().flex_1())
                 .child(dismiss())
                 .into_any_element(),
@@ -2067,12 +2342,12 @@ impl CaixonhoApp {
                     .w_full()
                     .gap(space::TIGHT)
                     .items_center()
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().danger)
-                            .child(format!("Download failed: {rendered}")),
-                    )
+                    .child(div().text_sm().text_color(cx.theme().danger).child(
+                        match transfer.direction {
+                            Direction::Up => format!("Upload failed: {rendered}"),
+                            Direction::Down => format!("Download failed: {rendered}"),
+                        },
+                    ))
                     .child(div().flex_1())
                     .child(dismiss())
                     .into_any_element()
@@ -2787,6 +3062,8 @@ mod tests {
                 key: "daily/summary.csv".into(),
                 directory: std::env::temp_dir(),
                 then_open: false,
+                direction: Direction::Down,
+                source: None,
                 bytes: 0,
                 total: None,
                 cancel: caixonho_core::transfer::Cancel::default(),
@@ -2860,6 +3137,8 @@ mod tests {
                 key: "daily/summary.csv".into(),
                 directory: std::env::temp_dir(),
                 then_open: false,
+                direction: Direction::Down,
+                source: None,
                 bytes: 0,
                 total: None,
                 cancel: caixonho_core::transfer::Cancel::default(),
@@ -2876,10 +3155,121 @@ mod tests {
         });
     }
 
+    // ---- Uploading (XONHO-0020 tasks 4.1–4.2) ----
+
+    fn an_upload(phase: TransferPhase) -> Transfer {
+        Transfer {
+            bucket: "reports".into(),
+            key: "daily/summary.csv".into(),
+            directory: std::env::temp_dir(),
+            then_open: false,
+            direction: Direction::Up,
+            source: Some(std::env::temp_dir().join("summary.csv")),
+            bytes: 0,
+            total: Some(4096),
+            cancel: caixonho_core::transfer::Cancel::default(),
+            phase,
+        }
+    }
+
+    /// The taken-key answer re-sends the *same local file* to the *same key*
+    /// with the answer attached — losing either would upload the wrong thing
+    /// or to the wrong place, and neither is visible on screen.
+    #[gpui::test]
+    fn answering_a_taken_key_resends_the_same_file_to_the_same_key(cx: &mut TestAppContext) {
+        let (app, cx) = looking_at(cx, "reports");
+        app.update(cx, |app, cx| {
+            app.transfer = Some(an_upload(TransferPhase::KeyTaken {
+                key: "daily/summary.csv".into(),
+            }));
+            app.answer_key_collision(caixonho_core::transfer::Collision::KeepBoth, cx);
+        });
+        app.read_with(cx, |app, _| {
+            let transfer = app.transfer.as_ref().expect("reissued");
+            assert!(matches!(transfer.phase, TransferPhase::Running));
+            assert_eq!(transfer.key, "daily/summary.csv");
+            assert_eq!(transfer.direction, Direction::Up);
+            assert!(transfer.source.is_some(), "the file to send is still known");
+        });
+    }
+
+    /// An upload settling walks the same window path a download does, and
+    /// each outcome reaches its own phase.
+    #[gpui::test]
+    fn each_upload_outcome_becomes_its_own_phase(cx: &mut TestAppContext) {
+        use caixonho_core::transfer::UploadOutcome;
+        let (app, cx) = looking_at(cx, "reports");
+
+        let cases: Vec<(UploadOutcome, &'static str)> = vec![
+            (
+                UploadOutcome::Finished {
+                    key: "daily/summary (2).csv".into(),
+                    stepped_aside: true,
+                    bytes: 4096,
+                },
+                "Sent",
+            ),
+            (
+                UploadOutcome::KeyTaken {
+                    key: "daily/summary.csv".into(),
+                },
+                "KeyTaken",
+            ),
+            (
+                UploadOutcome::ConditionUnsupported {
+                    key: "daily/summary.csv".into(),
+                },
+                "ConditionUnsupported",
+            ),
+            (UploadOutcome::Cancelled, "Cancelled"),
+        ];
+
+        for (outcome, expected) in cases {
+            app.update(cx, |app, cx| {
+                app.transfer = Some(an_upload(TransferPhase::Running));
+                app.apply_transfer(TransferEvent::UploadSettled(outcome), cx);
+            });
+            app.read_with(cx, |app, _| {
+                let phase = &app.transfer.as_ref().expect("held").phase;
+                assert_eq!(phase_name(phase), expected);
+            });
+        }
+    }
+
+    /// Keep-both changed the key, and the window has to say so — a user who
+    /// is not told will look for the object under the name they sent.
+    #[gpui::test]
+    fn stepping_aside_is_carried_into_the_phase(cx: &mut TestAppContext) {
+        let (app, cx) = looking_at(cx, "reports");
+        app.update(cx, |app, cx| {
+            app.transfer = Some(an_upload(TransferPhase::Running));
+            app.apply_transfer(
+                TransferEvent::UploadSettled(caixonho_core::transfer::UploadOutcome::Finished {
+                    key: "daily/summary (2).csv".into(),
+                    stepped_aside: true,
+                    bytes: 4096,
+                }),
+                cx,
+            );
+        });
+        app.read_with(cx, |app, _| {
+            match &app.transfer.as_ref().expect("held").phase {
+                TransferPhase::Sent { key, stepped_aside } => {
+                    assert_eq!(key, "daily/summary (2).csv");
+                    assert!(stepped_aside, "the window must know to say so");
+                }
+                other => panic!("expected Sent, got {}", phase_name(other)),
+            }
+        });
+    }
+
     fn phase_name(phase: &TransferPhase) -> &'static str {
         match phase {
             TransferPhase::Running => "Running",
             TransferPhase::NameTaken { .. } => "NameTaken",
+            TransferPhase::KeyTaken { .. } => "KeyTaken",
+            TransferPhase::ConditionUnsupported { .. } => "ConditionUnsupported",
+            TransferPhase::Sent { .. } => "Sent",
             TransferPhase::Finished { .. } => "Finished",
             TransferPhase::Cancelled => "Cancelled",
             TransferPhase::Failed(_) => "Failed",
@@ -3249,6 +3639,8 @@ mod tests {
                     key: "daily/totals.parquet".into(),
                     directory: std::env::temp_dir(),
                     then_open: false,
+                    direction: Direction::Down,
+                    source: None,
                     bytes: 2_411_724,
                     total: Some(4_919_233),
                     cancel: caixonho_core::transfer::Cancel::default(),
@@ -3268,11 +3660,61 @@ mod tests {
                     key: "daily/summary.csv".into(),
                     directory: std::env::temp_dir(),
                     then_open: false,
+                    direction: Direction::Down,
+                    source: None,
                     bytes: 0,
                     total: None,
                     cancel: caixonho_core::transfer::Cancel::default(),
                     phase: TransferPhase::NameTaken {
                         name: "summary.csv".into(),
+                    },
+                });
+            },
+        ));
+
+        // The two upload states that carry a decision (`XONHO-0020`): the
+        // key that is taken, and the endpoint that will not promise.
+        written.push(shoot(
+            "bucket-07-key-taken",
+            Arc::new(StoreDouble::allows_listing()),
+            |app, _, cx| {
+                inside(app, cx);
+                app.listing = Listing::Loaded;
+                app.transfer = Some(Transfer {
+                    bucket: "reports".into(),
+                    key: "daily/summary.csv".into(),
+                    directory: std::env::temp_dir(),
+                    then_open: false,
+                    direction: Direction::Up,
+                    source: Some(std::env::temp_dir().join("summary.csv")),
+                    bytes: 0,
+                    total: Some(20_184),
+                    cancel: caixonho_core::transfer::Cancel::default(),
+                    phase: TransferPhase::KeyTaken {
+                        key: "daily/summary.csv".into(),
+                    },
+                });
+            },
+        ));
+
+        written.push(shoot(
+            "bucket-08-condition-unsupported",
+            Arc::new(StoreDouble::allows_listing()),
+            |app, _, cx| {
+                inside(app, cx);
+                app.listing = Listing::Loaded;
+                app.transfer = Some(Transfer {
+                    bucket: "reports".into(),
+                    key: "daily/summary.csv".into(),
+                    directory: std::env::temp_dir(),
+                    then_open: false,
+                    direction: Direction::Up,
+                    source: Some(std::env::temp_dir().join("summary.csv")),
+                    bytes: 0,
+                    total: Some(20_184),
+                    cancel: caixonho_core::transfer::Cancel::default(),
+                    phase: TransferPhase::ConditionUnsupported {
+                        key: "daily/summary.csv".into(),
                     },
                 });
             },
