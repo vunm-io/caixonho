@@ -40,6 +40,7 @@ branch nobody can land.
 | `XONHO-0008` | Previewing text and images without a full download (ranged GET) | §4.5 `[S]` | M3 |
 | `XONHO-0013` | Editing a saved connection: its region, its key, and renaming it | §4.1 | M1 |
 | `XONHO-0020` | Uploading one file, and never silently replacing an object | §4.4 | M2 |
+| `XONHO-0021` | Deleting one object deliberately, with the undo the service already offers | §4.5 | M3 |
 
 `XONHO-0008` depends on `XONHO-0007`: a preview is the same download path
 asking for the first N KB instead of the whole object.
