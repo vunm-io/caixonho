@@ -31,9 +31,14 @@ or AGPL), and the operating system already owns that job.
 - **Download to disk.** A selected object can be saved to a destination the
   user chooses. The write is atomic from the user's point of view: a partial
   download never sits at the final path looking like the real file.
-- **Open with the default application.** Opening an object — the double-click
-  verb — downloads it to a location this application manages and hands the
-  file to the OS opener. No format knowledge, no viewer, no new dependency:
+- **Open with the default application.** An explicit **Open** action on the
+  object's row — deliberately *not* double-click, by owner decision
+  2026-08-24: a stray double-click must not be enough to copy company bytes
+  onto disk and launch a third-party application over them. The action
+  downloads the object to a location this application manages and hands the
+  file to the OS opener. Double-click on an object stays unbound and stays
+  available: it can be promoted to Open in a later change, once the explicit
+  verb has earned that, and demotion the other way would be a surprise. No format knowledge, no viewer, no new dependency:
   the same mechanism that already opens the sign-in page opens the file.
 - **Progress and cancel, sized to one object.** A download in flight is
   visible (bytes against total when the service stated one) and can be
@@ -82,7 +87,7 @@ or AGPL), and the operating system already owns that job.
   `GetObject`. A transfer module owns destination naming, the sanitization
   scheme, temp-file-then-rename, and cancellation; `diagnostics` gains
   transfer events. TDD applies as everywhere in core.
-- **`caixonho-gui`**: row actions and the double-click verb; a minimal
+- **`caixonho-gui`**: row actions (Download…, Open); a minimal
   in-window representation of one transfer in flight (progress, cancel,
   failure with cause). No new panel framework — the queue panel is a later
   change's problem.

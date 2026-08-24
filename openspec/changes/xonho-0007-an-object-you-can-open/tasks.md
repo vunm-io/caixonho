@@ -113,15 +113,23 @@
     drive it through the double's chunked constructor.
   - Verification: `cargo test -p caixonho-gui`
 
-- [ ] 4.3 Open — double-click and a row action [dispatch: main]
+- [ ] 4.3 Open — an explicit row action, and nothing on double-click
+      [dispatch: main]
+  - Owner decision 2026-08-24, revising this plan the day after it was
+    written: Open is a visible button on the object's row, and double-click
+    on an object is deliberately left unbound. The reasoning is safety of
+    the accident: a double-click that lands on the wrong row must not be
+    enough to write company data to disk and hand it to whatever
+    application the OS pairs with it. Folders keep their existing
+    double-click (enter) — that one navigates, it does not move bytes.
   - Paths: `crates/caixonho-gui/src/app.rs`,
     `crates/caixonho-gui/src/views/objects.rs`
-  - Done criteria: double-click on an object row downloads to the open-cache
-    (3.3) and calls `open_with_system`; while in flight the same progress
-    surface as 4.2 shows; a failure to *open* after a successful download
-    reports where the file is (with `reveal_path` as the action) and is not
-    presented as a transfer failure. Folders keep their existing
-    double-click (enter).
+  - Done criteria: an `open-action` selector on the object row downloads to
+    the open-cache (3.3) and calls `open_with_system`; double-click on an
+    object row does nothing new (selection only); while in flight the same
+    progress surface as 4.2 shows; a failure to *open* after a successful
+    download reports where the file is (with `reveal_path` as the action)
+    and is not presented as a transfer failure.
   - Verification: `cargo test -p caixonho-gui` for the state transitions;
     the OS handoff itself is live-checked in 6.3
 
