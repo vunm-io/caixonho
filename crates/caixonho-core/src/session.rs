@@ -25,6 +25,7 @@ use crate::sso::{Abandon, DeviceAuthorization, RealTime, SignInLocation, SignInO
 use crate::sso_adapter::SsoOidcSignIn;
 use crate::store::ObjectStore;
 use crate::tls::HttpStack;
+use crate::transfer::{self, Cancel, Collision, DownloadOutcome};
 use crate::types::{ConnectionId, Cursor, Location, Page};
 
 /// The long-lived context every request runs in.
@@ -423,6 +424,105 @@ impl Session {
                 detail: "no connection is open to list through".into(),
             }),
         }
+    }
+
+    /// Download one object to a directory, off the caller's thread
+    /// (`XONHO-0007`).
+    ///
+    /// Through the store the open connection already built, for
+    /// [`Self::spawn_objects`]' reason: re-opening would re-resolve
+    /// credentials per download. The returned [`Cancel`] stops it between
+    /// chunks — cooperatively, so the task is still alive to clean up, log
+    /// the outcome and deliver it; an aborted task could do none of those.
+    ///
+    /// `deliver` is called exactly once, on a runtime thread. `progress` is
+    /// called after every chunk with cumulative bytes and the size when the
+    /// service stated one; both must hand off to the caller's own executor.
+    pub fn spawn_download<P, F>(
+        &self,
+        bucket: String,
+        key: String,
+        directory: std::path::PathBuf,
+        collision: Collision,
+        mut progress: P,
+        deliver: F,
+    ) -> Cancel
+    where
+        P: FnMut(u64, Option<u64>) + Send + 'static,
+        F: FnOnce(DownloadOutcome) + Send + 'static,
+    {
+        let cancel = Cancel::default();
+        let handle = cancel.clone();
+        let store = self
+            .store
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        self.runtime.spawn(async move {
+            let Some(store) = store else {
+                deliver(DownloadOutcome::Failed(Error::MissingConfiguration {
+                    profile: None,
+                    detail: "no connection is open to download through".into(),
+                }));
+                return;
+            };
+
+            let (name, mapped) = match transfer::resolve_destination(&directory, &key, collision) {
+                transfer::Resolved::Taken { name } => {
+                    // Nothing moved, so nothing is logged: the log records
+                    // transfers, and this deliberately was not one yet.
+                    deliver(DownloadOutcome::NameTaken { name });
+                    return;
+                }
+                transfer::Resolved::Write { name, mapped } => (name, mapped),
+            };
+
+            let content = match store.get_object(&bucket, &key).await {
+                Ok(content) => content,
+                Err(cause) => {
+                    diagnostics::transfer_settled(
+                        &bucket,
+                        0,
+                        diagnostics::TransferSettled::Failed(&cause),
+                    );
+                    deliver(DownloadOutcome::Failed(cause));
+                    return;
+                }
+            };
+
+            let final_path = directory.join(&name);
+            match transfer::pump(content, &final_path, &cancel, &mut progress).await {
+                Ok(bytes) => {
+                    diagnostics::transfer_settled(
+                        &bucket,
+                        bytes,
+                        diagnostics::TransferSettled::Finished,
+                    );
+                    deliver(DownloadOutcome::Finished {
+                        name,
+                        mapped,
+                        bytes,
+                    });
+                }
+                Err(transfer::PumpEnd::Cancelled) => {
+                    diagnostics::transfer_settled(
+                        &bucket,
+                        0,
+                        diagnostics::TransferSettled::Cancelled,
+                    );
+                    deliver(DownloadOutcome::Cancelled);
+                }
+                Err(transfer::PumpEnd::Failed(cause)) => {
+                    diagnostics::transfer_settled(
+                        &bucket,
+                        0,
+                        diagnostics::TransferSettled::Failed(&cause),
+                    );
+                    deliver(DownloadOutcome::Failed(cause));
+                }
+            }
+        });
+        handle
     }
 
     /// Save a stored credential, off the caller's thread.
@@ -1177,5 +1277,100 @@ mod tests {
             }
             other => panic!("expected CredentialStore, got {other:?}"),
         }
+    }
+
+    // ---- Downloading (XONHO-0007) ----
+
+    fn a_download_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("caixonho-session-download-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("fixture dir");
+        dir
+    }
+
+    /// `object-transfer` spec, "Downloading an object" — through the session:
+    /// the store the connection installed serves the bytes, the file appears
+    /// whole, and the outcome arrives exactly once.
+    #[tokio::test]
+    async fn a_download_through_the_installed_store_delivers_the_file() {
+        let fixture = Fixture::new("download-happy");
+        let session = fixture.session("work");
+        let credentials = session.credentials_changed("work");
+        session.install_object_store(
+            Arc::new(StoreDouble::serving_chunks(vec![
+                b"pail ".to_vec(),
+                b"of bytes".to_vec(),
+            ])),
+            credentials,
+        );
+        let dir = a_download_dir("happy");
+
+        let (tell, told) = tokio::sync::oneshot::channel();
+        session.spawn_download(
+            "reports".to_owned(),
+            "daily/summary.csv".to_owned(),
+            dir.clone(),
+            crate::transfer::Collision::Ask,
+            |_, _| {},
+            move |outcome| {
+                let _ = tell.send(outcome);
+            },
+        );
+
+        match told.await.expect("delivered exactly once") {
+            crate::transfer::DownloadOutcome::Finished {
+                name,
+                mapped,
+                bytes,
+            } => {
+                assert_eq!(name, "summary.csv");
+                assert_eq!(mapped, crate::transfer::MappingOutcome::Unchanged);
+                assert_eq!(bytes, 13);
+            }
+            other => panic!("expected Finished, got {other:?}"),
+        }
+        assert_eq!(
+            std::fs::read(dir.join("summary.csv")).expect("the file exists"),
+            b"pail of bytes"
+        );
+    }
+
+    /// The existing-file question crosses the session without anything
+    /// having been transferred.
+    #[tokio::test]
+    async fn a_taken_name_comes_back_as_the_question_it_is() {
+        let fixture = Fixture::new("download-taken");
+        let session = fixture.session("work");
+        let credentials = session.credentials_changed("work");
+        session.install_object_store(
+            Arc::new(StoreDouble::serving_chunks(vec![b"new".to_vec()])),
+            credentials,
+        );
+        let dir = a_download_dir("taken");
+        std::fs::write(dir.join("summary.csv"), b"the original").unwrap();
+
+        let (tell, told) = tokio::sync::oneshot::channel();
+        session.spawn_download(
+            "reports".to_owned(),
+            "daily/summary.csv".to_owned(),
+            dir.clone(),
+            crate::transfer::Collision::Ask,
+            |_, _| {},
+            move |outcome| {
+                let _ = tell.send(outcome);
+            },
+        );
+
+        match told.await.expect("delivered") {
+            crate::transfer::DownloadOutcome::NameTaken { name } => {
+                assert_eq!(name, "summary.csv");
+            }
+            other => panic!("expected NameTaken, got {other:?}"),
+        }
+        assert_eq!(
+            std::fs::read(dir.join("summary.csv")).expect("untouched"),
+            b"the original",
+            "asking is not transferring"
+        );
     }
 }

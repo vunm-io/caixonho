@@ -53,13 +53,20 @@ can leave one behind, which is why the name is unmistakably ours and why the
 next download to the same destination replaces it rather than resuming it.
 Resume is a queue-era feature.
 
-### Cancellation is dropping the task, cleanup is a guard
+### Cancellation is a flag between chunks, cleanup is a guard
 
-The GUI holds the transfer as a handle; cancel aborts the tokio task. The
-working file's removal lives in a drop guard on the writer, not in the happy
-path's tail — so the file goes away on cancel, on error, and on panic alike,
-and the promote-by-rename disarms the guard. No cancellation token protocol:
-one transfer, one task, abort is enough. The token comes with the queue.
+*(Revised while implementing 3.2 — the original said "abort the task", and
+the diagnostics delta is what overruled it: an aborted task is not alive to
+log `download cancelled` or deliver the outcome, and a cancel that leaves
+the log silent contradicts the spec written one file over.)*
+
+The GUI holds a `Cancel` handle; the pump checks it between chunks, so a
+cancel lands within one chunk's worth of bytes and the task itself cleans
+up, logs and delivers. The working file's removal lives in a drop guard on
+the writer, not in the happy path's tail — so the file goes away on cancel,
+on error, and on panic alike, and the promote-by-rename disarms the guard.
+No fuller token protocol: one transfer, one flag. The queue change can grow
+it.
 
 ### Opening uses the platform's own verb, already in the toolkit
 

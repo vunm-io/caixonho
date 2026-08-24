@@ -80,7 +80,12 @@
 
 ## 3. A download that cannot lie on disk
 
-- [ ] 3.1 Working-path writer with a cleanup guard [dispatch: main]
+- [x] 3.1 Working-path writer with a cleanup guard [dispatch: main]
+      - Done in `main` (2026-08-24), red first: five writer tests on a
+        `todo!()` body. `Error::Destination` deliberately carries no path —
+        `Display` of every error reaches the log as `cause`, and the
+        diagnostics delta keeps destination paths out; the test asserts the
+        path's absence from the error text.
   - Paths: `crates/caixonho-core/src/transfer.rs`
   - Done criteria: writes to `<final>.caixonho-partial` in the destination
     directory; promote-by-rename on completion disarms the guard; drop
@@ -90,8 +95,22 @@
     a pre-existing stale working file is replaced, not resumed.
   - Verification: `cargo test -p caixonho-core transfer::`
 
-- [ ] 3.2 The transfer function: stream → writer, counting as it goes
+- [x] 3.2 The transfer function: stream → writer, counting as it goes
       [dispatch: main]
+      - Done in `main` (2026-08-24), red first: six pump/resolution tests,
+        then two session-level ones and the no-key/no-path log test asserted
+        with `XONHO-0012`'s own `assert_undisclosed`, at the most detailed
+        setting.
+      - **One design revision, made in design.md not just here:** cancel is
+        a cooperative flag checked between chunks, not a task abort — an
+        aborted task cannot log `download cancelled`, and the diagnostics
+        delta requires that line. Keep-both numbering is ` (n)` before the
+        extension, first free n from 2, the numbering every file manager
+        already taught people.
+      - The GUI's exhaustive failure matches caught the new variant at
+        compile time and got honest arms: a destination refusal marks no
+        connection unavailable, and its guidance names permissions and free
+        space.
   - Paths: `crates/caixonho-core/src/transfer.rs`,
     `crates/caixonho-core/src/session.rs`
   - Done criteria: `Session::spawn_download(location, key, destination, …)`
@@ -107,7 +126,13 @@
   - Verification: `cargo test -p caixonho-core`, including a test that drops
     the handle mid-stream and asserts no file at the final path
 
-- [ ] 3.3 The open-cache: location and the startup sweep [dispatch: main]
+- [x] 3.3 The open-cache: location and the startup sweep [dispatch: main]
+      - Done in `main` (2026-08-24). `directories::ProjectDirs` cache base —
+        the platform's own cache location, which is what OS cleanup tooling
+        already treats as reclaimable. The sweep takes an injected `now`, so
+        the test holds the clock instead of setting mtimes (which std cannot
+        do without a new dependency); age bound is 7 days, a constant and
+        deliberately not a setting.
   - Paths: `crates/caixonho-core/src/transfer.rs`
   - Done criteria: cache dir per platform (macOS
     `~/Library/Caches/caixonho/open`, Windows

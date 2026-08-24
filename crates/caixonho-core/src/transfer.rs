@@ -171,6 +171,309 @@ fn fnv1a(bytes: &[u8]) -> u64 {
     hash
 }
 
+/// The extension a download-in-progress wears.
+///
+/// Unmistakably this application's, so a crash's leavings can be recognised
+/// — and `local_name` keeps final names short enough that appending this
+/// never breaks the filesystem's limit (its bound accounts for it).
+const WORKING_EXTENSION: &str = "caixonho-partial";
+
+/// Writes one object to disk without ever letting a partial file sit at the
+/// final path (`object-transfer` spec, "A partial download is never
+/// mistakable for the file").
+///
+/// Content goes to `<final>.caixonho-partial` in the same directory — same
+/// directory, so the promotion is a same-volume rename and never a copy —
+/// and reaches the final name only through [`Writer::promote`]. Every other
+/// way out of this type, `Drop` included, removes the working file: cancel,
+/// failure and panic share one cleanup, and the happy path disarms it.
+///
+/// Writes are ordinary blocking `std::fs` writes. The chunks arrive from an
+/// async pull, but each write is a small append; putting an async file
+/// runtime between the two would buy nothing this application can observe.
+#[derive(Debug)]
+pub struct Writer {
+    file: Option<std::fs::File>,
+    working: std::path::PathBuf,
+    final_path: std::path::PathBuf,
+}
+
+impl Writer {
+    /// Open a writer for `final_path`.
+    ///
+    /// A stale working file from a crashed run is truncated, never resumed:
+    /// nothing certifies its bytes, and the spec's promise is about what the
+    /// *final* path holds, which resuming unknown content would break the
+    /// slow way.
+    pub fn begin(final_path: &std::path::Path) -> crate::error::Result<Self> {
+        let mut name = final_path
+            .file_name()
+            .map(std::ffi::OsString::from)
+            .unwrap_or_default();
+        name.push(".");
+        name.push(WORKING_EXTENSION);
+        let working = final_path.with_file_name(name);
+
+        let file = std::fs::File::create(&working).map_err(destination)?;
+        Ok(Self {
+            file: Some(file),
+            working,
+            final_path: final_path.to_owned(),
+        })
+    }
+
+    /// Append one chunk to the working file.
+    pub fn write(&mut self, chunk: &[u8]) -> crate::error::Result<()> {
+        use std::io::Write as _;
+        self.file
+            .as_mut()
+            .expect("a writer holds its file until promoted")
+            .write_all(chunk)
+            .map_err(destination)
+    }
+
+    /// The content is complete: put it at the final path.
+    ///
+    /// Flushed to the platform's satisfaction before the rename, so the file
+    /// that appears under the real name is the file, not a page cache's
+    /// intention of one.
+    pub fn promote(mut self) -> crate::error::Result<()> {
+        let file = self.file.take().expect("promote consumes the writer");
+        file.sync_all().map_err(destination)?;
+        drop(file);
+        std::fs::rename(&self.working, &self.final_path).map_err(destination)
+        // `self` drops here with `file: None`, which is what disarms the
+        // cleanup below — the working file has just become the real one.
+    }
+}
+
+impl Drop for Writer {
+    fn drop(&mut self) {
+        // Armed exactly while the working file is ours: `promote` takes the
+        // file out first, and after a rename there is nothing to remove.
+        if self.file.take().is_some() {
+            let _ = std::fs::remove_file(&self.working);
+        }
+    }
+}
+
+/// An `io::Error` as the destination's refusal — without the path, which the
+/// diagnostics spec keeps out of anything that can reach the log.
+fn destination(error: std::io::Error) -> crate::error::Error {
+    crate::error::Error::Destination {
+        detail: error.to_string(),
+    }
+}
+
+/// What to do when the final name is already taken at the destination.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Collision {
+    /// Return the question to whoever asked; transfer nothing.
+    Ask,
+    /// Write over the existing file — only ever on the user's say-so.
+    Replace,
+    /// Keep both: derive a free name beside the existing one.
+    KeepBoth,
+}
+
+/// How one download ended.
+#[derive(Debug)]
+pub enum DownloadOutcome {
+    /// The file is at the destination under `name`.
+    Finished {
+        /// The final filename — differs from the key's segment when the
+        /// mapping or keep-both had to step in, and the UI says so.
+        name: String,
+        /// What the mapping did to produce it.
+        mapped: MappingOutcome,
+        /// Bytes written.
+        bytes: u64,
+    },
+    /// The final name is taken and the caller asked to be asked.
+    NameTaken {
+        /// The name that is taken.
+        name: String,
+    },
+    /// Cancelled by the user; nothing is at the destination.
+    Cancelled,
+    /// Failed; nothing is at the destination. Carries the classified cause.
+    Failed(crate::error::Error),
+}
+
+/// Cancels a download in flight.
+///
+/// Cooperative, checked between chunks — so the task itself sees the
+/// cancellation, cleans up through the writer's one path, logs the outcome
+/// and delivers it. Aborting the task instead would leave nobody to say so.
+#[derive(Debug, Clone, Default)]
+pub struct Cancel(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Cancel {
+    /// Ask the download to stop.
+    pub fn cancel(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// Where a download will write, or the question that stops it.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Resolved {
+    /// Write here.
+    Write {
+        name: String,
+        mapped: MappingOutcome,
+    },
+    /// The name is taken and the caller wanted to be asked.
+    Taken { name: String },
+}
+
+/// Decide the filename for `key` in `directory` under `collision`.
+///
+/// The policy only matters once the mapped name is taken. Keep-both takes
+/// the first free ` (n)` name, counting from 2 — the numbering people already
+/// know from every file manager — inserted before the final extension so
+/// `report (2).csv` still opens as a CSV.
+pub(crate) fn resolve_destination(
+    directory: &std::path::Path,
+    key: &str,
+    collision: Collision,
+) -> Resolved {
+    let mapped = local_name(key);
+    if !directory.join(&mapped.name).exists() {
+        return Resolved::Write {
+            name: mapped.name,
+            mapped: mapped.how,
+        };
+    }
+    match collision {
+        Collision::Ask => Resolved::Taken { name: mapped.name },
+        Collision::Replace => Resolved::Write {
+            name: mapped.name,
+            mapped: mapped.how,
+        },
+        Collision::KeepBoth => {
+            let (stem, extension) = match mapped.name.rsplit_once('.') {
+                // A leading dot is a hidden file's, not an extension's.
+                Some((stem, extension)) if !stem.is_empty() => {
+                    (stem.to_owned(), format!(".{extension}"))
+                }
+                _ => (mapped.name.clone(), String::new()),
+            };
+            let mut n: u32 = 2;
+            let name = loop {
+                let candidate = format!("{stem} ({n}){extension}");
+                if !directory.join(&candidate).exists() {
+                    break candidate;
+                }
+                n += 1;
+            };
+            Resolved::Write {
+                name,
+                mapped: mapped.how,
+            }
+        }
+    }
+}
+
+/// Pump `content` into a [`Writer`] at `final_path`, counting as it goes.
+///
+/// Cancellation is checked between chunks — after each write and before the
+/// next pull — so a cancel lands within one chunk's worth of bytes, and the
+/// task that was cancelled is still alive to clean up, log and deliver.
+/// Every early way out drops the writer unpromoted, which is the cleanup.
+pub(crate) async fn pump(
+    mut content: crate::store::ObjectContent,
+    final_path: &std::path::Path,
+    cancel: &Cancel,
+    mut on_progress: impl FnMut(u64, Option<u64>),
+) -> std::result::Result<u64, PumpEnd> {
+    let mut writer = Writer::begin(final_path).map_err(PumpEnd::Failed)?;
+    let total = content.size;
+    let mut bytes: u64 = 0;
+
+    loop {
+        if cancel.is_cancelled() {
+            return Err(PumpEnd::Cancelled);
+        }
+        let chunk = match content.body.next_chunk().await {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) => break,
+            Err(cause) => return Err(PumpEnd::Failed(cause)),
+        };
+        writer.write(&chunk).map_err(PumpEnd::Failed)?;
+        bytes += chunk.len() as u64;
+        on_progress(bytes, total);
+    }
+
+    writer.promote().map_err(PumpEnd::Failed)?;
+    Ok(bytes)
+}
+
+/// How a pump ends when it does not finish.
+#[derive(Debug)]
+pub(crate) enum PumpEnd {
+    Cancelled,
+    Failed(crate::error::Error),
+}
+
+/// How long an opened file may sit in the cache before the sweep takes it.
+///
+/// A week: long enough that "open it again" over a few days costs nothing,
+/// short enough that the cache stays a cache. Not a setting — the spec's
+/// promise is "bounded, not the user's job", and a knob would make it the
+/// user's job with extra steps.
+const OPEN_CACHE_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
+
+/// Where download-to-open files live on this machine.
+///
+/// The cache location, not the state or data one: everything in it can be
+/// re-downloaded, which is what a cache directory means to the platform's
+/// own cleanup tooling. `directories` resolves the base for the same reason
+/// the log directory lets it (`diagnostics::log_directory`): that crate is
+/// tested on all three platforms and this repository is not.
+///
+/// - macOS: `~/Library/Caches/caixonho/open`
+/// - Windows: `%LOCALAPPDATA%\caixonho\cache\open`
+/// - Linux: `$XDG_CACHE_HOME/caixonho/open`
+pub fn open_cache_dir() -> Option<std::path::PathBuf> {
+    let dirs = directories::ProjectDirs::from("", "", "caixonho")?;
+    Some(dirs.cache_dir().join("open"))
+}
+
+/// Remove cache entries older than [`OPEN_CACHE_MAX_AGE`], judged against
+/// `now`.
+///
+/// Called once at startup — the same sweep-on-use pattern the log's own
+/// rotation follows; no daemon, no timer. `now` is a parameter so a test can
+/// hold the clock instead of waiting a week. A directory that does not exist
+/// is a cache with nothing in it; errors on individual entries are skipped
+/// rather than fatal, because a file the sweep cannot remove today is one it
+/// will remove tomorrow, and startup must not fail over housekeeping.
+pub fn sweep_open_cache(directory: &std::path::Path, now: std::time::SystemTime) {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        let Ok(modified) = metadata.modified() else {
+            continue;
+        };
+        let expired = now
+            .duration_since(modified)
+            .map(|age| age > OPEN_CACHE_MAX_AGE)
+            .unwrap_or(false);
+        if expired {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! `object-transfer` spec, "Keys map to filenames deterministically and
@@ -332,5 +635,289 @@ mod tests {
             assert_ne!(mapped.name, ".", "key {key:?}");
             assert_ne!(mapped.name, "..", "key {key:?}");
         }
+    }
+
+    // ---- The writer (task 3.1) ----
+
+    /// Each test gets its own directory, cleaned up going in rather than out,
+    /// so a failed run leaves evidence — the same arrangement the session and
+    /// diagnostics fixtures use.
+    fn a_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("caixonho-transfer-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the fixture directory is creatable");
+        dir
+    }
+
+    #[test]
+    fn completion_promotes_and_leaves_no_working_file() {
+        let dir = a_dir("promotes");
+        let final_path = dir.join("report.csv");
+
+        let mut writer = Writer::begin(&final_path).expect("the directory is writable");
+        writer.write(b"a,b\n").expect("writes");
+        writer.write(b"1,2\n").expect("writes");
+        assert!(
+            !final_path.exists(),
+            "nothing may sit at the final path before promotion"
+        );
+        writer.promote().expect("promotes");
+
+        assert_eq!(
+            std::fs::read(&final_path).expect("the file exists"),
+            b"a,b\n1,2\n"
+        );
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            1,
+            "the working file is gone; only the real one remains"
+        );
+    }
+
+    #[test]
+    fn a_dropped_writer_leaves_neither_working_nor_final_file() {
+        let dir = a_dir("dropped");
+        let final_path = dir.join("big.bin");
+
+        let mut writer = Writer::begin(&final_path).expect("begins");
+        writer
+            .write(b"some bytes that will not survive")
+            .expect("writes");
+        drop(writer);
+
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            0,
+            "cancel and failure share the drop path, and it cleans up"
+        );
+    }
+
+    #[test]
+    fn a_failed_transfer_leaves_an_existing_final_file_untouched() {
+        let dir = a_dir("existing");
+        let final_path = dir.join("kept.txt");
+        std::fs::write(&final_path, b"the original").expect("fixture");
+
+        let mut writer = Writer::begin(&final_path).expect("begins");
+        writer.write(b"half of a replace").expect("writes");
+        drop(writer);
+
+        assert_eq!(
+            std::fs::read(&final_path).expect("still there"),
+            b"the original",
+            "a transfer that did not finish may not have touched the real file"
+        );
+    }
+
+    #[test]
+    fn a_stale_working_file_is_replaced_not_resumed() {
+        let dir = a_dir("stale");
+        let final_path = dir.join("report.csv");
+        std::fs::write(
+            dir.join("report.csv.caixonho-partial"),
+            b"left behind by a crash",
+        )
+        .expect("fixture");
+
+        let mut writer = Writer::begin(&final_path).expect("begins over the stale file");
+        writer.write(b"fresh").expect("writes");
+        writer.promote().expect("promotes");
+
+        assert_eq!(
+            std::fs::read(&final_path).expect("exists"),
+            b"fresh",
+            "yesterday's crash may not prepend itself to today's download"
+        );
+    }
+
+    #[test]
+    fn an_unwritable_destination_is_a_destination_error_without_the_path() {
+        let dir = a_dir("unwritable");
+        let missing = dir.join("no-such-dir").join("file.txt");
+
+        let outcome = Writer::begin(&missing);
+        match outcome {
+            Err(crate::error::Error::Destination { detail }) => {
+                assert!(
+                    !detail.contains("no-such-dir"),
+                    "the cause reaches the log; the path may not: {detail}"
+                );
+            }
+            other => panic!("expected Destination, got {other:?}"),
+        }
+    }
+
+    // ---- The transfer itself (task 3.2) ----
+
+    fn content_of(double: crate::store::double::StoreDouble) -> crate::store::ObjectContent {
+        futures_of(async move {
+            use crate::store::ObjectStore as _;
+            double.get_object("bucket", "key").await.expect("scripted")
+        })
+    }
+
+    /// One current-thread runtime per test, the arrangement every async test
+    /// in this crate already uses.
+    fn futures_of<T>(fut: impl std::future::Future<Output = T>) -> T {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime")
+            .block_on(fut)
+    }
+
+    #[test]
+    fn a_download_finishes_counting_every_byte() {
+        let dir = a_dir("finishes");
+        let final_path = dir.join("summary.csv");
+        let content = content_of(crate::store::double::StoreDouble::serving_chunks(vec![
+            b"one ".to_vec(),
+            b"two ".to_vec(),
+            b"three".to_vec(),
+        ]));
+
+        let mut seen: Vec<(u64, Option<u64>)> = Vec::new();
+        let bytes = futures_of(pump(content, &final_path, &Cancel::default(), |b, t| {
+            seen.push((b, t));
+        }))
+        .expect("finishes");
+
+        assert_eq!(bytes, 13);
+        assert_eq!(std::fs::read(&final_path).unwrap(), b"one two three");
+        assert_eq!(
+            seen,
+            vec![(4, Some(13)), (8, Some(13)), (13, Some(13))],
+            "progress is cumulative, against the stated size"
+        );
+    }
+
+    #[test]
+    fn a_cancelled_download_leaves_nothing_at_the_destination() {
+        let dir = a_dir("cancelled");
+        let final_path = dir.join("big.bin");
+        let content = content_of(crate::store::double::StoreDouble::serving_chunks(vec![
+            b"first".to_vec(),
+            b"second".to_vec(),
+            b"third".to_vec(),
+        ]));
+
+        let cancel = Cancel::default();
+        let seen = std::cell::Cell::new(0u32);
+        let outcome = futures_of(pump(content, &final_path, &cancel, |_, _| {
+            seen.set(seen.get() + 1);
+            cancel.cancel(); // the user clicks after the first chunk
+        }));
+
+        assert!(matches!(outcome, Err(PumpEnd::Cancelled)), "{outcome:?}");
+        assert_eq!(seen.get(), 1, "cancellation lands between chunks");
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            0,
+            "neither the file nor its working twin survives a cancel"
+        );
+    }
+
+    #[test]
+    fn a_mid_stream_failure_cleans_up_and_keeps_its_cause() {
+        let dir = a_dir("break");
+        let final_path = dir.join("cut.bin");
+        let content = content_of(crate::store::double::StoreDouble::content_breaking_after(
+            vec![b"the only chunk".to_vec()],
+        ));
+
+        let outcome = futures_of(pump(content, &final_path, &Cancel::default(), |_, _| {}));
+
+        match outcome {
+            Err(PumpEnd::Failed(crate::error::Error::Network { .. })) => {}
+            other => panic!("expected the network cause to survive, got {other:?}"),
+        }
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_taken_name_is_a_question_when_asking_was_asked_for() {
+        let dir = a_dir("taken");
+        std::fs::write(dir.join("report.csv"), b"already here").unwrap();
+
+        let resolved = resolve_destination(&dir, "monthly/report.csv", Collision::Ask);
+        assert_eq!(
+            resolved,
+            Resolved::Taken {
+                name: "report.csv".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn replace_writes_and_keep_both_steps_aside() {
+        let dir = a_dir("policies");
+        std::fs::write(dir.join("report.csv"), b"v1").unwrap();
+        std::fs::write(dir.join("report (2).csv"), b"v2").unwrap();
+
+        assert_eq!(
+            resolve_destination(&dir, "monthly/report.csv", Collision::Replace),
+            Resolved::Write {
+                name: "report.csv".to_owned(),
+                mapped: MappingOutcome::Unchanged
+            },
+            "replace answers with the taken name itself"
+        );
+        assert_eq!(
+            resolve_destination(&dir, "monthly/report.csv", Collision::KeepBoth),
+            Resolved::Write {
+                name: "report (3).csv".to_owned(),
+                mapped: MappingOutcome::Unchanged
+            },
+            "keep-both takes the first free numbered name"
+        );
+    }
+
+    #[test]
+    fn a_free_name_is_written_whatever_the_policy_says() {
+        let dir = a_dir("free");
+        for collision in [Collision::Ask, Collision::Replace, Collision::KeepBoth] {
+            assert_eq!(
+                resolve_destination(&dir, "logs/12:30.log", collision),
+                Resolved::Write {
+                    name: "12%3A30.log".to_owned(),
+                    mapped: MappingOutcome::Substituted
+                },
+                "the policy only matters once a name is taken"
+            );
+        }
+    }
+
+    // ---- The open-cache sweep (task 3.3) ----
+
+    #[test]
+    fn the_sweep_takes_the_old_and_leaves_the_young() {
+        let dir = a_dir("sweep");
+        std::fs::write(dir.join("opened-today.pdf"), b"x").unwrap();
+        std::fs::write(dir.join("opened-last-month.pdf"), b"y").unwrap();
+        let now = std::time::SystemTime::now();
+
+        // Judged now, both files are fresh: nothing goes.
+        sweep_open_cache(&dir, now);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
+
+        // Judged from eight days in the future, both are past the age — the
+        // clock is injected precisely so the test does not have to set
+        // mtimes, which std cannot do without another dependency.
+        sweep_open_cache(&dir, now + std::time::Duration::from_secs(8 * 24 * 60 * 60));
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            0,
+            "a cache entry past its age is reclaimed"
+        );
+    }
+
+    #[test]
+    fn sweeping_a_missing_directory_is_a_cache_with_nothing_in_it() {
+        let ghost = std::env::temp_dir().join("caixonho-transfer-no-such-cache");
+        let _ = std::fs::remove_dir_all(&ghost);
+        // The assertion is that this returns instead of panicking or
+        // creating anything.
+        sweep_open_cache(&ghost, std::time::SystemTime::now());
+        assert!(!ghost.exists());
     }
 }

@@ -150,6 +150,19 @@ pub enum Error {
 
     /// The endpoint could not be reached at all. The matching next action is
     /// a retry, never a credential fix.
+    /// A transfer's destination refused the write — permission, disk full,
+    /// or a path the filesystem rejects.
+    ///
+    /// Deliberately carries no path: `Display` of every error reaches the
+    /// log through `cause=%error`, and the diagnostics spec keeps
+    /// destination paths out of the log. The frontend knows the path — it
+    /// chose it — and reports it beside this cause, on screen only.
+    #[error("the destination could not be written — {detail}")]
+    Destination {
+        /// What the filesystem said, without the path it said it about.
+        detail: String,
+    },
+
     #[error("network failure: {detail}")]
     Network {
         /// Classifier-authored description (DNS, connect, timeout, ...).

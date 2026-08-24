@@ -59,6 +59,16 @@ pub(crate) fn guidance_for(error: &Error, sign_in_offered: bool) -> SharedString
                 Error::MissingConfiguration { .. } => {
                     "Complete the profile's configuration — a region is required — and try again.".into()
                 }
+                // The service side of this transfer was fine; the disk said
+                // no. The cause names what the filesystem said, and the
+                // window shows the path beside it from its own state — the
+                // error deliberately does not carry one (diagnostics spec:
+                // paths stay out of the log).
+                Error::Destination { .. } => {
+                    "The file could not be written there. Check the folder's permissions and free \
+                     space, or download to a different folder."
+                        .into()
+                }
                 Error::CredentialStore { connection, problem } => match problem {
                     CredentialStoreProblem::Locked => format!(
                         "The system keychain is locked, so the secret for `{connection}` cannot be \
@@ -187,6 +197,9 @@ pub(crate) fn unavailable_reason(error: &Error) -> Option<SharedString> {
             CredentialStoreProblem::Refused => "keychain refused".into(),
             CredentialStoreProblem::Absent => "no keychain".into(),
         }),
+        // The disk refusing a write says nothing about the connection —
+        // the service half of that transfer worked.
+        Error::Destination { .. } => None,
         // A configuration file that will not parse says nothing about whether
         // any particular credential works, so it marks no connection.
         // Signing in worked; the endpoint simply does not offer that

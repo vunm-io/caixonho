@@ -446,6 +446,35 @@ pub(crate) fn location_settled(
     }
 }
 
+/// What one transfer came to.
+///
+/// The bucket, the bytes and the outcome — never the key and never the
+/// destination path (`diagnostics` spec, "Transfers are recorded as
+/// outcomes, never as an inventory"): a key names the user's own data and a
+/// destination names their machine's layout, and this log is one the
+/// application invites the user to send to a stranger.
+pub(crate) fn transfer_settled(bucket: &str, bytes: u64, settled: TransferSettled<'_>) {
+    match settled {
+        TransferSettled::Finished => tracing::info!(bucket, bytes, "downloaded an object"),
+        TransferSettled::Cancelled => {
+            tracing::info!(bucket, bytes, "download cancelled")
+        }
+        TransferSettled::Failed(error) => {
+            tracing::warn!(bucket, bytes, cause = %error, "download failed")
+        }
+    }
+}
+
+/// How a transfer settled, for [`transfer_settled`].
+pub(crate) enum TransferSettled<'a> {
+    /// Complete, at the destination.
+    Finished,
+    /// Stopped by the user.
+    Cancelled,
+    /// Failed with a classified cause.
+    Failed(&'a crate::error::Error),
+}
+
 pub(crate) fn probe_settled(scope: &Scope, observation: Observation) {
     tracing::info!(
         bucket = scope.bucket_name(),
@@ -1094,6 +1123,54 @@ mod tests {
                 "{what} reached the log as `{disclosure}`:\n{log}"
             );
         }
+    }
+
+    /// `diagnostics` delta (`XONHO-0007`): transfers are outcomes, never an
+    /// inventory. The key and the destination path stay out at the most
+    /// detailed setting, in every spelling `assert_undisclosed` checks.
+    #[test]
+    fn a_transfer_logs_its_outcome_and_never_the_key_or_the_path() {
+        const KEY: &str = "quarterly/salaries-2026.xlsx";
+        const DIR: &str = "caixonho-diag-transfer-dest";
+
+        let (log, ()) = recording(everything(), || {
+            runtime().block_on(async {
+                let session = session(Arc::new(SecretStoreDouble::open()));
+                let credentials = session.credentials_changed("work");
+                session.install_object_store(
+                    Arc::new(crate::store::double::StoreDouble::serving_chunks(vec![
+                        b"cells".to_vec(),
+                    ])),
+                    credentials,
+                );
+                let dir = std::env::temp_dir().join(DIR);
+                let _ = std::fs::remove_dir_all(&dir);
+                std::fs::create_dir_all(&dir).expect("fixture dir");
+
+                let (tell, told) = tokio::sync::oneshot::channel();
+                session.spawn_download(
+                    "finance".to_owned(),
+                    KEY.to_owned(),
+                    dir.clone(),
+                    crate::transfer::Collision::Ask,
+                    |_, _| {},
+                    move |outcome| {
+                        let _ = tell.send(outcome);
+                    },
+                );
+                told.await.expect("delivered");
+                let _ = std::fs::remove_dir_all(&dir);
+            });
+        });
+
+        assert!(
+            log.contains("downloaded an object"),
+            "the outcome itself is recorded:\n{log}"
+        );
+        assert!(log.contains("finance"), "the bucket is the scope:\n{log}");
+        assert_undisclosed(&log, KEY, "the object's key");
+        assert_undisclosed(&log, "salaries-2026", "the key's filename half");
+        assert_undisclosed(&log, DIR, "the destination path");
     }
 
     #[test]
