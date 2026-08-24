@@ -14,6 +14,7 @@ use aws_sdk_s3::Client;
 use aws_sdk_s3::config::Region as SdkRegion;
 use aws_sdk_s3::config::http::HttpResponse;
 use aws_sdk_s3::error::SdkError;
+use aws_sdk_s3::operation::get_object::{GetObjectError, GetObjectOutput};
 use aws_sdk_s3::operation::list_buckets::builders::ListBucketsFluentBuilder;
 use aws_sdk_s3::operation::list_objects_v2::builders::ListObjectsV2FluentBuilder;
 use aws_sdk_s3::operation::list_objects_v2::{ListObjectsV2Error, ListObjectsV2Output};
@@ -27,6 +28,7 @@ use crate::connection::Connection;
 use crate::error::{Error, Result};
 use crate::listing;
 use crate::store::ObjectStore;
+use crate::store::{ObjectContent, ObjectRead};
 use crate::types::{
     AccountListing, Bucket, BucketKind, Cursor, Location, Object, Page, RefusedListing, Region,
 };
@@ -278,6 +280,31 @@ impl S3ObjectStore {
     /// Hands back the SDK's own error rather than a cause: the caller has to
     /// look at the failure before deciding whether it is one, and classifying
     /// here would throw away the redirect on the way past.
+    async fn read_object(
+        &self,
+        bucket: &str,
+        key: &str,
+        region: Option<&Region>,
+    ) -> std::result::Result<GetObjectOutput, SdkError<GetObjectError, HttpResponse>> {
+        let client = match region {
+            Some(region) => self.client_for(region),
+            None => self.client.clone(),
+        };
+        client.get_object().bucket(bucket).key(key).send().await
+    }
+
+    /// What a failed object read is reported as. `s3:GetObject` whatever the
+    /// bucket kind: directory buckets gate reads through the session the same
+    /// way (`CreateSession` grants), but the permission the *user* can act on
+    /// is the object-read one.
+    fn get_failure(&self, failure: &SdkFailure, bucket: &str, region: Option<&Region>) -> Error {
+        let endpoint = match region {
+            Some(region) => self.endpoint_for(region),
+            None => self.endpoint.clone(),
+        };
+        classify(failure, &self.call("s3:GetObject", &endpoint, Some(bucket)))
+    }
+
     async fn read_page(
         &self,
         location: &Location,
@@ -395,6 +422,48 @@ impl ObjectStore for S3ObjectStore {
             })?;
 
         Ok(())
+    }
+
+    async fn get_object(&self, bucket: &str, key: &str) -> Result<ObjectContent> {
+        // The same follow-once contract as `list_objects`, for the same
+        // reason: a redirect that names a region is a call that has been told
+        // where to go, and following it twice is a request that never
+        // settles. The learned region is shared with the listing path, so a
+        // bucket the listing already followed is read right the first time.
+        let addressed_to = self.region_learned_for(bucket);
+
+        let answer = match self.read_object(bucket, key, addressed_to.as_ref()).await {
+            Ok(answer) => answer,
+            Err(error) => {
+                let failure = SdkFailure::from_sdk(&error);
+                let Some(region) = failure.redirect_region() else {
+                    return Err(self.get_failure(&failure, bucket, addressed_to.as_ref()));
+                };
+                let region = Region::Known(region.to_owned());
+
+                let answer =
+                    self.read_object(bucket, key, Some(&region))
+                        .await
+                        .map_err(|error| {
+                            self.get_failure(&SdkFailure::from_sdk(&error), bucket, Some(&region))
+                        })?;
+
+                if let Region::Known(name) = &region {
+                    self.remember_region(bucket, name);
+                }
+                answer
+            }
+        };
+
+        // The service's own length for progress, never trusted further than
+        // that: the stream decides where the object actually ends.
+        let size = answer
+            .content_length()
+            .and_then(|len| u64::try_from(len).ok());
+        Ok(ObjectContent {
+            size,
+            body: Box::new(SdkRead { body: answer.body }),
+        })
     }
 
     async fn list_objects(&self, location: &Location, cursor: Option<&Cursor>) -> Result<Page> {
@@ -681,6 +750,26 @@ fn directory_bucket_region(arn: Option<&str>, listing_region: &str) -> Region {
         .unwrap_or(listing_region);
 
     Region::Known(region.to_owned())
+}
+
+/// The adapter's [`ObjectRead`]: the SDK's byte stream behind the port's
+/// pull. A failure mid-body arrives from `try_next` and is reported as the
+/// network event it is — there is no HTTP response left to classify by then,
+/// only a broken body.
+struct SdkRead {
+    body: aws_sdk_s3::primitives::ByteStream,
+}
+
+#[async_trait]
+impl ObjectRead for SdkRead {
+    async fn next_chunk(&mut self) -> Result<Option<Vec<u8>>> {
+        match self.body.try_next().await {
+            Ok(chunk) => Ok(chunk.map(|bytes| bytes.to_vec())),
+            Err(error) => Err(Error::Network {
+                detail: format!("the object's body broke mid-read: {error}"),
+            }),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1081,6 +1170,54 @@ mod tests {
         .expect_err("a transient failure is not a partial result");
 
         assert!(matches!(error, Error::Network { .. }));
+    }
+
+    /// A real object read through the real adapter, end to end.
+    ///
+    /// `#[ignore]`d for the same reason as its neighbour: it needs an
+    /// account. It exists because two things about `GetObject` cannot be
+    /// reasoned out from here — whether the body streams in more than one
+    /// chunk against a real endpoint (the double scripts that; only the
+    /// network proves it), and what the stated length is for an object the
+    /// listing reported with a different size than the read answers.
+    ///
+    /// ```text
+    /// CAIXONHO_PROFILE=<profile> CAIXONHO_GET_BUCKET=<name> CAIXONHO_GET_KEY=<key> \
+    ///   cargo test -p caixonho-core this_machine_reading -- --ignored --nocapture
+    /// ```
+    #[tokio::test]
+    #[ignore = "needs a real account and a readable object"]
+    async fn this_machine_reading_one_object() {
+        let profile = std::env::var("CAIXONHO_PROFILE").expect("CAIXONHO_PROFILE");
+        let bucket = std::env::var("CAIXONHO_GET_BUCKET").expect("CAIXONHO_GET_BUCKET");
+        let key = std::env::var("CAIXONHO_GET_KEY").expect("CAIXONHO_GET_KEY");
+
+        let config = aws_config::defaults(BehaviorVersion::latest())
+            .profile_name(&profile)
+            .load()
+            .await;
+        let region = config
+            .region()
+            .map(|region| region.to_string())
+            .expect("the profile states a region");
+        let store = S3ObjectStore::over(config, &profile, &region, None);
+
+        let mut content = store
+            .get_object(&bucket, &key)
+            .await
+            .expect("the object opens");
+        println!("stated size: {:?}", content.size);
+
+        let mut total = 0u64;
+        let mut chunks = 0u32;
+        while let Some(chunk) = content.body.next_chunk().await.expect("the body holds") {
+            total += chunk.len() as u64;
+            chunks += 1;
+        }
+        println!("read {total} bytes in {chunks} chunks");
+        if let Some(stated) = content.size {
+            assert_eq!(total, stated, "the stream and the stated size disagree");
+        }
     }
 
     /// What a real refusal of a directory bucket looks like, end to end.

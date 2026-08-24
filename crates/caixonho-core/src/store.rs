@@ -63,6 +63,52 @@ pub trait ObjectStore: Send + Sync {
     /// whole project — an empty folder and a refused one must never be the
     /// same answer.
     async fn list_objects(&self, location: &Location, cursor: Option<&Cursor>) -> Result<Page>;
+
+    /// Read one object's content (`XONHO-0007`).
+    ///
+    /// `bucket` and the full `key`, not a [`Location`]: a location's prefix
+    /// names a folder, and reusing it here would put a folder where a key
+    /// belongs and leave the reader to guess which one was meant.
+    ///
+    /// The content is **pulled** — chunks until `None` — rather than returned
+    /// whole, because an object may be arbitrarily large and progress has to
+    /// be countable somewhere. A refusal is an `Err` with its classified
+    /// cause; a failure *after* the first chunk arrives through the stream
+    /// itself, as an error and never as a shorter object.
+    async fn get_object(&self, bucket: &str, key: &str) -> Result<ObjectContent>;
+}
+
+/// One object's content, being read.
+///
+/// `Debug` is written by hand because the body is a trait object; what a
+/// test failure wants to see is the size anyway.
+pub struct ObjectContent {
+    /// The size the service stated, when it stated one. Progress is a
+    /// fraction only when this is `Some`; the object may also turn out to
+    /// disagree with it, which the writer treats as the stream's problem to
+    /// reveal, not this field's to promise.
+    pub size: Option<u64>,
+    /// Where the bytes come from.
+    pub body: Box<dyn ObjectRead>,
+}
+
+impl std::fmt::Debug for ObjectContent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ObjectContent")
+            .field("size", &self.size)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A pull-based reader: the object-safe form of a byte stream.
+///
+/// Deliberately not a `Stream`: nothing else in the port needs the futures
+/// machinery, and one `async fn` per pull is exactly as testable and keeps
+/// the crate's dependency set where `XONHO-0017` audited it.
+#[async_trait::async_trait]
+pub trait ObjectRead: Send {
+    /// The next chunk, `None` once the object is complete.
+    async fn next_chunk(&mut self) -> Result<Option<Vec<u8>>>;
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -82,11 +128,29 @@ pub mod double {
         /// Empty unless a test says otherwise, so every existing constructor
         /// keeps meaning what it meant.
         page: Page,
+        /// What `get_object` serves. `Unscripted` unless a test says
+        /// otherwise, for the same reason `page` defaults empty.
+        content: Content,
     }
 
     enum Outcome {
         Buckets(Vec<Bucket>),
         Fail(fn() -> Error),
+    }
+
+    /// What `get_object` answers with. Independent of `Outcome`: a test
+    /// scripting content should not have to decide bucket-listing behaviour
+    /// to do it.
+    enum Content {
+        /// No content scripted; `get_object` refuses like a listing failure
+        /// would, so a test that forgot to script content hears about it.
+        Unscripted,
+        /// Chunks served whole, then a clean end.
+        Chunks(Vec<Vec<u8>>),
+        /// Chunks served, then the stream breaks.
+        BreaksAfter(Vec<Vec<u8>>),
+        /// The read itself is refused.
+        Refused(fn() -> Error),
     }
 
     impl StoreDouble {
@@ -95,6 +159,7 @@ pub mod double {
             Self {
                 outcome: Outcome::Buckets(buckets),
                 page: Page::default(),
+                content: Content::Unscripted,
             }
         }
 
@@ -206,10 +271,65 @@ pub mod double {
             })
         }
 
+        /// Serves these chunks for any `get_object`, then a clean end.
+        pub fn serving_chunks(chunks: Vec<Vec<u8>>) -> Self {
+            let mut double = Self::allows_listing();
+            double.content = Content::Chunks(chunks);
+            double
+        }
+
+        /// Serves these chunks for any `get_object`, then breaks — the shape
+        /// of a connection lost mid-object, which must arrive as an error
+        /// and never as a shorter object.
+        pub fn content_breaking_after(chunks: Vec<Vec<u8>>) -> Self {
+            let mut double = Self::allows_listing();
+            double.content = Content::BreaksAfter(chunks);
+            double
+        }
+
+        /// Refuses `get_object` the way a policy without `s3:GetObject`
+        /// answers.
+        pub fn get_refused() -> Self {
+            let mut double = Self::allows_listing();
+            double.content = Content::Refused(|| Error::AccessDenied {
+                iam_action: "s3:GetObject",
+            });
+            double
+        }
+
         fn failing(make: fn() -> Error) -> Self {
             Self {
                 outcome: Outcome::Fail(make),
                 page: Page::default(),
+                content: Content::Unscripted,
+            }
+        }
+    }
+
+    /// The break `content_breaking_after` serves: a network failure, the
+    /// ordinary way to lose an object mid-body.
+    fn network_break() -> Error {
+        Error::Network {
+            detail: "connection lost mid-object (double)".into(),
+        }
+    }
+
+    /// The pulled-content half of the double: chunks front-to-back, then
+    /// the scripted ending.
+    struct ReadDouble {
+        chunks: std::collections::VecDeque<Vec<u8>>,
+        then: Option<fn() -> Error>,
+    }
+
+    #[async_trait::async_trait]
+    impl super::ObjectRead for ReadDouble {
+        async fn next_chunk(&mut self) -> Result<Option<Vec<u8>>> {
+            if let Some(chunk) = self.chunks.pop_front() {
+                return Ok(Some(chunk));
+            }
+            match self.then.take() {
+                Some(make) => Err(make()),
+                None => Ok(None),
             }
         }
     }
@@ -230,6 +350,34 @@ pub mod double {
                 Outcome::Buckets(_) => Ok(()),
                 Outcome::Fail(make) => Err(make()),
             }
+        }
+
+        /// Content comes from the scripted `Content`, not from `Outcome`:
+        /// a test choosing what a read serves should not have to decide what
+        /// a listing does.
+        async fn get_object(&self, _bucket: &str, _key: &str) -> Result<super::ObjectContent> {
+            let (chunks, then): (&[Vec<u8>], Option<fn() -> Error>) = match &self.content {
+                Content::Unscripted => {
+                    return Err(Error::Unexpected {
+                        detail: "this double scripts no content — use serving_chunks, \
+                                 content_breaking_after or get_refused"
+                            .into(),
+                    });
+                }
+                Content::Refused(make) => return Err(make()),
+                Content::Chunks(chunks) => (chunks, None),
+                Content::BreaksAfter(chunks) => (chunks, Some(network_break as fn() -> Error)),
+            };
+            let size = then
+                .is_none()
+                .then(|| chunks.iter().map(|c| c.len() as u64).sum());
+            Ok(super::ObjectContent {
+                size,
+                body: Box::new(ReadDouble {
+                    chunks: chunks.iter().cloned().collect(),
+                    then,
+                }),
+            })
         }
 
         /// And to the listing: a double that can read answers with its page,
@@ -559,6 +707,68 @@ mod tests {
                 other => panic!("unexpected cause: {other:?}"),
             };
             assert_eq!(named, expected);
+        }
+    }
+
+    /// `object-transfer` spec, "Downloading an object" — the port half:
+    /// content arrives as pulled chunks, byte-identical in sum, with the
+    /// size when one was stated.
+    #[tokio::test]
+    async fn an_object_is_read_as_the_chunks_it_came_in() {
+        let store: Box<dyn ObjectStore> = Box::new(StoreDouble::serving_chunks(vec![
+            b"hello ".to_vec(),
+            b"little ".to_vec(),
+            b"pail".to_vec(),
+        ]));
+
+        let mut content = store
+            .get_object("reports", "daily/summary.csv")
+            .await
+            .expect("this double serves");
+        assert_eq!(content.size, Some(17));
+
+        let mut gathered = Vec::new();
+        while let Some(chunk) = content.body.next_chunk().await.expect("no failure canned") {
+            gathered.extend_from_slice(&chunk);
+        }
+        assert_eq!(gathered, b"hello little pail");
+    }
+
+    /// A failure after some bytes must arrive as an error from the stream,
+    /// not as a shorter object — the writer's no-partial-file rule depends
+    /// on being told.
+    #[tokio::test]
+    async fn a_mid_stream_failure_is_an_error_not_a_shorter_object() {
+        let store: Box<dyn ObjectStore> =
+            Box::new(StoreDouble::content_breaking_after(vec![b"first".to_vec()]));
+
+        let mut content = store
+            .get_object("reports", "big.bin")
+            .await
+            .expect("starts fine");
+        let first = content
+            .body
+            .next_chunk()
+            .await
+            .expect("first chunk arrives");
+        assert_eq!(first.as_deref(), Some(b"first".as_slice()));
+
+        let outcome = content.body.next_chunk().await;
+        assert!(
+            matches!(outcome, Err(Error::Network { .. })),
+            "got {outcome:?}"
+        );
+    }
+
+    /// A refused read names the permission it needed, in the same shape
+    /// every other refusal already has.
+    #[tokio::test]
+    async fn a_refused_read_names_the_get_permission() {
+        let store: Box<dyn ObjectStore> = Box::new(StoreDouble::get_refused());
+
+        match store.get_object("reports", "secret.pdf").await {
+            Err(Error::AccessDenied { iam_action }) => assert_eq!(iam_action, "s3:GetObject"),
+            other => panic!("expected AccessDenied, got {other:?}"),
         }
     }
 }

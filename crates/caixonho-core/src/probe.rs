@@ -429,6 +429,18 @@ pub(crate) mod double {
             (self.answer)()
         }
 
+        /// Nothing here reads an object either; refusing loudly beats a
+        /// silent empty body a test would then have to explain.
+        async fn get_object(
+            &self,
+            _bucket: &str,
+            _key: &str,
+        ) -> Result<crate::store::ObjectContent> {
+            Err(crate::error::Error::Unexpected {
+                detail: "HeldProbes serves probes, not objects".into(),
+            })
+        }
+
         /// This double exists to hold probes open and count them; nothing here
         /// lists a location, so it answers with nothing rather than pretending.
         async fn list_objects(

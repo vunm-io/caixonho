@@ -62,8 +62,10 @@ pub fn local_name(key: &str) -> Mapped {
     let bytes = segment.as_bytes();
     for (i, ch) in segment.char_indices() {
         let last = i + ch.len_utf8() == bytes.len();
-        let refused = matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' | '%')
-            || ch.is_control()
+        let refused = matches!(
+            ch,
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' | '%'
+        ) || ch.is_control()
             || (last && matches!(ch, '.' | ' '));
         if refused {
             substituted = true;
@@ -131,9 +133,28 @@ fn is_reserved_device(name: &str) -> bool {
     let upper = stem.to_ascii_uppercase();
     matches!(
         upper.as_str(),
-        "CON" | "PRN" | "AUX" | "NUL"
-            | "COM1" | "COM2" | "COM3" | "COM4" | "COM5" | "COM6" | "COM7" | "COM8" | "COM9"
-            | "LPT1" | "LPT2" | "LPT3" | "LPT4" | "LPT5" | "LPT6" | "LPT7" | "LPT8" | "LPT9"
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
     )
 }
 
@@ -254,10 +275,9 @@ mod tests {
         // space that matters is small enough to walk deliberately.
         let mut corpus: Vec<String> = Vec::new();
         let interesting = [
-            "a", "A", "a.", "a ", "a?", "a*", "a:", "a<", "a>", "a\"", "a|",
-            "a\\", "a%", "a%3A", "a%253A", "CON", "con", "CON.txt", "NUL",
-            "com1", "com10", "a\u{1}", "a\u{7f}", ".", "..", "...", " ",
-            "xô", "nhỏ", "a?b*c", "%", "%%", "%2F",
+            "a", "A", "a.", "a ", "a?", "a*", "a:", "a<", "a>", "a\"", "a|", "a\\", "a%", "a%3A",
+            "a%253A", "CON", "con", "CON.txt", "NUL", "com1", "com10", "a\u{1}", "a\u{7f}", ".",
+            "..", "...", " ", "xô", "nhỏ", "a?b*c", "%", "%%", "%2F",
         ];
         for stem in interesting {
             corpus.push(stem.to_owned());
@@ -291,8 +311,16 @@ mod tests {
     #[test]
     fn the_name_is_always_a_bare_filename() {
         for key in [
-            "a/b/c.txt", "trailing/", "//", "/", "", "..", "a/..", "nul",
-            "weird/\\backslash", "per%cent/",
+            "a/b/c.txt",
+            "trailing/",
+            "//",
+            "/",
+            "",
+            "..",
+            "a/..",
+            "nul",
+            "weird/\\backslash",
+            "per%cent/",
         ] {
             let mapped = local_name(key);
             assert!(!mapped.name.is_empty(), "key {key:?} produced empty");

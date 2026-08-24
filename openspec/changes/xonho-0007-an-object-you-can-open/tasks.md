@@ -45,8 +45,14 @@
 
 ## 2. The port reads
 
-- [ ] 2.1 `ObjectStore::get_object`, streaming, with the double
+- [x] 2.1 `ObjectStore::get_object`, streaming, with the double
       [dispatch: main]
+      - Done in `main` (2026-08-24), red first: three tests against absent
+        constructors, then the port. The stream is a pull trait
+        (`ObjectRead::next_chunk`) rather than `futures::Stream` — object-safe
+        with what the crate already depends on, nothing new for `deny` to
+        audit. Signature is `(bucket, key)`, not `Location`: a location's
+        prefix names a folder, and a folder is not a key.
   - Paths: `crates/caixonho-core/src/store.rs`
   - Done criteria: one method returning size-when-stated plus a chunk stream
     (the existing async-trait, object-safe shape); `StoreDouble` grows canned
@@ -54,7 +60,14 @@
     (`s3:GetObject` denied). Test red first against the double.
   - Verification: `cargo test -p caixonho-core store::`
 
-- [ ] 2.2 The adapter maps it to `GetObject` [dispatch: main]
+- [x] 2.2 The adapter maps it to `GetObject` [dispatch: main]
+      - Done in `main` (2026-08-24). The redirect follow-once shape is
+        `list_objects`' own, sharing the learned-region map, so a bucket the
+        listing already followed reads right the first time. A mid-body break
+        arrives as `Error::Network` from the stream — there is no HTTP
+        response left to classify at that point. Live test
+        `this_machine_reading_one_object` beside the existing one, same
+        env-var pattern.
   - Paths: `crates/caixonho-core/src/adapter.rs`
   - Done criteria: body streamed, never buffered whole; size from the
     response's content length, falling back to the caller's listed size;
