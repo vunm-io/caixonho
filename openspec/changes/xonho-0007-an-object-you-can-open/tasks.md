@@ -214,7 +214,15 @@
 
 ## 5. Reader-facing documents, in this change
 
-- [ ] 5.1 README, roadmap, requirements-status [dispatch: main]
+- [x] 5.1 README, roadmap, requirements-status [dispatch: main]
+      - Done in `main` (2026-08-24). README says what downloads and opens,
+        and names both cache locations and the sweep. Roadmap: M2 in
+        progress, and an "M2 so far" table so this change has a row from the
+        day it lands — the lesson the three corrected cells taught, applied
+        before the staleness this time. requirements-status: §4.4 becomes a
+        real table (1 done, 3 partial, 3 not started of 7), split from
+        §4.5–4.6 which stay prose; summary recounted by the script, which
+        now prints five sections.
   - Paths: `README.md`, `docs/roadmap.md`, `docs/requirements-status.md`
   - Done criteria: README's status paragraph says objects download and open,
     and names the open-cache location; roadmap marks M2 in progress and this

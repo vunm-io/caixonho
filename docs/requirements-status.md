@@ -62,17 +62,33 @@ gap is named. **none** — not started.
 | Dependencies audited in CI | done | `XONHO-0017`. A job of its own runs `cargo deny check advisories` on every push and pull request; a vulnerability fails the build. The four that existed were **removed** rather than accepted — two SDK crates were pulling a legacy TLS client this application replaces anyway — and the seven remaining warnings are accepted one by one with a reason and an expiry that `scripts/check-advisory-expiry.sh` enforces, because cargo-deny has no expiry of its own. **Done rather than partial** unlike the §4.1 region row: this requirement's exercise venue *is* CI, and CI runs it — there is no live behaviour left over for a real account to confirm |
 | One self-contained binary per platform | partial | It builds on both; there is no installer and nothing is signed |
 
-## §4.4–4.6 — M2 and later
+## §4.4 Transfers — M2
 
-Transfers (7 `[M]`), object operations (3 `[M]`) and quality of life (2 `[M]`)
-are not started. They are M2+ and are not late.
+`XONHO-0007` opened this section on 2026-08-24; the rows exist from the day
+the first one moved.
+
+| Requirement | State | Notes |
+|---|---|---|
+| Upload/download files and folders, preserving prefix structure | partial | `XONHO-0007`: one object downloads to a chosen folder, whole-or-nothing (working path, promoted by rename), and "open" rides the same path through a bounded cache. Uploads, folders and prefix-structure preservation are not started |
+| Multipart upload with configurable part size/concurrency | none | Upload territory |
+| Transfer queue panel: per-item and aggregate progress, throughput, ETA, pause, resume, cancel, retry, clear | partial | The narrowest honest slice: one transfer at a time, cumulative progress against stated size, cancel that leaves nothing behind. No queue, no aggregate, no pause/resume/retry — the panel is its own change |
+| Retry with backoff + jitter; adaptive concurrency on throttle | none | Needs the queue |
+| Drag and drop OS → app; app → OS after download | none | M0's API question still stands |
+| Collision policy: overwrite / skip / keep both / ask — remembered per session | partial | Ask is the shipped default and the user chooses replace / keep both / abandon per collision; keep-both takes the first free ` (n)` name. "Remembered per session" waits for the queue, where remembering has something to attach to |
+| Key↔filesystem safety: sanitize deterministically, report every collision | done | `XONHO-0007`, ADR-0004. Percent-encoding (injective, `%` itself encoded), reserved-device and overlong names suffixed by full-key FNV-1a, one scheme on every platform with no `cfg`; every substitution is reported in the window. Property-tested; same-segment and case collisions surface as the existing-file question at the destination |
+
+## §4.5–4.6 — M3 and later
+
+Object operations (3 `[M]`) and quality of life (2 `[M]`) are not started.
+They are M3+ and are not late.
 
 ## The count
 
 Of the 24 `[M]` requirements in the three M1 areas: **11 done, 10 partial, 3 not
 started** — §4.1 has 2 done, 5 partial, 1 not started; §4.2 has 3, 3 and 1;
 §4.3, the headline, has 6, 2 and 1. Outside M1, §7–8 stands at 2 done, 3
-partial and nothing unstarted.
+partial and nothing unstarted, and §4.4 — opened by `XONHO-0007` on
+2026-08-24 — at 1 done, 3 partial, 3 not started of its 7.
 
 The nearest gap is signing in to IAM Identity Center from the app — mandatory,
 unbuilt, and stepped over by four changes running. Entering a credential and

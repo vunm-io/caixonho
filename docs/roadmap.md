@@ -11,7 +11,7 @@ whole thing.
 | **M0a** | The stack builds — CI green on Windows and macOS, artifacts uploaded | **done** |
 | **M0b** | The stack is smooth — measured on real hardware, ADR-0001 filled in | **done bar one cell**: a Windows machine without a working Vulkan driver, where the required outcome is a graceful failure. ADR-0001 stays `Proposed` until then |
 | **M1** | Read-only browser — credentials, bucket list, prefix navigation, permission awareness | **in progress** |
-| **M2** | Transfers — up and download including folders, multipart, a queue with progress, cancel and retry | not started |
+| **M2** | Transfers — up and download including folders, multipart, a queue with progress, cancel and retry | **in progress** — `XONHO-0007` landed the first slice: single-object download and open-with-the-system; uploads and the queue remain |
 | **M3** | Object operations, safe subset first — create folder, delete with a counted confirmation, properties, presigned URLs | not started |
 | **M4** | Ship v0.1 — installers for both platforms, a README with a recording, public announcement | not started |
 | **M5** | Extras — S3-compatible endpoints as a supported configuration, sync, versions | not started |
@@ -78,6 +78,12 @@ which is one developer's scaffolding rather than the product, and ordering aroun
 it showed — the first thing anyone noticed about the app was a seven-second wait
 that only that arrangement produced. The full reasoning is in
 [`planned-changes.md`](planned-changes.md).
+
+## M2 so far
+
+| Change | Delivers | State |
+|---|---|---|
+| `XONHO-0007` | Downloading one object to a chosen folder, and opening one with the system's own application via a bounded cache — progress, cancel, no partial files, deterministic key→filename mapping (ADR-0004) | landed, awaiting live acceptance |
 
 ## What this project will not do
 

@@ -44,12 +44,23 @@ Working today:
   given access, and one most clients treat as a dead end.
 - Never draws an empty folder and a refused one the same way, one level below
   where it already does that for buckets.
+- Downloads an object to a folder you choose, and **opens** one with whatever
+  your machine already opens that kind of file with — the app renders no
+  format itself; it downloads to a cache it owns
+  (`~/Library/Caches/caixonho/open` on macOS,
+  `%LOCALAPPDATA%\caixonho\cache\open` on Windows, swept on startup) and
+  hands the file to the system. A download in flight shows its progress and
+  can be cancelled; a cancelled or failed download never leaves a partial
+  file under the real name, an existing file is never overwritten without
+  asking, and a key no filesystem would accept is renamed deterministically
+  and the rename is said out loud.
 - Writes down what it decided and why, in your platform's own log location, and
   shows you that location in the status bar so a report can carry evidence
   instead of a description. The file is bounded and rolls daily; `CAIXONHO_LOG`
   turns the detail up for an investigation. No secret is ever written to it.
 
-Not there yet: transfers, previewing an object, sorting or searching a listing,
+Not there yet: uploads and the transfer queue, previewing an object without
+downloading it, sorting or searching a listing,
 and signing in to IAM Identity Center from the app rather than through the AWS
 CLI. Those are the next changes — see [`docs/planned-changes.md`](docs/planned-changes.md),
 and [`docs/requirements-status.md`](docs/requirements-status.md) for every
