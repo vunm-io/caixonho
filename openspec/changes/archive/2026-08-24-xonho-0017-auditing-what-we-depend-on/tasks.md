@@ -172,7 +172,24 @@
     here
   - Verification: `gh run list --limit 1 --repo vunm-io/caixonho`
 
-- [ ] 3.3 Live: a real connection still works without the SDK's own HTTP client [dispatch: main]
+- [x] 3.3 Live: a real connection still works without the SDK's own HTTP client [dispatch: main]
+      - Done live on 2026-08-23, on a binary built from `main` that day, and
+        the evidence arrived as a by-product: the owner was driving the app
+        for an unrelated diagnosis, which is a better test than a staged one —
+        nobody was being careful.
+      - Both paths the task names, from the log (`~/Library/Logs/caixonho`,
+        2026-08-23; connection and session names withheld — the log carries
+        real account names and this file is public):
+        - A profile-sourced connection opened and `listed the account
+          buckets=8` — the rustls listing path, 683ms end to end.
+        - Before that, the same connection's expired session was classified
+          (`listing failed … sign in again`), the in-app offer was taken, and
+          `signed in sso_session=…` followed — the OIDC device-flow path, the
+          other HTTP consumer that would have broken.
+      - Also exercised in the same sitting, beyond what the task asks: a
+        stored-credential connection listing repeatedly at 56–67ms, and 106
+        capability probes settling. Nothing in the session reached for a
+        client that is not compiled in.
   - Paths: none
   - Done criteria: on a real account, opening a connection and listing buckets
     still works, and so does a sign-in — the two paths that would break if

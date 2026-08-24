@@ -262,6 +262,19 @@
 
 - [ ] 5.3 [dispatch: main] Live: open a real bucket, walk into a prefix and
       back out, reach a bucket by typing its name, and read a refused prefix.
+      - **2026-08-23: two of the four are evidenced, from an unstaged sitting**
+        (log of that date; names withheld — this file is public):
+        - *Open a real bucket*: `listed a location … prefix="" folders=2
+          objects=1`, three times across connection switches.
+        - *Read a refused location*: `listing a location failed … cause=access
+          denied`, twice, on two different buckets — shown as refusal, not as
+          an empty folder, which is the case this change most easily gets
+          wrong. Root rather than an inner prefix, so it stands as evidence
+          for the refusal rendering; a denied *inner* prefix is still worth
+          one deliberate look.
+        - Not yet seen: walking *into* a prefix and back out (every listing so
+          far was at the root), and reaching a bucket by typed name on the
+          account that cannot enumerate. Left unticked for those two.
   - Paths: none
   - Done criteria: each is confirmed against a real account and what was seen
     is written down here — including the refused prefix, which is the case this
