@@ -144,7 +144,16 @@
 
 ## 4. The window
 
-- [ ] 4.1 "Download…" on the object row, with a destination [dispatch: main]
+- [x] 4.1 "Download…" on the object row, with a destination [dispatch: main]
+      - Done in `main` (2026-08-24). The verbs live on the path-bar row
+        beside "Type a location", enabled only while the selection is an
+        object — not per-row buttons: the toolbar needs no delegate-to-app
+        plumbing, and the selection is already the answer to "which object".
+        Destination through `cx.prompt_for_paths` (directories only); the
+        collision question is a line under the listing with
+        Replace / Keep both / Cancel, not a modal. Selector names as
+        specified; the in-flight and name-taken states are in the screenshot
+        harness (now 14 images).
   - Paths: `crates/caixonho-gui/src/app.rs`,
     `crates/caixonho-gui/src/views/objects.rs`
   - Done criteria: the action exists on an object row (not on folders),
@@ -155,7 +164,13 @@
   - Verification: `cargo test -p caixonho-gui`, and the state is drawable by
     the `XONHO-0009` screenshot harness (add the in-flight state to it)
 
-- [ ] 4.2 Progress and cancel for the one transfer [dispatch: main]
+- [x] 4.2 Progress and cancel for the one transfer [dispatch: main]
+      - Done in `main` (2026-08-24). Window tests drive the state machine
+        directly (`apply_transfer` with injected events) rather than through
+        the session: the tokio side is core's covered ground, and
+        `World::scripted`'s current-thread runtime is not driven by the test
+        executor — the same reason `looking_at` stages rows directly. Four
+        new window tests, 47 total.
   - Paths: `crates/caixonho-gui/src/app.rs`
   - Done criteria: in-flight shows bytes, and bytes-of-total when stated;
     cancel aborts and the row says cancelled; failure shows the classified
@@ -163,8 +178,22 @@
     drive it through the double's chunked constructor.
   - Verification: `cargo test -p caixonho-gui`
 
-- [ ] 4.3 Open — an explicit row action, and nothing on double-click
+- [x] 4.3 Open — an explicit row action, and nothing on double-click
       [dispatch: main]
+      - Done in `main` (2026-08-24). Open downloads into the open-cache with
+        `Collision::Replace` — the cache is ours and its contents are
+        re-downloads by definition; asking would be the application asking
+        permission to do its job. Double-click on an object still does
+        nothing (`enter` returns on `into_prefix() == None`, unchanged).
+      - **One honest narrowing, measured:** gpui's `open_with_system`
+        returns nothing on any platform (fire-and-forget), so an opener's
+        refusal is invisible to this application. The spec's "report says
+        where it is" is therefore served *unconditionally*: the finished
+        line for an open always says the name and carries **Reveal**
+        (`reveal_path`), whether or not the opener obliged. A failure to
+        open is thus never presented as a transfer failure — nothing is
+        presented as one, and the where is always on screen. Live check 6.3
+        is where a real opener refusal gets eyeballed.
   - Owner decision 2026-08-24, revising this plan the day after it was
     written: Open is a visible button on the object's row, and double-click
     on an object is deliberately left unbound. The reasoning is safety of

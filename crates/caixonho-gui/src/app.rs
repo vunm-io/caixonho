@@ -9,7 +9,7 @@ use gpui::{
     Render, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
 use gpui_component::{
-    ActiveTheme, Icon, IconName, IndexPath, Side, TitleBar,
+    ActiveTheme, Disableable as _, Icon, IconName, IndexPath, Side, TitleBar,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputState},
@@ -62,6 +62,10 @@ pub(crate) struct CaixonhoApp {
     stored: Vec<StoredCredential>,
     /// Open while a credential is being entered.
     form: Option<CredentialForm>,
+    /// The one download in flight or just settled, if any (`XONHO-0007`).
+    transfer: Option<Transfer>,
+    /// Where a download's progress and outcome come back.
+    transfers: flume::Sender<TransferEvent>,
     /// The connection whose removal has been asked for and not yet confirmed.
     /// Removing a credential cannot be undone, so it takes a second deliberate
     /// act on a surface of its own — not a button that changes its label under
@@ -137,6 +141,45 @@ enum SignInEvent {
     Started(DeviceAuthorization),
     /// It ended, one way or another.
     Settled(Result<SignInOutcome, Error>),
+}
+
+/// What one download reports back to the window.
+enum TransferEvent {
+    Progress { bytes: u64, total: Option<u64> },
+    Settled(caixonho_core::transfer::DownloadOutcome),
+}
+
+/// The one transfer this slice allows, and everything the window says about
+/// it. One, deliberately: the queue is the rest of M2, and this struct is
+/// what that change replaces (`XONHO-0007` design, "One transfer at a time").
+struct Transfer {
+    /// Where the object came from — shown, and needed again if a collision
+    /// answer re-issues the download.
+    bucket: String,
+    key: String,
+    /// Where it is going.
+    directory: std::path::PathBuf,
+    /// Open with the system once finished, and clean up the question of
+    /// where: `true` only for downloads into the open-cache.
+    then_open: bool,
+    bytes: u64,
+    total: Option<u64>,
+    cancel: caixonho_core::transfer::Cancel,
+    phase: TransferPhase,
+}
+
+enum TransferPhase {
+    Running,
+    /// The destination already has a file of this name; the user decides.
+    NameTaken {
+        name: String,
+    },
+    Finished {
+        name: String,
+        mapped: caixonho_core::transfer::MappingOutcome,
+    },
+    Cancelled,
+    Failed(Error),
 }
 
 /// Where the user is, and the connection they got there on.
@@ -405,6 +448,19 @@ impl CaixonhoApp {
         })
         .detach();
 
+        // Downloads report progress per chunk and one settlement; both cross
+        // to the window here (`XONHO-0007`).
+        let (transfers, transferring) = flume::unbounded::<TransferEvent>();
+        cx.spawn_in(window, async move |this, cx| {
+            while let Ok(event) = transferring.recv_async().await {
+                let applied = this.update_in(cx, |app, _, cx| app.apply_transfer(event, cx));
+                if applied.is_err() {
+                    break; // The window is gone.
+                }
+            }
+        })
+        .detach();
+
         // A third channel, for the one operation that reports twice: once when
         // there is a code to put on screen, and once when it is over.
         let (sign_ins, signing) = flume::unbounded::<SignInEvent>();
@@ -434,6 +490,8 @@ impl CaixonhoApp {
             connections_error,
             stored,
             form: None,
+            transfer: None,
+            transfers,
             confirming: None,
             unavailable: std::collections::HashMap::new(),
             region: RegionChoice::All,
@@ -602,6 +660,211 @@ impl CaixonhoApp {
             return;
         };
         self.go_to(Location::at(location.bucket, prefix), window, cx);
+    }
+
+    /// The selected object's key, when the selection is an object.
+    fn selected_object_key(&self, cx: &Context<Self>) -> Option<String> {
+        let index = self.objects.read(cx).selected_row()?;
+        match self.objects.read(cx).delegate().row(index)? {
+            crate::views::objects::Entry::Object(object) => Some(object.key.clone()),
+            crate::views::objects::Entry::Folder(_) => None,
+        }
+    }
+
+    /// Download the selected object to a directory the user chooses
+    /// (`XONHO-0007` task 4.1).
+    fn download_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(location), Some(key)) = (self.location().cloned(), self.selected_object_key(cx))
+        else {
+            return;
+        };
+        let ask = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Download here".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            // Cancelled dialogs and platform errors both mean "no destination
+            // was chosen", and choosing nothing starts nothing.
+            let Ok(Ok(Some(mut directories))) = ask.await else {
+                return;
+            };
+            let Some(directory) = directories.pop() else {
+                return;
+            };
+            let _ = this.update_in(cx, |app, _, cx| {
+                app.start_download(
+                    location.bucket.clone(),
+                    key,
+                    directory,
+                    caixonho_core::transfer::Collision::Ask,
+                    false,
+                    cx,
+                );
+            });
+        })
+        .detach();
+    }
+
+    /// Open the selected object with the system's own application for it
+    /// (`XONHO-0007` task 4.3): download to the open-cache, then hand over.
+    fn open_selected(&mut self, cx: &mut Context<Self>) {
+        let (Some(location), Some(key)) = (self.location().cloned(), self.selected_object_key(cx))
+        else {
+            return;
+        };
+        let Some(cache) = caixonho_core::transfer::open_cache_dir() else {
+            // A machine with no resolvable cache directory: say so as a
+            // failed transfer, because nothing was transferred.
+            self.transfer = Some(Transfer {
+                bucket: location.bucket.clone(),
+                key,
+                directory: std::path::PathBuf::new(),
+                then_open: true,
+                bytes: 0,
+                total: None,
+                cancel: caixonho_core::transfer::Cancel::default(),
+                phase: TransferPhase::Failed(Error::MissingConfiguration {
+                    profile: None,
+                    detail: "this machine offers no cache directory to open through".into(),
+                }),
+            });
+            cx.notify();
+            return;
+        };
+        if let Err(error) = std::fs::create_dir_all(&cache) {
+            self.transfer = Some(Transfer {
+                bucket: location.bucket.clone(),
+                key,
+                directory: cache,
+                then_open: true,
+                bytes: 0,
+                total: None,
+                cancel: caixonho_core::transfer::Cancel::default(),
+                phase: TransferPhase::Failed(Error::Destination {
+                    detail: error.to_string(),
+                }),
+            });
+            cx.notify();
+            return;
+        }
+        // Replace, not ask: the cache is ours, its contents are re-downloads
+        // by definition, and a question about clobbering a stale cached copy
+        // would be the application asking permission to do its job.
+        self.start_download(
+            location.bucket.clone(),
+            key,
+            cache,
+            caixonho_core::transfer::Collision::Replace,
+            true,
+            cx,
+        );
+    }
+
+    /// Start one download and hold it as the window's transfer.
+    fn start_download(
+        &mut self,
+        bucket: String,
+        key: String,
+        directory: std::path::PathBuf,
+        collision: caixonho_core::transfer::Collision,
+        then_open: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.session.clone() else {
+            return;
+        };
+        let progress_inbox = self.transfers.clone();
+        let settled_inbox = self.transfers.clone();
+        let cancel = session.spawn_download(
+            bucket.clone(),
+            key.clone(),
+            directory.clone(),
+            collision,
+            move |bytes, total| {
+                let _ = progress_inbox.send(TransferEvent::Progress { bytes, total });
+            },
+            move |outcome| {
+                let _ = settled_inbox.send(TransferEvent::Settled(outcome));
+            },
+        );
+        self.transfer = Some(Transfer {
+            bucket,
+            key,
+            directory,
+            then_open,
+            bytes: 0,
+            total: None,
+            cancel,
+            phase: TransferPhase::Running,
+        });
+        cx.notify();
+    }
+
+    /// Apply one transfer event, if a transfer is still on screen to apply
+    /// it to.
+    fn apply_transfer(&mut self, event: TransferEvent, cx: &mut Context<Self>) {
+        let Some(transfer) = self.transfer.as_mut() else {
+            return; // Dismissed while the event was in flight.
+        };
+        match event {
+            TransferEvent::Progress { bytes, total } => {
+                transfer.bytes = bytes;
+                transfer.total = total;
+            }
+            TransferEvent::Settled(outcome) => {
+                use caixonho_core::transfer::DownloadOutcome;
+                match outcome {
+                    DownloadOutcome::Finished {
+                        name,
+                        mapped,
+                        bytes,
+                    } => {
+                        transfer.bytes = bytes;
+                        if transfer.then_open {
+                            // Handed to the platform's opener. gpui's call
+                            // reports nothing back on any platform, so the
+                            // finished line below keeps saying where the file
+                            // is (with Reveal) — the report the spec asks for
+                            // when an opener refuses, shown whether or not it
+                            // did.
+                            cx.open_with_system(&transfer.directory.join(&name));
+                        }
+                        transfer.phase = TransferPhase::Finished { name, mapped };
+                    }
+                    DownloadOutcome::NameTaken { name } => {
+                        transfer.phase = TransferPhase::NameTaken { name };
+                    }
+                    DownloadOutcome::Cancelled => {
+                        transfer.phase = TransferPhase::Cancelled;
+                    }
+                    DownloadOutcome::Failed(error) => {
+                        transfer.phase = TransferPhase::Failed(error);
+                    }
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// Answer the existing-file question by starting over with the answer.
+    fn answer_collision(
+        &mut self,
+        collision: caixonho_core::transfer::Collision,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(transfer) = self.transfer.take() else {
+            return;
+        };
+        self.start_download(
+            transfer.bucket,
+            transfer.key,
+            transfer.directory,
+            collision,
+            transfer.then_open,
+            cx,
+        );
     }
 
     /// Open the bucket in the table's row `index`.
@@ -1503,11 +1766,38 @@ impl CaixonhoApp {
         // answered — so the path bar is a *mode* the trail turns into, the way
         // every file manager does it.
         if !self.editing_path {
+            // The two object verbs live here, beside the location they act
+            // in, and only light up when the selection is an object. Open is
+            // deliberately a visible button and double-click deliberately
+            // stays unbound (owner decision 2026-08-24): a stray double-click
+            // must not be enough to write company bytes to disk and hand
+            // them to a third-party application.
+            let on_object = self.selected_object_key(cx).is_some();
             return h_flex()
                 .w_full()
                 .items_center()
                 .gap(space::TIGHT)
                 .child(div().flex_1().child(trail))
+                .child(
+                    div().debug_selector(|| "open-action".into()).child(
+                        Button::new("open-action")
+                            .label("Open")
+                            .ghost()
+                            .disabled(!on_object)
+                            .on_click(cx.listener(|app, _, _, cx| app.open_selected(cx))),
+                    ),
+                )
+                .child(
+                    div().debug_selector(|| "download-action".into()).child(
+                        Button::new("download-action")
+                            .label("Download…")
+                            .ghost()
+                            .disabled(!on_object)
+                            .on_click(
+                                cx.listener(|app, _, window, cx| app.download_selected(window, cx)),
+                            ),
+                    ),
+                )
                 .child(
                     Button::new("edit-path")
                         .label("Type a location")
@@ -1633,6 +1923,169 @@ impl CaixonhoApp {
             // state with nowhere to be and drew nothing at all — the same
             // family of bug as the `h_flex` one in `design-language.md`.
             .child(v_flex().flex_1().min_h_0().child(body))
+            .children(self.transfer_line(cx))
+    }
+
+    /// The one transfer, said under the listing it belongs to — a line, not
+    /// a panel: the queue gets a panel, one download gets a sentence
+    /// (`XONHO-0007` tasks 4.1–4.3).
+    fn transfer_line(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        use caixonho_core::transfer::MappingOutcome;
+        let transfer = self.transfer.as_ref()?;
+
+        let dismiss = || {
+            Button::new("transfer-dismiss")
+                .label("Dismiss")
+                .ghost()
+                .on_click(cx.listener(|app, _, _, cx| {
+                    app.transfer = None;
+                    cx.notify();
+                }))
+        };
+
+        let line = match &transfer.phase {
+            TransferPhase::Running => h_flex()
+                .debug_selector(|| "transfer-progress".into())
+                .w_full()
+                .gap(space::TIGHT)
+                .items_center()
+                .child(div().text_sm().child(format!(
+                    "Downloading — {}",
+                    match transfer.total {
+                        Some(total) => format!(
+                            "{} of {}",
+                            crate::views::objects::readable(transfer.bytes),
+                            crate::views::objects::readable(total)
+                        ),
+                        None => crate::views::objects::readable(transfer.bytes),
+                    }
+                )))
+                .child(div().flex_1())
+                .child(
+                    div().debug_selector(|| "transfer-cancel".into()).child(
+                        Button::new("transfer-cancel")
+                            .label("Cancel")
+                            .ghost()
+                            .on_click({
+                                let cancel = transfer.cancel.clone();
+                                cx.listener(move |_, _, _, _| cancel.cancel())
+                            }),
+                    ),
+                )
+                .into_any_element(),
+            TransferPhase::NameTaken { name } => h_flex()
+                .debug_selector(|| "transfer-name-taken".into())
+                .w_full()
+                .gap(space::TIGHT)
+                .items_center()
+                .child(
+                    div()
+                        .text_sm()
+                        .child(format!("`{name}` is already in that folder.")),
+                )
+                .child(div().flex_1())
+                .child(
+                    Button::new("collision-replace")
+                        .label("Replace")
+                        .ghost()
+                        .on_click(cx.listener(|app, _, _, cx| {
+                            app.answer_collision(caixonho_core::transfer::Collision::Replace, cx)
+                        })),
+                )
+                .child(
+                    Button::new("collision-keep-both")
+                        .label("Keep both")
+                        .ghost()
+                        .on_click(cx.listener(|app, _, _, cx| {
+                            app.answer_collision(caixonho_core::transfer::Collision::KeepBoth, cx)
+                        })),
+                )
+                .child(
+                    Button::new("collision-abandon")
+                        .label("Cancel")
+                        .ghost()
+                        .on_click(cx.listener(|app, _, _, cx| {
+                            app.transfer = None;
+                            cx.notify();
+                        })),
+                )
+                .into_any_element(),
+            TransferPhase::Finished { name, mapped } => {
+                let said = match (transfer.then_open, mapped) {
+                    // The opener's own failure is invisible to gpui on every
+                    // platform, so the where is always said: this line is the
+                    // spec's "the file exists and the report says where it
+                    // is", shown whether or not the opener obliged.
+                    (true, _) => format!("Downloaded `{name}` and handed it to the system."),
+                    (false, MappingOutcome::Unchanged) => format!("Downloaded `{name}`."),
+                    // §4.4: every substitution is reported, not silently
+                    // absorbed.
+                    (false, _) => format!(
+                        "Downloaded as `{name}` — the object's name needed changing to be a \
+                         filename here."
+                    ),
+                };
+                h_flex()
+                    .debug_selector(|| "transfer-finished".into())
+                    .w_full()
+                    .gap(space::TIGHT)
+                    .items_center()
+                    .child(div().text_sm().child(said))
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("transfer-reveal")
+                            .label("Reveal")
+                            .ghost()
+                            .on_click({
+                                let path = transfer.directory.join(name);
+                                cx.listener(move |_, _, _, cx| cx.reveal_path(&path))
+                            }),
+                    )
+                    .child(dismiss())
+                    .into_any_element()
+            }
+            TransferPhase::Cancelled => h_flex()
+                .debug_selector(|| "transfer-cancelled".into())
+                .w_full()
+                .gap(space::TIGHT)
+                .items_center()
+                .child(
+                    div()
+                        .text_sm()
+                        .child("Download cancelled — nothing was written."),
+                )
+                .child(div().flex_1())
+                .child(dismiss())
+                .into_any_element(),
+            TransferPhase::Failed(error) => {
+                // The same vocabulary every other failure uses, sized to a
+                // line. The destination path is the window's own knowledge,
+                // said here precisely because the error must not carry it.
+                let rendered = error.to_string();
+                h_flex()
+                    .debug_selector(|| "transfer-failed".into())
+                    .w_full()
+                    .gap(space::TIGHT)
+                    .items_center()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().danger)
+                            .child(format!("Download failed: {rendered}")),
+                    )
+                    .child(div().flex_1())
+                    .child(dismiss())
+                    .into_any_element()
+            }
+        };
+        Some(
+            div()
+                .w_full()
+                .px(space::TIGHT)
+                .py(space::TIGHT)
+                .child(line)
+                .into_any_element(),
+        )
     }
 
     /// The body: whatever the active connection's latest outcome deserves.
@@ -2273,6 +2726,166 @@ mod tests {
         );
     }
 
+    // ---- The one transfer (XONHO-0007 tasks 4.1–4.3) ----
+
+    fn an_object(key: &str, size: u64) -> Object {
+        Object {
+            key: key.to_owned(),
+            size,
+            last_modified: None,
+            storage_class: None,
+            etag: None,
+        }
+    }
+
+    /// The verbs gate on the selection being an object: a folder can be
+    /// neither downloaded nor opened, and no selection is no object.
+    #[gpui::test]
+    fn the_object_verbs_light_up_only_on_an_object(cx: &mut TestAppContext) {
+        let (app, cx) = looking_at(cx, "reports");
+        app.update(cx, |app, cx| {
+            app.objects.update(cx, |state, _| {
+                state.delegate_mut().show(
+                    CorePrefix::root(),
+                    vec![caixonho_core::Folder {
+                        prefix: CorePrefix::parse("daily/"),
+                    }],
+                    vec![an_object("summary.csv", 10)],
+                );
+            });
+        });
+
+        app.update(cx, |app, cx| {
+            assert_eq!(app.selected_object_key(cx), None, "nothing selected yet");
+            app.objects
+                .update(cx, |state, cx| state.set_selected_row(0, cx));
+            assert_eq!(
+                app.selected_object_key(cx),
+                None,
+                "a folder is selected, and a folder is not an object"
+            );
+            app.objects
+                .update(cx, |state, cx| state.set_selected_row(1, cx));
+            assert_eq!(
+                app.selected_object_key(cx).as_deref(),
+                Some("summary.csv"),
+                "the object row is what the verbs act on"
+            );
+        });
+    }
+
+    /// The window's half of a download: progress accumulates, and the
+    /// settled outcome becomes the line's phase. The pump and session halves
+    /// are core's tests; what is asserted here is that the window applies
+    /// what arrives.
+    #[gpui::test]
+    fn a_download_reports_progress_and_then_that_it_finished(cx: &mut TestAppContext) {
+        let (app, cx) = looking_at(cx, "reports");
+        app.update(cx, |app, cx| {
+            app.transfer = Some(Transfer {
+                bucket: "reports".into(),
+                key: "daily/summary.csv".into(),
+                directory: std::env::temp_dir(),
+                then_open: false,
+                bytes: 0,
+                total: None,
+                cancel: caixonho_core::transfer::Cancel::default(),
+                phase: TransferPhase::Running,
+            });
+            app.apply_transfer(
+                TransferEvent::Progress {
+                    bytes: 512,
+                    total: Some(1024),
+                },
+                cx,
+            );
+        });
+        app.read_with(cx, |app, _| {
+            let transfer = app.transfer.as_ref().expect("still on screen");
+            assert_eq!((transfer.bytes, transfer.total), (512, Some(1024)));
+            assert!(matches!(transfer.phase, TransferPhase::Running));
+        });
+
+        app.update(cx, |app, cx| {
+            app.apply_transfer(
+                TransferEvent::Settled(caixonho_core::transfer::DownloadOutcome::Finished {
+                    name: "summary.csv".into(),
+                    mapped: caixonho_core::transfer::MappingOutcome::Unchanged,
+                    bytes: 1024,
+                }),
+                cx,
+            );
+        });
+        app.read_with(cx, |app, _| {
+            let transfer = app
+                .transfer
+                .as_ref()
+                .expect("the line stays for the report");
+            match &transfer.phase {
+                TransferPhase::Finished { name, .. } => assert_eq!(name, "summary.csv"),
+                other => panic!(
+                    "expected Finished, got a different phase: {}",
+                    phase_name(other)
+                ),
+            }
+        });
+    }
+
+    /// An event landing after the line was dismissed changes nothing — the
+    /// same stale-answer discipline every other channel already has.
+    #[gpui::test]
+    fn a_settlement_after_dismissal_is_dropped(cx: &mut TestAppContext) {
+        let (app, cx) = looking_at(cx, "reports");
+        app.update(cx, |app, cx| {
+            app.transfer = None;
+            app.apply_transfer(
+                TransferEvent::Settled(caixonho_core::transfer::DownloadOutcome::Cancelled),
+                cx,
+            );
+        });
+        app.read_with(cx, |app, _| {
+            assert!(app.transfer.is_none(), "nothing came back from the dead");
+        });
+    }
+
+    /// Answering the existing-file question starts the download over with
+    /// the answer — synchronously back into Running, holding the same
+    /// object.
+    #[gpui::test]
+    fn answering_a_collision_reissues_the_download(cx: &mut TestAppContext) {
+        let (app, cx) = looking_at(cx, "reports");
+        app.update(cx, |app, cx| {
+            app.transfer = Some(Transfer {
+                bucket: "reports".into(),
+                key: "daily/summary.csv".into(),
+                directory: std::env::temp_dir(),
+                then_open: false,
+                bytes: 0,
+                total: None,
+                cancel: caixonho_core::transfer::Cancel::default(),
+                phase: TransferPhase::NameTaken {
+                    name: "summary.csv".into(),
+                },
+            });
+            app.answer_collision(caixonho_core::transfer::Collision::KeepBoth, cx);
+        });
+        app.read_with(cx, |app, _| {
+            let transfer = app.transfer.as_ref().expect("reissued");
+            assert!(matches!(transfer.phase, TransferPhase::Running));
+            assert_eq!(transfer.key, "daily/summary.csv", "the same object");
+        });
+    }
+
+    fn phase_name(phase: &TransferPhase) -> &'static str {
+        match phase {
+            TransferPhase::Running => "Running",
+            TransferPhase::NameTaken { .. } => "NameTaken",
+            TransferPhase::Finished { .. } => "Finished",
+            TransferPhase::Cancelled => "Cancelled",
+            TransferPhase::Failed(_) => "Failed",
+        }
+    }
+
     /// Where [`every_state_is_written_for_judgement`] leaves its images.
     ///
     /// Under `target/`, so `.gitignore` already covers it: these are an
@@ -2618,6 +3231,49 @@ mod tests {
                             object("readme.txt", 812),
                         ],
                     );
+                });
+            },
+        ));
+
+        // The transfer line, in the two shapes that carry decisions
+        // (`XONHO-0007`): a download in flight, and the existing-file
+        // question.
+        written.push(shoot(
+            "bucket-05-downloading",
+            Arc::new(StoreDouble::allows_listing()),
+            |app, _, cx| {
+                inside(app, cx);
+                app.listing = Listing::Loaded;
+                app.transfer = Some(Transfer {
+                    bucket: "reports".into(),
+                    key: "daily/totals.parquet".into(),
+                    directory: std::env::temp_dir(),
+                    then_open: false,
+                    bytes: 2_411_724,
+                    total: Some(4_919_233),
+                    cancel: caixonho_core::transfer::Cancel::default(),
+                    phase: TransferPhase::Running,
+                });
+            },
+        ));
+
+        written.push(shoot(
+            "bucket-06-name-taken",
+            Arc::new(StoreDouble::allows_listing()),
+            |app, _, cx| {
+                inside(app, cx);
+                app.listing = Listing::Loaded;
+                app.transfer = Some(Transfer {
+                    bucket: "reports".into(),
+                    key: "daily/summary.csv".into(),
+                    directory: std::env::temp_dir(),
+                    then_open: false,
+                    bytes: 0,
+                    total: None,
+                    cancel: caixonho_core::transfer::Cancel::default(),
+                    phase: TransferPhase::NameTaken {
+                        name: "summary.csv".into(),
+                    },
                 });
             },
         ));

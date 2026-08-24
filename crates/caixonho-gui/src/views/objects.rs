@@ -55,7 +55,7 @@ impl Entry {
 /// where people compare this number to what their disk says. Exact bytes below
 /// a kibibyte: rounding "12" to "0.0 KiB" loses the only interesting thing
 /// about a very small object, which is that it is very small.
-fn readable(bytes: u64) -> String {
+pub(crate) fn readable(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["KiB", "MiB", "GiB", "TiB", "PiB"];
     if bytes < 1024 {
         return format!("{bytes} B");
