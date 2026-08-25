@@ -64,6 +64,26 @@ asking for the first N KB instead of the whole object.
 > here because this section reads as a future plan, and the two-directions
 > lesson in the header is about exactly this sentence going stale.
 
+### Nothing on screen can be copied (2026-08-25)
+
+Reported by the owner while trying to hand a bucket name to a command: the
+name is on screen, and there is no way to get it into the clipboard. It
+applies to every string the app draws — bucket names, object keys, the
+breadcrumb, the log's own directory in the status bar, and the error panels
+whose whole purpose is to be pasted into an issue.
+
+Worth more than its size: `XONHO-0011` already made a point of the sign-in
+code being *selectable* ("nothing about the attempt is only in the
+browser"), and `XONHO-0012` put the log's location in the status bar so a
+report could carry evidence — both of which assume a person can copy what
+they are shown. This is the general form of that assumption, unbuilt.
+
+Not scoped here. Two candidate shapes, and the choice wants a look at what
+the toolkit offers rather than a guess: text selection on the labels, or a
+context-menu Copy on the row (which the connection list already has a
+right-click menu for, so the affordance exists). §4.6 quality-of-life is
+where it belongs.
+
 ### A finding parked here so it is not lost (2026-08-23)
 
 Listing the R2 connection took **12.3 seconds for 2 buckets** (log,
