@@ -80,6 +80,24 @@ pub struct Session {
     /// about them. Shared, and read when a scheduler is installed, so
     /// registering once covers every connection opened afterwards.
     settled: Arc<Mutex<Option<ProbeSink>>>,
+    /// The connections this run has already built, by the source that built
+    /// them (`XONHO-0023`).
+    ///
+    /// Building resolves credentials, and for a profile whose credentials
+    /// come from a `credential_process` that means running a subprocess that
+    /// talks to a password manager — measured at four seconds warm on the
+    /// machine this was written on. Paying it per click was what this exists
+    /// to stop.
+    ///
+    /// A list rather than a map, and the reason is not laziness: the key is a
+    /// [`ConnectionSource`], which carries a whole [`StoredCredential`] and is
+    /// only `Eq`. Deriving `Hash` down that chain to save a comparison over
+    /// the handful of connections one person visits in a run would be paying
+    /// in public API for nothing.
+    ///
+    /// Shared by every clone, like everything else here, so a connection
+    /// built on the runtime's clone is the one the frontend's clone reuses.
+    opened: Arc<Mutex<Vec<(ConnectionSource, Connection)>>>,
 }
 
 impl std::fmt::Debug for Session {
@@ -111,6 +129,7 @@ impl Session {
             scheduler: Arc::default(),
             store: Arc::default(),
             settled: Arc::default(),
+            opened: Arc::default(),
         }
     }
 
@@ -423,13 +442,20 @@ impl Session {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
-        match store {
+        let listed = match store {
             Some(store) => store.list_buckets().await,
             None => Err(crate::error::Error::MissingConfiguration {
                 profile: None,
                 detail: "no connection is open to list through".into(),
             }),
+        };
+        // The listing is where credentials are first actually used — opening
+        // only resolves configuration, and the SDK's providers are lazy — so
+        // this is the earliest moment anything can know they do not work.
+        if let Err(cause) = &listed {
+            self.forget_if_credentials_failed(source, cause);
         }
+        listed
     }
 
     /// Download one object to a directory, off the caller's thread
@@ -857,6 +883,7 @@ impl Session {
         F: FnOnce(Result<SignInOutcome>) + Send + 'static,
     {
         let port = SsoOidcSignIn::new(self.http.clone());
+        let session = self.clone();
         self.runtime.spawn(async move {
             let outcome = crate::sso::sign_in(&port, &RealTime, &at, &abandon, |authorization| {
                 show(authorization.clone())
@@ -873,6 +900,13 @@ impl Session {
                 },
                 other => other,
             };
+            // Before `deliver`, because `deliver` is what makes the
+            // frontend retry: a connection kept from before the sign-in was
+            // built when there was no session, and reusing it would make a
+            // successful sign-in change nothing (`XONHO-0023`).
+            if matches!(outcome, Ok(SignInOutcome::Session(_))) {
+                session.forget_opened_connections();
+            }
             diagnostics::sign_in_settled(at.label(), outcome.as_ref());
             deliver(outcome);
         });
@@ -927,10 +961,74 @@ impl Session {
         *self.scheduler_slot() = None;
         *self.store.lock().unwrap_or_else(PoisonError::into_inner) = None;
 
-        let connection =
-            connection::open(id, &source, &self.paths, &self.http, self.secrets.as_ref()).await?;
+        // Everything above still happens on a reused connection, and that is
+        // the load-bearing part of this branch: what is reused is the
+        // *client*, never the session's idea of where the user is.
+        let connection = match self.kept(&source) {
+            Some(kept) => kept.with_id(id),
+            None => {
+                let built =
+                    connection::open(id, &source, &self.paths, &self.http, self.secrets.as_ref())
+                        .await?;
+                // Only after `?`: a connection that failed to open is not a
+                // connection, and remembering one would turn a locked
+                // keychain into a client that never works again this run.
+                self.opened_slot().push((source, built.clone()));
+                built
+            }
+        };
         self.install_scheduler(Arc::new(S3ObjectStore::new(&connection)), credentials);
         Ok(connection)
+    }
+
+    /// What this run already built for `source`, if anything.
+    fn kept(&self, source: &ConnectionSource) -> Option<Connection> {
+        self.opened_slot()
+            .iter()
+            .find(|(kept, _)| kept == source)
+            .map(|(_, connection)| connection.clone())
+    }
+
+    fn opened_slot(&self) -> MutexGuard<'_, Vec<(ConnectionSource, Connection)>> {
+        self.opened.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Drop what was kept for `source` when — and only when — the credentials
+    /// are what failed (`XONHO-0023`).
+    ///
+    /// The narrowness is the point in both directions. A rejected session, a
+    /// credential that resolved to nothing, a keychain that would not open:
+    /// those are fixed by going and getting different credentials, so the
+    /// retry that follows has to reach the service with a client built from
+    /// what is true now.
+    ///
+    /// Everything else keeps its connection. A denial is an IAM policy and a
+    /// fresh client would be denied identically; a name that did not resolve
+    /// is the network. Throwing the client away for either would put the four
+    /// seconds back on the next click and fix nothing — which is how this
+    /// change would quietly undo itself.
+    fn forget_if_credentials_failed(&self, source: &ConnectionSource, cause: &Error) {
+        if matches!(
+            cause,
+            Error::NoCredentials { .. }
+                | Error::SessionRejected { .. }
+                | Error::CredentialStore { .. }
+        ) {
+            self.opened_slot().retain(|(kept, _)| kept != source);
+        }
+    }
+
+    /// Drop everything kept, because a sign-in produced a session.
+    ///
+    /// Everything, not just the connection that failed, and that is a
+    /// departure from the design worth knowing about: one Identity Center
+    /// session serves every profile pointing at it, so a sign-in can revive
+    /// several connections at once. Dropping only the one the user happened
+    /// to be looking at would leave its siblings holding a client built when
+    /// there was no session — the exact bug this method exists to prevent,
+    /// one connection over.
+    fn forget_opened_connections(&self) {
+        self.opened_slot().clear();
     }
 }
 
@@ -2352,5 +2450,254 @@ mod tests {
             "a replacement secret",
             "the secret the user just saved is the one that gets signed with"
         );
+    }
+
+    // ---- A connection worth keeping (XONHO-0023) ----
+
+    /// A second stored credential, so a test can switch away and come back.
+    fn other_stored() -> StoredCredential {
+        StoredCredential::new("also-typed-in", "eu-west-1", "AKIAIOSFODNN7EXAMPLF")
+    }
+
+    /// A credential store holding these credentials' secrets, **bare** — no
+    /// `Remembering` in the way.
+    ///
+    /// That is what makes it an instrument for this change rather than the
+    /// last one: `XONHO-0022` memoized the secret read, so a read through a
+    /// remembering store counts runs, not builds. Straight through, building
+    /// a stored connection is the only thing that asks — so a read *is* a
+    /// build, and no second counter has to exist.
+    fn bare_store_holding(credentials: &[StoredCredential]) -> Arc<SecretStoreDouble> {
+        let store = Arc::new(SecretStoreDouble::open());
+        for credential in credentials {
+            credentials::save(
+                store.as_ref(),
+                credential,
+                &CredentialSecret::new(SECRET, None),
+            )
+            .expect("an open store accepts it");
+        }
+        store
+    }
+
+    /// How many times `credential` was built, read off the bare store.
+    fn builds(store: &SecretStoreDouble, credential: &StoredCredential) -> usize {
+        store.reads_of(
+            credential.name(),
+            crate::credentials::SecretField::SecretAccessKey,
+        )
+    }
+
+    #[tokio::test]
+    async fn selecting_the_same_connection_twice_builds_it_once() {
+        let fixture = Fixture::new("built-once");
+        let store = bare_store_holding(&[stored()]);
+        let session = fixture
+            .session("work")
+            .with_secret_store(Arc::clone(&store) as Arc<dyn SecretStore>);
+
+        session
+            .open(ConnectionId(1), stored())
+            .await
+            .expect("opens");
+        session
+            .open(ConnectionId(2), stored())
+            .await
+            .expect("opens");
+
+        assert_eq!(
+            builds(&store, &stored()),
+            1,
+            "the second selection should have used what the first built"
+        );
+    }
+
+    /// The case that decided the shape: A, B, then back to A. A single kept
+    /// slot would rebuild on exactly the return trip, which is the one that
+    /// hurts most.
+    #[tokio::test]
+    async fn coming_back_to_a_connection_does_not_rebuild_it() {
+        let fixture = Fixture::new("there-and-back");
+        let store = bare_store_holding(&[stored(), other_stored()]);
+        let session = fixture
+            .session("work")
+            .with_secret_store(Arc::clone(&store) as Arc<dyn SecretStore>);
+
+        session
+            .open(ConnectionId(1), stored())
+            .await
+            .expect("opens");
+        session
+            .open(ConnectionId(2), other_stored())
+            .await
+            .expect("opens");
+        session
+            .open(ConnectionId(3), stored())
+            .await
+            .expect("opens");
+
+        assert_eq!(builds(&store, &stored()), 1, "A was built twice");
+        assert_eq!(builds(&store, &other_stored()), 1, "B was built twice");
+    }
+
+    /// Only success is worth keeping: a locked keychain must not be
+    /// remembered as a working client.
+    #[tokio::test]
+    async fn a_connection_that_failed_to_open_is_built_again() {
+        let fixture = Fixture::new("failed-open");
+        let store = Arc::new(SecretStoreDouble::refusing(CredentialStoreProblem::Locked));
+        let session = fixture
+            .session("work")
+            .with_secret_store(Arc::clone(&store) as Arc<dyn SecretStore>);
+
+        session
+            .open(ConnectionId(1), stored())
+            .await
+            .expect_err("a locked store refuses");
+        session
+            .open(ConnectionId(2), stored())
+            .await
+            .expect_err("and refuses again");
+
+        assert_eq!(
+            builds(&store, &stored()),
+            2,
+            "a failed open must not be remembered as a connection"
+        );
+    }
+
+    /// What reuse must *not* change. A new id per selection is what makes a
+    /// late answer droppable (`XONHO-0019`), and clearing observations on a
+    /// switch is a requirement in its own right (`capability-awareness`).
+    #[tokio::test]
+    async fn a_reused_connection_is_still_a_new_selection() {
+        let fixture = Fixture::new("still-new");
+        let store = bare_store_holding(&[stored()]);
+        let session = fixture
+            .session("work")
+            .with_secret_store(Arc::clone(&store) as Arc<dyn SecretStore>);
+
+        let first = session
+            .open(ConnectionId(1), stored())
+            .await
+            .expect("opens");
+        let before = session.credentials().expect("a connection is open");
+        assert!(session.observe_list(&before, Scope::bucket("evidence"), Observation::Allowed));
+
+        let second = session
+            .open(ConnectionId(2), stored())
+            .await
+            .expect("opens");
+
+        assert_eq!(first.id(), ConnectionId(1));
+        assert_eq!(
+            second.id(),
+            ConnectionId(2),
+            "a reused client still gets the selection's own id"
+        );
+        let after = session.credentials().expect("still open");
+        assert_ne!(before, after, "a reused client still means new credentials");
+        assert_eq!(
+            session.capability(&after, &Scope::bucket("evidence")).list,
+            Observation::Unknown,
+            "reuse must not keep the previous selection's observations"
+        );
+    }
+
+    /// Credentials are the problem → build it again. The retry is the whole
+    /// point: the user went and fixed something.
+    #[tokio::test]
+    async fn a_connection_whose_credentials_were_refused_is_built_again() {
+        let fixture = Fixture::new("refused-then-retried");
+        let store = bare_store_holding(&[stored()]);
+        let session = fixture
+            .session("work")
+            .with_secret_store(Arc::clone(&store) as Arc<dyn SecretStore>);
+
+        session
+            .open(ConnectionId(1), stored())
+            .await
+            .expect("opens");
+        session.forget_if_credentials_failed(
+            &stored().into(),
+            &Error::SessionRejected {
+                profile: stored().name().to_owned(),
+                sso_session: None,
+                problem: crate::error::SessionProblem::Expired,
+            },
+        );
+        session
+            .open(ConnectionId(2), stored())
+            .await
+            .expect("opens");
+
+        assert_eq!(builds(&store, &stored()), 2);
+    }
+
+    /// And the other direction, which is the half that would quietly undo
+    /// this change: a network blip says nothing about the credentials, and
+    /// throwing the client away for one would put the four seconds back.
+    #[tokio::test]
+    async fn a_connection_that_failed_at_the_network_is_kept() {
+        let fixture = Fixture::new("network-blip");
+        let store = bare_store_holding(&[stored()]);
+        let session = fixture
+            .session("work")
+            .with_secret_store(Arc::clone(&store) as Arc<dyn SecretStore>);
+
+        session
+            .open(ConnectionId(1), stored())
+            .await
+            .expect("opens");
+        session.forget_if_credentials_failed(
+            &stored().into(),
+            &Error::Network {
+                detail: "the name did not resolve".into(),
+            },
+        );
+        session
+            .open(ConnectionId(2), stored())
+            .await
+            .expect("opens");
+
+        assert_eq!(
+            builds(&store, &stored()),
+            1,
+            "a network failure is not a credential failure"
+        );
+    }
+
+    /// A sign-in produces a session, and one session can revive more than the
+    /// connection that happened to fail — so everything kept goes.
+    #[tokio::test]
+    async fn a_sign_in_drops_what_was_kept() {
+        let fixture = Fixture::new("signed-in");
+        let store = bare_store_holding(&[stored(), other_stored()]);
+        let session = fixture
+            .session("work")
+            .with_secret_store(Arc::clone(&store) as Arc<dyn SecretStore>);
+
+        session
+            .open(ConnectionId(1), stored())
+            .await
+            .expect("opens");
+        session
+            .open(ConnectionId(2), other_stored())
+            .await
+            .expect("opens");
+
+        session.forget_opened_connections();
+
+        session
+            .open(ConnectionId(3), stored())
+            .await
+            .expect("opens");
+        session
+            .open(ConnectionId(4), other_stored())
+            .await
+            .expect("opens");
+
+        assert_eq!(builds(&store, &stored()), 2);
+        assert_eq!(builds(&store, &other_stored()), 2);
     }
 }

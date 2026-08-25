@@ -146,6 +146,20 @@ impl Connection {
     pub(crate) fn sdk_config(&self) -> &aws_config::SdkConfig {
         &self.sdk
     }
+
+    /// The same connection, under a new selection's id (`XONHO-0023`).
+    ///
+    /// This is what reuse is made of, and the id is the whole reason it needs
+    /// a method rather than a `clone`. What is worth keeping across two
+    /// selections is the *resolved configuration* — the credentials the SDK
+    /// went and fetched, and the identity cache holding them. What must not
+    /// be kept is the id: it is minted per selection so that a late answer
+    /// can be dropped instead of rendered under the connection the user
+    /// switched to (`XONHO-0019`). Reusing the id would quietly make a stale
+    /// outcome look current.
+    pub(crate) fn with_id(&self, id: ConnectionId) -> Self {
+        Self { id, ..self.clone() }
+    }
 }
 
 /// Open a connection for `source`.

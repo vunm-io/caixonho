@@ -183,6 +183,41 @@ Evidence to gather first: whether the AWS SDK's own provider chain would
 cache the process credentials if the config outlived one open. If it would,
 the fix is smaller than it looks.
 
+#### What happened: `XONHO-0023`, landed 2026-08-26
+
+The evidence was gathered before anything was written, and it said yes.
+`aws-config` 1.10.1 installs a lazy identity cache by default
+(`IdentityCache::lazy().build()`, its `lib.rs:1048`), documented as loading
+credentials on first request, caching them, and reloading near expiry. It
+exists, it is on, and it lives on the `SdkConfig` — which this application
+was throwing away and rebuilding on every click, before its first hit. So
+the fix was indeed smaller than it looked: **stop building the thing twice.**
+
+A connection's client is now built once per run and reused when the same
+connection is chosen again. Everything `open` resets still resets — the
+store, the scheduler slot, the credentials id — because `XONHO-0019` and the
+capability model lean on that, and the proof it was not quietly moved is
+that **`XONHO-0019`'s window tests pass with zero lines edited.** A reused
+client still gets a fresh `ConnectionId`, so a late answer is still
+droppable.
+
+Two things are deliberately *not* reused: a connection whose credentials
+were refused, and anything at all after a successful sign-in. A network
+failure or an IAM denial keeps its client, because a fresh one would fail
+identically and rebuilding would put the four seconds back — that half has
+its own test, and it is the half that would have quietly undone the change.
+
+| Connection kind | open → listed, before | after |
+|---|---|---|
+| Stored credential | 0.06 – 0.3s | *awaiting the live sitting* |
+| Profile using `credential_process`, first click | 4.3 – 8.8s | *unchanged by design* |
+| Profile using `credential_process`, **every click after** | 4.3 – 8.8s | *awaiting the live sitting* |
+
+The expectation on record, so the sitting can falsify it: later clicks cost
+a listing alone, in the tenths. **If the second click is still seconds, the
+identity cache is not where the time goes and this design is wrong about the
+cause** — which is the more valuable outcome of the two.
+
 ### The superseded note (2026-08-23), kept
 
 Listing the R2 connection took **12.3 seconds for 2 buckets** (log,

@@ -41,6 +41,8 @@ that each own a subsystem and land on their own:
 | `XONHO-0017` | Auditing what the project depends on, on every change — and removing the four advisories that were being shipped | landed |
 | `XONHO-0015` | A seam that lets a test build the real window, and the first tests that use it | landed |
 | `XONHO-0019` | A pane that cannot outlive the connection it was read on: switching connection ends the location instead of leaving the previous account's bucket named | built, awaiting live acceptance |
+| `XONHO-0022` | Asking the OS credential store once per credential per run instead of once per connection open — the keychain stopped interrupting a session of browsing | landed |
+| `XONHO-0023` | Building a connection's client once per run and reusing it, so choosing a profile again costs a listing rather than a fresh credential resolution | built, awaiting live acceptance |
 
 Three cells were corrected on 2026-08-22, all in the same direction — a row
 that was easier to write than to check:
