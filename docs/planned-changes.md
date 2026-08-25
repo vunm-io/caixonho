@@ -49,6 +49,12 @@ asking for the first N KB instead of the whole object.
 
 **0009 → 0004 → 0006 → 0007 → 0008.**
 
+> **`XONHO-0008` planned 2026-08-25** — its number and row have sat in this
+> table since M1 was cut; the change directory now exists
+> (`a-look-without-a-download`). One reading recorded at planning time: the
+> brief's single preview line splits in two, because a ranged image does not
+> decode — text previews by its first page, images whole under a size gate.
+>
 > **`XONHO-0020` issued 2026-08-24** for the upload direction, and planned
 > the same day — the number is anchored in the table above rather than only
 > in a change directory, which is what this table is for.
