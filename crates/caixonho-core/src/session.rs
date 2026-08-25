@@ -361,16 +361,28 @@ impl Session {
         let source = source.into();
         let session = self.clone();
         self.runtime.spawn(async move {
+            // Timed from before the open, because that is the wait the user
+            // actually sits through: choosing a connection and seeing its
+            // buckets. Splitting it at the open would hide the part that
+            // costs — credentials resolve lazily, inside the listing.
+            let started = std::time::Instant::now();
             // Recorded here rather than inside the listing, because this is
             // where the outcome the user will be shown is settled — and a log
             // that disagrees with the screen is worse than none.
             let outcome = match session.list_buckets(id, &source).await {
                 Ok(buckets) => {
-                    diagnostics::listing_settled(id, source.name(), Ok(buckets.buckets.len()));
+                    let took = started.elapsed();
+                    diagnostics::listing_settled(
+                        id,
+                        source.name(),
+                        took,
+                        Ok(buckets.buckets.len()),
+                    );
                     Outcome::Loaded(buckets)
                 }
                 Err(error) => {
-                    diagnostics::listing_settled(id, source.name(), Err(&error));
+                    let took = started.elapsed();
+                    diagnostics::listing_settled(id, source.name(), took, Err(&error));
                     Outcome::Failed(error)
                 }
             };
@@ -965,7 +977,14 @@ impl Session {
         // the load-bearing part of this branch: what is reused is the
         // *client*, never the session's idea of where the user is.
         let connection = match self.kept(&source) {
-            Some(kept) => kept.with_id(id),
+            Some(kept) => {
+                let kept = kept.with_id(id);
+                // Reuse skips `connection::open`, which is where a selection
+                // was announced — so without this a log would show a listing
+                // for a connection it never showed being chosen.
+                diagnostics::connection_reused(id, kept.name(), source.kind(), kept.region());
+                kept
+            }
             None => {
                 let built =
                     connection::open(id, &source, &self.paths, &self.http, self.secrets.as_ref())

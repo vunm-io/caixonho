@@ -129,12 +129,39 @@
   - Done criteria: all three exit zero
   - Verification: the commands themselves
 
-- [ ] 4.2 CI green on both targets, run id recorded here [dispatch: main]
+- [x] 4.2 CI green on both targets, run id recorded here [dispatch: main]
+      - Run `32876575105` on `0dcca25`: `build (windows-latest)`,
+        `build (macos-latest)`, `dependency audit` and `rustfmt` all
+        success. (A second run follows for the observability fix in 4.6.)
   - Paths: none
   - Done criteria: all four jobs successful for the tip; run id here
   - Verification: `gh run list --limit 1 --repo vunm-io/caixonho`
 
 - [ ] 4.3 Live: the second click is fast [dispatch: main]
+      - **First sitting, 2026-08-26: inconclusive, and the fault was the
+        instrument's.** The owner reported no improvement. Two things came
+        out of the log, and only one of them is about speed.
+      - The binary was checked first (`ps -o lstart` 00:16:10, bundle mtime
+        00:16:10, commit 00:12:59) — the running app **did** carry the
+        change, so this was not a stale build.
+      - **The measurement this task asks for had been made impossible by the
+        change itself.** See 4.6. Reused selections wrote no log line at all,
+        so "read the open→listed durations out of the log" had no durations
+        to read for exactly the selections under test.
+      - What could still be read, from the 17:15:38Z run: seven selections
+        listed with **no `connection opened` line before them** — those were
+        reuses, and they are the first direct evidence the branch fires. The
+        first `vunm` click took 8.75s to list; consecutive later listings
+        landed 0.6–1.7s apart, human clicking included. Suggestive, not a
+        measurement.
+      - **And the sitting did not exercise the claim.** The owner's most
+        recent run clicked two connections, both for the first time — both
+        necessarily built, both necessarily slow. The claim is about the
+        *second* click on the *same* connection. Worth saying plainly rather
+        than reading "no improvement" as a refutation of something that was
+        not tested.
+      - Re-run with the instrumented build (binary 00:20:36) before drawing
+        any conclusion.
   - Paths: none
   - Done criteria: on the owner's machine, select a `credential_process`
     profile (`vunm` or `r2-caixonho`), then another, then the first again,
@@ -158,8 +185,38 @@
     after-numbers beside the before-numbers. **Counts by the script.**
   - Verification: the script's totals match the tables
 
+- [x] 4.6 The log can still see a selection [dispatch: main]
+      - Done in `main` (2026-08-26), and it is a **defect this change
+        introduced**, found by the owner's live check and by no test.
+      - `connection opened` is written inside `connection::open`, which reuse
+        skips. So half the selections went silent: the log showed a listing
+        for a connection it never showed being chosen. A reader — and anyone
+        trying to measure whether this change worked — could no longer tell a
+        fast connection from one that was never clicked.
+      - Two fixes, and the second matters more:
+        - `connection reused` is now its own line, mirroring
+          `connection opened`;
+        - **`listed the account` and `listing failed` now carry `took`**,
+          measured from before the open. Subtracting two log lines was never
+          right even before this change: credentials resolve *lazily*, inside
+          the listing, so `connection opened` was already being written
+          before the expensive part happened. The old "open → listed" numbers
+          in `docs/planned-changes.md` were measuring the listing *including*
+          credential resolution — the right quantity, reached by accident.
+      - **Q4 should have caught this and did not.** The close-out review
+        asked what was asserted but not verified and named three gaps; none
+        was "this change removes the only signal the live check reads from".
+        Recorded because the review's blind spot is worth more than the fix.
+      - Paths: `crates/caixonho-core/src/diagnostics.rs`,
+        `crates/caixonho-core/src/session.rs`
+      - Verification: `cargo test -p caixonho-core diagnostics -- --ignored`
+        (the test that writes to this machine's real log directory), green,
+        asserting on `connection reused` and `took=1.5`
+
 - [x] 4.5 Close-out review per `AGENTS.md` [dispatch: main]
-      - Run 2026-08-26, before the live check, as with the last five.
+      - Run 2026-08-26, before the live check, as with the last five — and
+        **the live check then found something the review had missed**, written
+        up in 4.6 and amending Q4 below.
       - **Q1: one departure, written into the document it departs from.**
         `design.md` said a sign-in drops *that source's* entry; the code
         drops everything kept. One Identity Center session serves every
@@ -205,6 +262,12 @@
         lazy identity cache is what makes reuse pay. That was read before the
         design was written rather than after (`lib.rs:1048`), but reading a
         default is not measuring one. 4.3 is the measurement.
+      - **Q4, amended after the fact:** the review named three unverified
+        things and missed the one that bit. It never asked what the change
+        did to the *instrument* the live check depends on. It removed it:
+        reuse skipped the line that announced a selection. A review that asks
+        "what is asserted but not verified" should also ask "what did this
+        change do to the evidence".
       - **Q5:** the `planned-changes.md` timing note now carries its own
         outcome, with an after-column marked *awaiting the live sitting* and
         the falsifiable expectation beside it. Nothing else was discovered

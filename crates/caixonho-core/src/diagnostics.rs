@@ -398,6 +398,30 @@ pub(crate) fn connection_opened(
     );
 }
 
+/// A connection was chosen that this run had already built, so nothing was
+/// resolved (`XONHO-0023`).
+///
+/// Its own line rather than a field on `connection opened`, and it exists
+/// because the change that introduced reuse briefly made half the selections
+/// **invisible**: `connection opened` is written inside `connection::open`,
+/// which reuse skips, so a log showed a listing for a connection it never
+/// showed being chosen. A reader could no longer tell a fast connection from
+/// one that was never clicked.
+pub(crate) fn connection_reused(
+    id: ConnectionId,
+    connection: &str,
+    source: SourceKind,
+    region: &str,
+) {
+    tracing::info!(
+        connection,
+        id = id.0,
+        source = source.label(),
+        region,
+        "connection reused"
+    );
+}
+
 /// A connection did not come up, and why.
 pub(crate) fn connection_refused(
     id: ConnectionId,
@@ -417,10 +441,23 @@ pub(crate) fn connection_refused(
 }
 
 /// A listing finished: how many buckets, or why none.
-pub(crate) fn listing_settled(id: ConnectionId, connection: &str, settled: Settled<'_, usize>) {
+pub(crate) fn listing_settled(
+    id: ConnectionId,
+    connection: &str,
+    took: std::time::Duration,
+    settled: Settled<'_, usize>,
+) {
+    // How long it took, on the line itself, rather than left to whoever reads
+    // the log to subtract two timestamps. Credentials resolve lazily — inside
+    // the *listing*, not inside the open — so the gap between `connection
+    // opened` and this line was never the whole story, and after `XONHO-0023`
+    // there may be no opening line to subtract from at all.
+    let took = took.as_secs_f64();
     match settled {
-        Ok(buckets) => tracing::info!(connection, id = id.0, buckets, "listed the account"),
-        Err(error) => tracing::warn!(connection, id = id.0, cause = %error, "listing failed"),
+        Ok(buckets) => {
+            tracing::info!(connection, id = id.0, buckets, took, "listed the account")
+        }
+        Err(error) => tracing::warn!(connection, id = id.0, took, cause = %error, "listing failed"),
     }
 }
 
@@ -1557,8 +1594,24 @@ mod tests {
                     profile: "broken".to_owned(),
                 },
             );
-            listing_settled(ConnectionId(1), "work", Ok(12));
-            listing_settled(ConnectionId(3), "broken", Err(&listed));
+            connection_reused(
+                ConnectionId(4),
+                "work",
+                SourceKind::Profile,
+                "ap-southeast-1",
+            );
+            listing_settled(
+                ConnectionId(1),
+                "work",
+                std::time::Duration::from_millis(1500),
+                Ok(12),
+            );
+            listing_settled(
+                ConnectionId(3),
+                "broken",
+                std::time::Duration::from_millis(90),
+                Err(&listed),
+            );
             probe_settled(&Scope::bucket("logs"), Observation::Denied);
             probe_settled(&Scope::prefix("logs", "2026/"), Observation::Allowed);
             credential_saved("typed-in", Ok(()));
@@ -1571,8 +1624,12 @@ mod tests {
             "source=\"profile\"",
             "source=\"stored credential\"",
             "region=\"eu-west-1\"",
-            // A listing's outcome, and its cause when it has one.
+            // A connection chosen again, which resolved nothing.
+            "connection reused",
+            // A listing's outcome, how long the user waited for it, and its
+            // cause when it has one.
             "listed the account",
+            "took=1.5",
             "buckets=12",
             "listing failed",
             &listed.to_string(),
