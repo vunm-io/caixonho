@@ -12,7 +12,7 @@ whole thing.
 | **M0b** | The stack is smooth — measured on real hardware, ADR-0001 filled in | **done bar one cell**: a Windows machine without a working Vulkan driver, where the required outcome is a graceful failure. ADR-0001 stays `Proposed` until then |
 | **M1** | Read-only browser — credentials, bucket list, prefix navigation, permission awareness | **in progress** |
 | **M2** | Transfers — up and download including folders, multipart, a queue with progress, cancel and retry | **in progress** — `XONHO-0007` landed the first slice: single-object download and open-with-the-system; uploads and the queue remain |
-| **M3** | Object operations, safe subset first — create folder, delete with a counted confirmation, properties, presigned URLs | not started |
+| **M3** | Object operations, safe subset first — create folder, delete with a counted confirmation, properties, presigned URLs | **in progress** — `XONHO-0021` landed single-object delete with the named-key confirmation and the marker-aware Undo; bulk, folders, properties and presigned URLs remain |
 | **M4** | Ship v0.1 — installers for both platforms, a README with a recording, public announcement | not started |
 | **M5** | Extras — S3-compatible endpoints as a supported configuration, sync, versions | not started |
 | **M6** | Reach — Linux, then the CLI crate over the same core | not started |
@@ -85,6 +85,12 @@ that only that arrangement produced. The full reasoning is in
 |---|---|---|
 | `XONHO-0007` | Downloading one object to a chosen folder, and opening one with the system's own application via a bounded cache — progress, cancel, no partial files, deterministic key→filename mapping (ADR-0004) | landed, awaiting live acceptance |
 | `XONHO-0020` | Sending one local file, with the no-clobber guarantee made by the service (`If-None-Match`) rather than by a check — replace/keep-both/abandon, cancel, and an up-front refusal above the single-request size | landed, awaiting live acceptance |
+
+## M3 so far
+
+| Change | Delivers | State |
+|---|---|---|
+| `XONHO-0021` | Deleting one object through a named-key confirmation, with Undo offered exactly when the delete's own response reports a marker — and a refused undo that names `s3:DeleteObjectVersion` | landed, awaiting live acceptance |
 
 ## What this project will not do
 

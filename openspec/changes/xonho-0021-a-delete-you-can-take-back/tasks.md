@@ -124,7 +124,15 @@
 
 ## 4. Reader-facing documents, in this change
 
-- [ ] 4.1 README, roadmap, requirements-status [dispatch: main]
+- [x] 4.1 README, roadmap, requirements-status [dispatch: main]
+      - Done in `main` (2026-08-25). README's bullet leads with the two-act
+        rule and the proofed Undo; roadmap opens an "M3 so far" table in the
+        commit that makes it true; requirements-status opens §4.5 with four
+        rows — the three `[M]` plus the marker-undo `[S]`, listed because it
+        is built and a done `[S]` unlisted would make the section read
+        emptier than it is. The single-object delete row is **partial** with
+        the counted confirmation explicitly assigned to bulk, where a
+        mistake multiplies. Counts by the script.
   - Paths: `README.md`, `docs/roadmap.md`, `docs/requirements-status.md`
   - Done criteria: README says an object can be deleted, that it takes two
     acts, and that Undo appears exactly when the bucket versions; roadmap

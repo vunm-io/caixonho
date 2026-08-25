@@ -52,6 +52,12 @@ Working today:
   only way an object here is ever overwritten. An endpoint that will not
   make that promise says so instead of quietly proceeding. Files above 5 GiB
   are refused up front — those need multipart, which is not built yet.
+- **Deletes an object only after asking twice** — the action opens a
+  confirmation naming the exact key, and only the confirmation deletes. On a
+  bucket that keeps versions, the outcome says a delete marker was placed and
+  offers **Undo**, which restores the object exactly; on one that does not,
+  it says plainly that the object is gone. The Undo appears only when the
+  service's own response proves it exists — never as decoration.
 - Downloads an object to a folder you choose, and **opens** one with whatever
   your machine already opens that kind of file with — the app renders no
   format itself; it downloads to a cache it owns
@@ -67,9 +73,9 @@ Working today:
   instead of a description. The file is bounded and rolls daily; `CAIXONHO_LOG`
   turns the detail up for an investigation. No secret is ever written to it.
 
-Not there yet: uploading folders, multipart for large files, the transfer
-queue, previewing an object without downloading it, sorting or searching a
-listing,
+Not there yet: bulk and folder deletion, uploading folders, multipart for
+large files, the transfer queue, previewing an object without downloading it,
+sorting or searching a listing,
 and signing in to IAM Identity Center from the app rather than through the AWS
 CLI. Those are the next changes — see [`docs/planned-changes.md`](docs/planned-changes.md),
 and [`docs/requirements-status.md`](docs/requirements-status.md) for every
