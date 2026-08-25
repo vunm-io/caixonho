@@ -111,6 +111,44 @@ context-menu Copy on the row (which the connection list already has a
 right-click menu for, so the affordance exists). §4.6 quality-of-life is
 where it belongs.
 
+### The encrypted vault question, parked with its numbers (2026-08-25)
+
+The owner proposed it while meeting the keychain prompts: keep secrets in a
+vault this application encrypts, hold the vault key in **one** keychain
+item, decrypt into memory on first use. One grant would then cover every
+connection instead of one per connection.
+
+`XONHO-0022` did the cheap half — reading each secret once per run — so
+that this decision can be made against a measurement rather than an
+irritation. **What is left to learn is whether one prompt per connection
+per run is tolerable.** If it is, the vault buys a small amount for a large
+surface; if it is not, it has evidence behind it.
+
+The design question that decides the shape, since it is the one that is
+easy to answer badly — **where does the vault key live?**
+
+| Vault key lives | Cost |
+|---|---|
+| A master password the user types | 1Password's own answer, and it means typing a password every launch — which is what the owner was trying to stop doing |
+| A file on disk, unprotected | Not encryption but obfuscation: anything running as the user reads it. Strictly worse than the keychain |
+| **One keychain item** | The proposal. One grant instead of N, and the prompt cost falls to once per launch |
+| Touch ID via LocalAuthentication | Needs an Apple-issued signing identity, and prompts on *every* access by design |
+
+Row three is the live one. Two things it costs that the keychain does not:
+key derivation, an AEAD and a file format this project would own and would
+have to get right; and a migration for the credentials already stored.
+Neither is exotic — decrypting into memory is ordinary practice — but both
+are ours to be correct about, where the keychain's are Apple's.
+
+One requirement needs re-reading rather than assuming, and it is not the
+obvious one. `stored-credentials` says secrets SHALL NOT be *written* to a
+configuration file, log or report — an encrypted vault is not plaintext, so
+the wording survives. What does not survive untouched is `lib.rs`'s
+invariant, *"secrets reach the OS credential store and nothing else"*: with
+a vault, what reaches the credential store is the key. That is a real
+change to a stated rule, and it belongs in the proposal that does it rather
+than being noticed afterwards.
+
 ### Opening a connection re-runs `credential_process` every time (2026-08-25)
 
 **This supersedes the 2026-08-23 note below, which guessed wrong.** That note

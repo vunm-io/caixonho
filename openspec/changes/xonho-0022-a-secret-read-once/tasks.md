@@ -85,8 +85,20 @@
 
 ## 3. Reader-facing documents
 
-- [ ] 3.1 requirements-status, and the parked vault question
+- [x] 3.1 requirements-status, and the parked vault question
       [dispatch: main]
+      - Done in `main` (2026-08-25). The §4.1 row stays **done** and gains
+        the once-per-run note — where a secret lives did not change, so the
+        state should not either. No count movement, which the script
+        confirms.
+      - The vault section carries the four candidate homes with what each
+        costs, and one thing worth more than the table: the requirement that
+        an encrypted vault would actually break is **not** the obvious one.
+        `stored-credentials` forbids *writing* secrets to files, and
+        ciphertext is not plaintext — but `lib.rs`'s invariant says secrets
+        reach the OS credential store *and nothing else*, and under a vault
+        what reaches it is the key. Named now so the proposal that does it
+        starts from there rather than discovering it late.
   - Paths: `docs/requirements-status.md`, `docs/planned-changes.md`
   - Done criteria: the §4.1 keychain row notes that the store is consulted
     once per run; `planned-changes.md` gains the **encrypted-vault question**
@@ -98,8 +110,10 @@
 
 ## 4. Close-out
 
-- [ ] 4.1 `cargo fmt --all`, `cargo clippy --workspace --all-targets --
+- [x] 4.1 `cargo fmt --all`, `cargo clippy --workspace --all-targets --
       -D warnings`, `cargo test --workspace` green [dispatch: main]
+      - Done in `main` (2026-08-25): fmt checked, clippy zero at
+        `-D warnings`, 342 core + 63 window green (8 + 1 ignored).
   - Paths: whole workspace
   - Done criteria: all three exit zero
   - Verification: the commands themselves
@@ -120,7 +134,35 @@
   - Verification: the count, and the log's `connection opened` lines showing
     more opens than prompts
 
-- [ ] 4.4 Close-out review per `AGENTS.md` [dispatch: main]
+- [x] 4.4 Close-out review per `AGENTS.md` [dispatch: main]
+      - Run 2026-08-25, before the live check as with the last four.
+      - **Q1: one departure, and it is a narrowing of the claim rather than
+        of the work.** The proposal opened by describing the owner's
+        complaint — prompts on every switch — and this change reduces
+        *reads*, which reduces the OS's opportunities to ask but does not
+        control whether it does. The measurement in `planned-changes.md`
+        the same day found the 4-second irritant is a different path
+        entirely (`credential_process`, which this never touches). Both
+        facts are now written where a reader meets them; neither was
+        absorbed.
+      - **Q3: checked, and it came out clean** — `Keyring` is constructed
+        in exactly one place and only inside `Remembering`, so no path
+        reaches the keychain unmemoized. Grepped rather than assumed.
+      - **Q4, the honest gap:** every assertion here is about the *double*
+        being asked once. Whether the operating system therefore prompts
+        less is a claim no unit test can make, which is what 4.3 exists for
+        — and 4.3 is written so that "still one prompt per switch" is a
+        recorded finding rather than a silent disappointment.
+      - **Q2 both directions:** requirements-status §4.1 keeps its **done**
+        state deliberately — where a secret lives did not change, so moving
+        the row would have been the drift, not the fix. Rows either side
+        untouched and still true. `CredentialSecret`'s doc was the one piece
+        of prose this change made false, and correcting it was task 2.1
+        rather than an afterthought.
+      - **Q5:** the vault question is parked with its four options, its two
+        real costs, and the requirement it would actually break — which is
+        `lib.rs`'s invariant, not the spec sentence everyone would check
+        first.
   - Paths: this change
   - Done criteria: the five questions answered and recorded here, question
     2 read the wide way.
