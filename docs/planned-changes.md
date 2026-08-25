@@ -111,16 +111,71 @@ context-menu Copy on the row (which the connection list already has a
 right-click menu for, so the affordance exists). §4.6 quality-of-life is
 where it belongs.
 
-### A finding parked here so it is not lost (2026-08-23)
+### Opening a connection re-runs `credential_process` every time (2026-08-25)
+
+**This supersedes the 2026-08-23 note below, which guessed wrong.** That note
+blamed R2's slowness on a directory-bucket listing burning a timeout. It is
+not that. Measured today across 36 connection opens:
+
+| Connection kind | open → listed |
+|---|---|
+| Stored credential (secret from the keychain) | 0.06 – 0.3s |
+| Profile using `credential_process` | **4.3 – 8.8s** |
+
+And the credential process itself, timed directly: **3.99s warm, 16.36s
+cold.** That is the whole difference. Both slow profiles resolve through a
+script that shells out to the 1Password CLI, and `Session::open` builds a
+fresh SDK config on every open — so every connection click pays for a
+subprocess, a vault lookup, and its round trip again.
+
+**`XONHO-0022` does not fix this**, and that is worth saying loudly because
+the two problems look alike. That change caches the *keychain* read, which
+is the path already running in 0.1s. The 4-second path is the SDK's own
+provider chain, which this application never sees.
+
+The shape underneath both is one thing: `open()` rebuilds everything from
+nothing each time. Remembering the opened connection per name would fix
+both at once — and it is not free, because `Session::open` deliberately
+resets the store, the scheduler and the credentials id, and `XONHO-0019`'s
+switching guarantees and the capability model both lean on that reset. So:
+a real change with a real design question, not a tweak.
+
+Evidence to gather first: whether the AWS SDK's own provider chain would
+cache the process credentials if the config outlived one open. If it would,
+the fix is smaller than it looks.
+
+### The superseded note (2026-08-23), kept
 
 Listing the R2 connection took **12.3 seconds for 2 buckets** (log,
 2026-08-23: `connection opened` 07:03:01.6 → `listed the account` 07:03:13.9)
 while the same build listed an AWS account in 0.7s and stored-credential
 connections in ~60ms. Suspicion, unverified: the parallel directory-bucket
 listing against an endpoint that does not implement it may be burning a
-timeout before the combine — `XONHO-0016` relieved exactly this case for
-*errors*, but a slow non-answer is not an error until it times out. Worth a
-look when anything next touches the listing path; measure before deciding.
+timeout before the combine.
+
+Kept rather than deleted, because the *shape* of the mistake is worth more
+than the guess was: it reached for the most interesting explanation
+available — a subtle protocol interaction this project had already written
+a change about — when the answer was a four-second subprocess nobody had
+timed. The note even said "measure before deciding", and then two days
+passed before anyone did.
+
+### "From ~/.aws" says where, and is read as what (2026-08-25)
+
+The sidebar groups profile connections under **From ~/.aws**, which is
+true: that is the file they are read from. The owner pointed out what it
+*reads* as — `r2-caixonho` sits under it, and is Cloudflare R2, not AWS.
+
+The label describes the source and the reader hears the service. Not a
+wrong statement, but a misleading one, which is the failure mode this
+project spends most of its care on elsewhere. The material to do better is
+already in hand: a profile carrying an `endpoint_url` is by definition not
+talking to AWS, and `XONHO-0016` already taught the bucket list to name
+what a thing is rather than let its shape imply it.
+
+§4.6, with the copy gap and the declined-prompt severity — three findings
+from one sitting, all of them about the interface saying something other
+than what is true.
 
 Credential entry moved ahead of browsing on 2026-08-19, reversing the earlier
 decision. The argument for browsing first was that a bucket list alone is a dead
