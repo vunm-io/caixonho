@@ -42,6 +42,7 @@ branch nobody can land.
 | `XONHO-0020` | Uploading one file, and never silently replacing an object | §4.4 | M2 |
 | `XONHO-0021` | Deleting one object deliberately, with the undo the service already offers | §4.5 | M3 |
 | `XONHO-0022` | Reading a stored secret once per run instead of once per connection open | §4.1 | M1 |
+| `XONHO-0023` | Keeping a connection open instead of rebuilding it on every click | §4.1 | M1 |
 
 `XONHO-0008` depends on `XONHO-0007`: a preview is the same download path
 asking for the first N KB instead of the whole object.
