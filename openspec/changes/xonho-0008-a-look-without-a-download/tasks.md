@@ -68,7 +68,16 @@
 
 ## 3. The session previews
 
-- [ ] 3.1 `Session::spawn_preview` [dispatch: main]
+- [x] 3.1 `Session::spawn_preview` [dispatch: main]
+      - Done in `main` (2026-08-25), red-covered by seven tests. The double
+        gained a get counter so the two no-fetch promises are assertions
+        rather than prose: the oversized image and the unserved kind both
+        show `gets_served() == 0`. The lying stream is cut at the gate with
+        an honest cause naming the way out.
+      - Logging follows the nothing-moved rule: `NoPreview` and
+        `ImageTooLarge` write no line; `Binary` logs the page it moved to
+        find that out; the no-key test covers the text path at the most
+        detailed level.
   - Paths: `crates/caixonho-core/src/session.rs`,
     `crates/caixonho-core/src/preview.rs`,
     `crates/caixonho-core/src/diagnostics.rs`

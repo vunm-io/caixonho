@@ -247,6 +247,9 @@ pub mod double {
         /// assert the *right* marker was removed rather than merely that
         /// something was.
         removed_markers: std::sync::Mutex<Vec<String>>,
+        /// How many object reads were served, so a test can assert a path
+        /// that promises not to fetch really fetched nothing.
+        gets: std::sync::atomic::AtomicU32,
     }
 
     enum Outcome {
@@ -311,6 +314,7 @@ pub mod double {
                 writes: Writes::Accepts,
                 removals: Removals::Unversioned,
                 removed_markers: std::sync::Mutex::new(Vec::new()),
+                gets: std::sync::atomic::AtomicU32::new(0),
             }
         }
 
@@ -465,6 +469,11 @@ pub mod double {
             double
         }
 
+        /// How many object reads this double has served.
+        pub fn gets_served(&self) -> u32 {
+            self.gets.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
         /// The version ids `remove_marker` has been called with.
         pub fn markers_removed(&self) -> Vec<String> {
             self.removed_markers
@@ -524,6 +533,7 @@ pub mod double {
                 writes: Writes::Accepts,
                 removals: Removals::Unversioned,
                 removed_markers: std::sync::Mutex::new(Vec::new()),
+                gets: std::sync::atomic::AtomicU32::new(0),
             }
         }
     }
@@ -673,6 +683,7 @@ pub mod double {
         /// a test choosing what a read serves should not have to decide what
         /// a listing does.
         async fn get_object(&self, _bucket: &str, _key: &str) -> Result<super::ObjectContent> {
+            self.gets.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let (chunks, then): (&[Vec<u8>], Option<fn() -> Error>) = match &self.content {
                 Content::Unscripted => {
                     return Err(Error::Unexpected {

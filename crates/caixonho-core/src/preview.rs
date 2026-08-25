@@ -89,6 +89,48 @@ pub fn text_of(bytes: &[u8], truncated: bool) -> TextVerdict {
     }
 }
 
+/// One page of text — what a ranged preview fetches.
+pub const TEXT_PREVIEW_PAGE: u64 = 64 * 1024;
+
+/// The largest image the preview will fetch whole.
+///
+/// A constant, deliberately not a setting: the gate is a statement about
+/// honesty (a truncated raster does not decode, so an image preview *is* a
+/// full download), and a knob would make that negotiable.
+pub const IMAGE_PREVIEW_LIMIT: u64 = 20 * 1024 * 1024;
+
+/// How one preview ended.
+#[derive(Debug)]
+pub enum PreviewOutcome {
+    /// A first page of text, with the numbers for the truncation line.
+    Text {
+        /// The decoded page.
+        content: String,
+        /// Bytes fetched and shown.
+        shown: u64,
+        /// The whole object's size, when the ranged response named it.
+        total: Option<u64>,
+    },
+    /// The name said text; the bytes said otherwise.
+    Binary,
+    /// A whole raster image, ready for the window to decode and draw.
+    Image {
+        /// The encoded file, in memory and nowhere else.
+        bytes: Vec<u8>,
+        /// Which decoder the window should hand it to.
+        format: RasterKind,
+    },
+    /// The image is over the gate; nothing was fetched.
+    ImageTooLarge {
+        /// The listed size that refused it.
+        size: u64,
+    },
+    /// No preview serves this kind; nothing was fetched.
+    NoPreview,
+    /// The fetch failed, with its classified cause.
+    Failed(crate::error::Error),
+}
+
 #[cfg(test)]
 mod tests {
     //! `object-preview` spec, "A text-like object previews by its first

@@ -502,6 +502,19 @@ pub(crate) fn undo_settled(bucket: &str, cause: Option<&crate::error::Error>) {
     }
 }
 
+/// What one preview came to (`XONHO-0008`).
+///
+/// Logged only when bytes moved or a fetch failed. A refused kind and an
+/// over-the-gate image fetch nothing — the same nothing-moved rule the
+/// taken-key question follows — so writing a line for them would put events
+/// in the log that never happened.
+pub(crate) fn preview_settled(bucket: &str, bytes: u64, cause: Option<&crate::error::Error>) {
+    match cause {
+        None => tracing::info!(bucket, bytes, "previewed an object"),
+        Some(error) => tracing::warn!(bucket, cause = %error, "preview failed"),
+    }
+}
+
 /// How a transfer settled, for [`transfer_settled`].
 pub(crate) enum TransferSettled<'a> {
     /// Complete, at the destination.
@@ -1301,6 +1314,39 @@ mod tests {
         assert!(log.contains("finance"), "the bucket is the scope:\n{log}");
         assert_undisclosed(&log, KEY, "the object's key");
         assert_undisclosed(&log, "severance-list", "the key's filename half");
+    }
+
+    /// The preview direction of the no-inventory rule.
+    #[test]
+    fn a_preview_logs_its_outcome_and_never_the_key() {
+        const KEY: &str = "quarterly/acquisition-target.txt";
+
+        let (log, ()) = recording(everything(), || {
+            runtime().block_on(async {
+                let session = session(Arc::new(SecretStoreDouble::open()));
+                let credentials = session.credentials_changed("work");
+                session.install_object_store(
+                    Arc::new(crate::store::double::StoreDouble::serving_chunks(vec![
+                        b"a page of text".to_vec(),
+                    ])),
+                    credentials,
+                );
+
+                let (tell, told) = tokio::sync::oneshot::channel();
+                session.spawn_preview("finance".to_owned(), KEY.to_owned(), 14, move |o| {
+                    let _ = tell.send(o);
+                });
+                told.await.expect("delivered");
+            });
+        });
+
+        assert!(
+            log.contains("previewed an object"),
+            "the outcome is recorded:\n{log}"
+        );
+        assert!(log.contains("finance"), "the bucket is the scope:\n{log}");
+        assert_undisclosed(&log, KEY, "the object's key");
+        assert_undisclosed(&log, "acquisition-target", "the key's filename half");
     }
 
     #[test]

@@ -25,6 +25,7 @@ use crate::sso::{Abandon, DeviceAuthorization, RealTime, SignInLocation, SignInO
 use crate::sso_adapter::SsoOidcSignIn;
 use crate::store::ObjectStore;
 use crate::tls::HttpStack;
+use crate::preview::{self, PreviewOutcome};
 use crate::transfer::{self, Cancel, Collision, DownloadOutcome, UploadOutcome};
 use crate::types::{ConnectionId, Cursor, Location, Page};
 
@@ -730,6 +731,73 @@ impl Session {
         });
     }
 
+    /// Preview one object, off the caller's thread (`XONHO-0008`).
+    ///
+    /// Routes by the key's kind. Text fetches one ranged page and lets the
+    /// bytes have the last word; an image is gated against `listed_size`
+    /// **before** any request leaves, then gathered with the gate enforced
+    /// during the stream too — the bytes are not trusted to match the
+    /// listing. A kind the preview does not serve fetches nothing at all.
+    ///
+    /// `deliver` is called exactly once, on a runtime thread. Nothing on
+    /// this path touches the disk.
+    pub fn spawn_preview<F>(&self, bucket: String, key: String, listed_size: u64, deliver: F)
+    where
+        F: FnOnce(PreviewOutcome) + Send + 'static,
+    {
+        let store = self
+            .store
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        self.runtime.spawn(async move {
+            let Some(store) = store else {
+                deliver(PreviewOutcome::Failed(Error::MissingConfiguration {
+                    profile: None,
+                    detail: "no connection is open to preview through".into(),
+                }));
+                return;
+            };
+
+            let outcome = match preview::kind_of(&key) {
+                preview::PreviewKind::None => {
+                    // Nothing moved; nothing logged.
+                    deliver(PreviewOutcome::NoPreview);
+                    return;
+                }
+                preview::PreviewKind::Text => {
+                    text_preview(&*store, &bucket, &key).await
+                }
+                preview::PreviewKind::Image(format) => {
+                    if listed_size > preview::IMAGE_PREVIEW_LIMIT {
+                        // Refused by the listing, before any request leaves.
+                        deliver(PreviewOutcome::ImageTooLarge { size: listed_size });
+                        return;
+                    }
+                    image_preview(&*store, &bucket, &key, format).await
+                }
+            };
+
+            match &outcome {
+                PreviewOutcome::Failed(cause) => {
+                    diagnostics::preview_settled(&bucket, 0, Some(cause));
+                }
+                PreviewOutcome::Text { shown, .. } => {
+                    diagnostics::preview_settled(&bucket, *shown, None);
+                }
+                PreviewOutcome::Image { bytes, .. } => {
+                    diagnostics::preview_settled(&bucket, bytes.len() as u64, None);
+                }
+                // Binary still moved a page to find that out.
+                PreviewOutcome::Binary => {
+                    diagnostics::preview_settled(&bucket, preview::TEXT_PREVIEW_PAGE, None);
+                }
+                _ => {}
+            }
+            deliver(outcome);
+        });
+    }
+
     /// Save a stored credential, off the caller's thread.
     ///
     /// Both halves: the name, region and access key id to the configuration
@@ -881,6 +949,69 @@ pub enum UndoOutcome {
     Restored,
     /// Failed — the marker still stands, and nothing claims otherwise.
     Failed(Error),
+}
+
+/// The text half of a preview: one ranged page, then the bytes decide.
+async fn text_preview(store: &dyn ObjectStore, bucket: &str, key: &str) -> PreviewOutcome {
+    let mut head = match store
+        .get_object_head(bucket, key, preview::TEXT_PREVIEW_PAGE)
+        .await
+    {
+        Ok(head) => head,
+        Err(cause) => return PreviewOutcome::Failed(cause),
+    };
+    let mut gathered: Vec<u8> = Vec::new();
+    loop {
+        match head.body.next_chunk().await {
+            Ok(Some(chunk)) => gathered.extend_from_slice(&chunk),
+            Ok(None) => break,
+            Err(cause) => return PreviewOutcome::Failed(cause),
+        }
+    }
+    let shown = gathered.len() as u64;
+    // The cut happened when the object goes on past what was fetched —
+    // which is exactly when the tail character may have been split.
+    let truncated = head.total.is_some_and(|total| total > shown);
+    match preview::text_of(&gathered, truncated) {
+        preview::TextVerdict::Text(content) => PreviewOutcome::Text {
+            content,
+            shown,
+            total: head.total,
+        },
+        preview::TextVerdict::Binary => PreviewOutcome::Binary,
+    }
+}
+
+/// The image half: the whole object into memory, with the gate enforced
+/// during the gather — the stream is not trusted to match the listing.
+async fn image_preview(
+    store: &dyn ObjectStore,
+    bucket: &str,
+    key: &str,
+    format: crate::preview::RasterKind,
+) -> PreviewOutcome {
+    let mut content = match store.get_object(bucket, key).await {
+        Ok(content) => content,
+        Err(cause) => return PreviewOutcome::Failed(cause),
+    };
+    let mut bytes: Vec<u8> = Vec::new();
+    loop {
+        match content.body.next_chunk().await {
+            Ok(Some(chunk)) => {
+                bytes.extend_from_slice(&chunk);
+                if bytes.len() as u64 > preview::IMAGE_PREVIEW_LIMIT {
+                    return PreviewOutcome::Failed(Error::Unexpected {
+                        detail: "the object outgrew its listing mid-read and passed the \
+                                 preview limit — download it to open it"
+                            .into(),
+                    });
+                }
+            }
+            Ok(None) => break,
+            Err(cause) => return PreviewOutcome::Failed(cause),
+        }
+    }
+    PreviewOutcome::Image { bytes, format }
 }
 
 /// What one or more conditional attempts came to, inside `spawn_upload`.
@@ -1989,5 +2120,133 @@ mod tests {
             }
             other => panic!("expected the named refusal, got {other:?}"),
         }
+    }
+
+    // ---- Previewing (XONHO-0008) ----
+
+    fn previewing(
+        session: &Session,
+        key: &str,
+        listed: u64,
+    ) -> tokio::sync::oneshot::Receiver<PreviewOutcome> {
+        let (tell, told) = tokio::sync::oneshot::channel();
+        session.spawn_preview("reports".to_owned(), key.to_owned(), listed, move |o| {
+            let _ = tell.send(o);
+        });
+        told
+    }
+
+    #[tokio::test]
+    async fn a_text_preview_shows_the_first_page_with_both_numbers() {
+        let fixture = Fixture::new("preview-text");
+        let session = fixture.session("work");
+        let credentials = session.credentials_changed("work");
+        // 100 KB of text: bigger than the page, so the line has numbers.
+        session.install_object_store(
+            Arc::new(StoreDouble::serving_chunks(vec![vec![b'a'; 100_000]])),
+            credentials,
+        );
+
+        match previewing(&session, "big.log", 100_000).await.expect("delivered") {
+            PreviewOutcome::Text {
+                content,
+                shown,
+                total,
+            } => {
+                assert_eq!(shown, crate::preview::TEXT_PREVIEW_PAGE);
+                assert_eq!(content.len() as u64, shown);
+                assert_eq!(total, Some(100_000), "the whole object's size, for the line");
+            }
+            other => panic!("expected Text, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_binary_wearing_a_text_name_is_called_binary() {
+        let fixture = Fixture::new("preview-binary");
+        let session = fixture.session("work");
+        let credentials = session.credentials_changed("work");
+        session.install_object_store(
+            Arc::new(StoreDouble::serving_chunks(vec![b"MZ\x00\x01real bytes".to_vec()])),
+            credentials,
+        );
+
+        assert!(matches!(
+            previewing(&session, "notes.txt", 14).await.expect("delivered"),
+            PreviewOutcome::Binary
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_small_image_arrives_whole_with_its_format() {
+        let fixture = Fixture::new("preview-image");
+        let session = fixture.session("work");
+        let credentials = session.credentials_changed("work");
+        session.install_object_store(
+            Arc::new(StoreDouble::serving_chunks(vec![b"fake png bytes".to_vec()])),
+            credentials,
+        );
+
+        match previewing(&session, "photo.png", 14).await.expect("delivered") {
+            PreviewOutcome::Image { bytes, format } => {
+                assert_eq!(bytes, b"fake png bytes");
+                assert_eq!(format, crate::preview::RasterKind::Png);
+            }
+            other => panic!("expected Image, got {other:?}"),
+        }
+    }
+
+    /// The gate holds *before* any request: an oversized image is refused by
+    /// its listing, and the double proves no read was served.
+    #[tokio::test]
+    async fn an_oversized_image_is_refused_without_a_fetch() {
+        let fixture = Fixture::new("preview-oversized");
+        let session = fixture.session("work");
+        let credentials = session.credentials_changed("work");
+        let double = Arc::new(StoreDouble::serving_chunks(vec![b"never read".to_vec()]));
+        session.install_object_store(double.clone(), credentials);
+
+        let size = crate::preview::IMAGE_PREVIEW_LIMIT + 1;
+        match previewing(&session, "huge.png", size).await.expect("delivered") {
+            PreviewOutcome::ImageTooLarge { size: said } => assert_eq!(said, size),
+            other => panic!("expected ImageTooLarge, got {other:?}"),
+        }
+        assert_eq!(double.gets_served(), 0, "refused by the listing alone");
+    }
+
+    /// The listing said small; the stream disagreed. The gather stops at the
+    /// gate with an honest cause instead of trusting either side.
+    #[tokio::test]
+    async fn a_lying_stream_is_cut_at_the_gate() {
+        let fixture = Fixture::new("preview-lying");
+        let session = fixture.session("work");
+        let credentials = session.credentials_changed("work");
+        let over = usize::try_from(crate::preview::IMAGE_PREVIEW_LIMIT).unwrap() + 1;
+        session.install_object_store(
+            Arc::new(StoreDouble::serving_chunks(vec![vec![0u8; over]])),
+            credentials,
+        );
+
+        match previewing(&session, "liar.png", 1_000).await.expect("delivered") {
+            PreviewOutcome::Failed(Error::Unexpected { detail }) => {
+                assert!(detail.contains("outgrew its listing"), "{detail}");
+            }
+            other => panic!("expected the honest cut, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unserved_kind_fetches_nothing() {
+        let fixture = Fixture::new("preview-none");
+        let session = fixture.session("work");
+        let credentials = session.credentials_changed("work");
+        let double = Arc::new(StoreDouble::serving_chunks(vec![b"never".to_vec()]));
+        session.install_object_store(double.clone(), credentials);
+
+        assert!(matches!(
+            previewing(&session, "archive.zip", 10).await.expect("delivered"),
+            PreviewOutcome::NoPreview
+        ));
+        assert_eq!(double.gets_served(), 0);
     }
 }
