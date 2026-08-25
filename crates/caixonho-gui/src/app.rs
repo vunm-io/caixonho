@@ -4549,6 +4549,13 @@ mod tests {
                 },
             ),
             (
+                "account-09-error-credential-store",
+                caixonho_core::Error::CredentialStore {
+                    connection: "a-connection-with-a-name".into(),
+                    problem: caixonho_core::CredentialStoreProblem::Refused,
+                },
+            ),
+            (
                 "account-08-error-network",
                 caixonho_core::Error::Network {
                     detail: "connection refused".into(),

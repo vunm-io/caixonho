@@ -114,6 +114,7 @@ pub(crate) fn inline_message(
     cx: &App,
 ) -> AnyElement {
     h_flex()
+        .debug_selector(|| "inline-message".into())
         .items_start()
         .gap(space::ROW)
         .p(space::CARD)
@@ -126,7 +127,15 @@ pub(crate) fn inline_message(
         .child(icon_tile(icon, tile::SM, tint, false))
         .child(
             v_flex()
+                .debug_selector(|| "inline-message-body".into())
                 .flex_1()
+                // `min_w_0`, and it is load-bearing: a flex child will not
+                // shrink below its own text by default, so a long cause —
+                // one naming a connection, say — pushed this column past the
+                // 560px cap above and the sentence ran out through the
+                // panel's own border. `refusal_line` learned this once and
+                // this shared component had not.
+                .min_w_0()
                 .gap(space::TIGHT)
                 .child(
                     div()
@@ -209,6 +218,62 @@ mod tests {
         cx.update(|window, cx| window.draw(cx).clear(cx));
         cx.debug_bounds("empty-state")
             .expect("the empty state was never laid out at all")
+    }
+
+    /// The panel's own border must contain its text.
+    ///
+    /// Reported by the owner on 2026-08-25 with a screenshot: the border cut
+    /// straight through the sentence. A flex child does not shrink below its
+    /// own text by default, so a long cause pushed the body column past the
+    /// panel's `max_w` and the words carried on outside it. `refusal_line`
+    /// had already learned this; this shared component had not.
+    ///
+    /// Measured rather than eyeballed — the panel's bounds alone would not
+    /// have caught it, since `max_w` clamps the panel while the text
+    /// overflows *out of* it.
+    #[gpui::test]
+    fn a_long_cause_stays_inside_the_panel(cx: &mut TestAppContext) {
+        struct Long;
+        impl Render for Long {
+            fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                v_flex().size_full().child(inline_message(
+                    IconName::TriangleAlert,
+                    // The owner's actual error, which is what overflowed.
+                    "the credential store refused the request — allow caixonho to use it \
+                     and try again (connection `a-connection-with-a-name`)",
+                    "The system keychain did not hand back the secret for \
+                     `a-connection-with-a-name`. If a prompt appeared, it may have been \
+                     declined.",
+                    cx.theme().danger,
+                    div().child("Retry"),
+                    cx,
+                ))
+            }
+        }
+
+        cx.update(gpui_component::init);
+        let (_, cx) = cx.add_window_view(|_, _| Long);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let panel = cx
+            .debug_bounds("inline-message")
+            .expect("the panel was laid out");
+        let body = cx
+            .debug_bounds("inline-message-body")
+            .expect("the body was laid out");
+
+        assert!(
+            body.right() <= panel.right(),
+            "the sentence runs out through the panel's border: body ends at {:?}, \
+             panel ends at {:?}",
+            body.right(),
+            panel.right()
+        );
+        assert!(
+            panel.size.width <= px(560.),
+            "the panel outgrew its own cap: {:?}",
+            panel.size.width
+        );
     }
 
     #[gpui::test]
