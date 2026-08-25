@@ -8,7 +8,13 @@
 
 ## 1. Kind and truth, as pure functions
 
-- [ ] 1.1 The kind by extension, the truth by content [dispatch: main]
+- [x] 1.1 The kind by extension, the truth by content [dispatch: main]
+      - Done in `main` (2026-08-25), red first: five tests on `todo!()`
+        bodies. `RasterKind` is core's own enum rather than
+        `gpui::ImageFormat` — this crate names no UI type, and the GUI maps
+        at its edge. The truncation tolerance leans on `from_utf8`'s own
+        distinction: `error_len() == None` is "ended mid-character", and
+        only that shape, only when the caller says a cut happened.
   - Paths: `crates/caixonho-core/src/preview.rs` (new module),
     `crates/caixonho-core/src/lib.rs`
   - Done criteria: `kind_of(key) -> PreviewKind` (`Text | Image { format } |
@@ -23,8 +29,13 @@
 
 ## 2. The port reads a head
 
-- [ ] 2.1 `ObjectStore::get_object_head`, ranged, with the double
+- [x] 2.1 `ObjectStore::get_object_head`, ranged, with the double
       [dispatch: main]
+      - Done in `main` (2026-08-25), red first (compile-red plus three
+        tests). The double's head is the first N of its scripted content
+        with the content's size as the total — the relationship the real
+        service maintains, so one scripted body keeps both reads consistent
+        for free.
   - Paths: `crates/caixonho-core/src/store.rs`
   - Done criteria: `get_object_head(bucket, key, bytes) ->
     Result<ObjectHead>` where `ObjectHead { total: Option<u64>, body:
@@ -34,7 +45,16 @@
     first.
   - Verification: `cargo test -p caixonho-core store::`
 
-- [ ] 2.2 The adapter maps it to a ranged `GetObject` [dispatch: main]
+- [x] 2.2 The adapter maps it to a ranged `GetObject` [dispatch: main]
+      - Done in `main` (2026-08-25). `total` from `content_range`'s
+        after-slash half; `*` or absent → `None`. **One reading tightened
+        from the plan:** the 416 arm answers `total: Some(0)` rather than
+        parsing the 416's own header — a range starting at byte 0 is
+        unsatisfiable in exactly one case, the empty object, so the total is
+        known by implication and the error-path header never needs
+        touching. `range_unsatisfiable()` sits beside the 412 and 301
+        readers on `SdkFailure`. Live test `this_machine_reading_a_head`
+        prints both numbers.
   - Paths: `crates/caixonho-core/src/adapter.rs`
   - Done criteria: `range: bytes=0-{n-1}`; `total` parsed from
     `content_range`'s `/total` half (absent or `*` → `None`); a 416

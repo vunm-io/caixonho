@@ -64,6 +64,7 @@ pub mod diagnostics;
 pub mod error;
 pub(crate) mod listing;
 pub mod outcome;
+pub mod preview;
 pub mod probe;
 pub mod profiles;
 pub mod session;

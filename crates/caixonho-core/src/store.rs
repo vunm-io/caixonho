@@ -99,6 +99,14 @@ pub trait ObjectStore: Send + Sync {
     /// the one that may run without a confirmation — it restores.
     async fn remove_marker(&self, bucket: &str, key: &str, version_id: &str) -> Result<()>;
 
+    /// Read the first `bytes` of one object (`XONHO-0008`).
+    ///
+    /// A ranged request, not a parameter dressing on [`Self::get_object`]:
+    /// the response shape differs — a range answer names the whole object's
+    /// size while delivering only the head, and that pair is exactly what an
+    /// honest truncation line needs.
+    async fn get_object_head(&self, bucket: &str, key: &str, bytes: u64) -> Result<ObjectHead>;
+
     /// Write one local file to `key` (`XONHO-0020`).
     ///
     /// `if_absent` decides whether the write is conditional. With
@@ -123,6 +131,24 @@ pub trait ObjectStore: Send + Sync {
         path: &std::path::Path,
         if_absent: IfAbsent,
     ) -> Result<PutOutcome>;
+}
+
+/// The first stretch of one object, with the size of the whole.
+pub struct ObjectHead {
+    /// The whole object's size, when the ranged response named it —
+    /// distinct from the head's own length, and the honest half of
+    /// "first 64 KiB *of 4.2 MiB*".
+    pub total: Option<u64>,
+    /// The head's bytes, pulled like any other body.
+    pub body: Box<dyn ObjectRead>,
+}
+
+impl std::fmt::Debug for ObjectHead {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ObjectHead")
+            .field("total", &self.total)
+            .finish_non_exhaustive()
+    }
 }
 
 /// What a delete came to.
@@ -611,6 +637,35 @@ pub mod double {
                 // under `ConditionUnsupported`, where the condition was never
                 // the question.
                 _ => super::PutOutcome::Created,
+            })
+        }
+
+        /// The head is the first `bytes` of the same scripted content, with
+        /// the content's full size as the total — which is exactly the
+        /// relationship the real service maintains, so a test that scripts
+        /// one body gets both reads consistent for free.
+        async fn get_object_head(
+            &self,
+            bucket: &str,
+            key: &str,
+            bytes: u64,
+        ) -> Result<super::ObjectHead> {
+            let mut content = self.get_object(bucket, key).await?;
+            let total = content.size;
+            let mut gathered: Vec<u8> = Vec::new();
+            while (gathered.len() as u64) < bytes {
+                match content.body.next_chunk().await? {
+                    Some(chunk) => gathered.extend_from_slice(&chunk),
+                    None => break,
+                }
+            }
+            gathered.truncate(usize::try_from(bytes).unwrap_or(usize::MAX));
+            Ok(super::ObjectHead {
+                total,
+                body: Box::new(ReadDouble {
+                    chunks: std::iter::once(gathered).collect(),
+                    then: None,
+                }),
             })
         }
 
@@ -1170,6 +1225,59 @@ mod tests {
             Err(Error::AccessDenied { iam_action }) => {
                 assert_eq!(iam_action, "s3:DeleteObjectVersion")
             }
+            other => panic!("expected AccessDenied, got {other:?}"),
+        }
+    }
+
+    /// `object-preview` spec — the port half of the truncation line: a head
+    /// delivers its stretch and the whole object's size, as a pair.
+    #[tokio::test]
+    async fn a_head_carries_its_stretch_and_the_whole_objects_size() {
+        let store: Box<dyn ObjectStore> = Box::new(StoreDouble::serving_chunks(vec![
+            b"0123456789".to_vec(),
+            b"abcdefghij".to_vec(),
+        ]));
+
+        let mut head = store
+            .get_object_head("reports", "big.log", 5)
+            .await
+            .expect("serves");
+        assert_eq!(
+            head.total,
+            Some(20),
+            "the whole object's size, not the head's"
+        );
+
+        let mut gathered = Vec::new();
+        while let Some(chunk) = head.body.next_chunk().await.expect("holds") {
+            gathered.extend_from_slice(&chunk);
+        }
+        assert_eq!(gathered, b"01234", "exactly the asked-for stretch");
+    }
+
+    #[tokio::test]
+    async fn a_head_of_a_small_object_is_the_whole_object() {
+        let store: Box<dyn ObjectStore> =
+            Box::new(StoreDouble::serving_chunks(vec![b"tiny".to_vec()]));
+
+        let mut head = store
+            .get_object_head("reports", "s.txt", 65536)
+            .await
+            .expect("serves");
+        assert_eq!(head.total, Some(4));
+        let mut gathered = Vec::new();
+        while let Some(chunk) = head.body.next_chunk().await.expect("holds") {
+            gathered.extend_from_slice(&chunk);
+        }
+        assert_eq!(gathered, b"tiny");
+    }
+
+    #[tokio::test]
+    async fn a_refused_head_names_the_get_permission() {
+        let store: Box<dyn ObjectStore> = Box::new(StoreDouble::get_refused());
+
+        match store.get_object_head("reports", "k.txt", 64).await {
+            Err(Error::AccessDenied { iam_action }) => assert_eq!(iam_action, "s3:GetObject"),
             other => panic!("expected AccessDenied, got {other:?}"),
         }
     }

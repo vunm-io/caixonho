@@ -28,7 +28,7 @@ use crate::connection::Connection;
 use crate::error::{Error, Result};
 use crate::listing;
 use crate::store::ObjectStore;
-use crate::store::{Deleted, IfAbsent, ObjectContent, ObjectRead, PutOutcome};
+use crate::store::{Deleted, IfAbsent, ObjectContent, ObjectHead, ObjectRead, PutOutcome};
 use crate::types::{
     AccountListing, Bucket, BucketKind, Cursor, Location, Object, Page, RefusedListing, Region,
 };
@@ -530,6 +530,50 @@ impl ObjectStore for S3ObjectStore {
                     region.as_ref(),
                 )
             })
+    }
+
+    async fn get_object_head(&self, bucket: &str, key: &str, bytes: u64) -> Result<ObjectHead> {
+        let region = self.region_learned_for(bucket);
+        let client = match &region {
+            Some(region) => self.client_for(region),
+            None => self.client.clone(),
+        };
+
+        let answer = client
+            .get_object()
+            .bucket(bucket)
+            .key(key)
+            .range(format!("bytes=0-{}", bytes.saturating_sub(1)))
+            .send()
+            .await;
+
+        match answer {
+            Ok(answer) => Ok(ObjectHead {
+                // "bytes 0-65535/4200000" — the total lives after the slash.
+                // `*` means the service declined to say, which is `None`.
+                total: answer
+                    .content_range()
+                    .and_then(|range| range.rsplit_once('/'))
+                    .and_then(|(_, total)| total.parse::<u64>().ok()),
+                body: Box::new(SdkRead { body: answer.body }),
+            }),
+            Err(error) => {
+                let failure = SdkFailure::from_sdk(&error);
+                // A range starting at byte 0 is unsatisfiable in exactly one
+                // case: the object is empty. So a 416 here *is* the empty
+                // object, answered as such rather than as a failure — the
+                // preview of an empty file is an empty page, not an error.
+                if failure.range_unsatisfiable() {
+                    return Ok(ObjectHead {
+                        total: Some(0),
+                        body: Box::new(SdkRead {
+                            body: aws_sdk_s3::primitives::ByteStream::from_static(b""),
+                        }),
+                    });
+                }
+                Err(self.mutation_failure(&failure, "s3:GetObject", bucket, region.as_ref()))
+            }
+        }
     }
 
     async fn put_object(
@@ -1416,6 +1460,44 @@ mod tests {
             restored,
             "the object should be back after the marker is removed"
         );
+    }
+
+    /// A ranged head against a real object: both numbers printed, so the
+    /// truncation line's honesty can be eyeballed against the listing.
+    ///
+    /// ```text
+    /// CAIXONHO_PROFILE=<profile> CAIXONHO_GET_BUCKET=<name> CAIXONHO_GET_KEY=<key> \
+    ///   cargo test -p caixonho-core this_machine_reading_a_head -- --ignored --nocapture
+    /// ```
+    #[tokio::test]
+    #[ignore = "needs a real account and a readable object"]
+    async fn this_machine_reading_a_head() {
+        let profile = std::env::var("CAIXONHO_PROFILE").expect("CAIXONHO_PROFILE");
+        let bucket = std::env::var("CAIXONHO_GET_BUCKET").expect("CAIXONHO_GET_BUCKET");
+        let key = std::env::var("CAIXONHO_GET_KEY").expect("CAIXONHO_GET_KEY");
+
+        let config = aws_config::defaults(BehaviorVersion::latest())
+            .profile_name(&profile)
+            .load()
+            .await;
+        let region = config
+            .region()
+            .map(|region| region.to_string())
+            .expect("the profile states a region");
+        let store = S3ObjectStore::over(config, &profile, &region, None);
+
+        let mut head = store
+            .get_object_head(&bucket, &key, 1024)
+            .await
+            .expect("the head opens");
+        let mut gathered = 0u64;
+        while let Some(chunk) = head.body.next_chunk().await.expect("the body holds") {
+            gathered += chunk.len() as u64;
+        }
+        println!("head: {gathered} bytes; whole object: {:?}", head.total);
+        if let Some(total) = head.total {
+            assert!(gathered <= 1024 && gathered <= total);
+        }
     }
 
     /// Whether a real endpoint honours `If-None-Match: *`, observed rather

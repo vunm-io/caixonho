@@ -224,6 +224,9 @@ const PERMANENT_REDIRECT: u16 = 301;
 /// A conditional write refused because the key already exists
 /// (`If-None-Match: *`) — `XONHO-0020`.
 const PRECONDITION_FAILED: u16 = 412;
+/// A ranged read that starts past the end — for a range starting at byte 0,
+/// this is precisely the empty object (`XONHO-0008`).
+const RANGE_UNSATISFIABLE: u16 = 416;
 
 /// The region a response redirected to, if it redirected at all.
 ///
@@ -348,6 +351,11 @@ impl SdkFailure {
     /// would send the user to fix something.
     pub(crate) fn precondition_failed(&self) -> bool {
         self.status == Some(PRECONDITION_FAILED)
+    }
+
+    /// Whether this failure is a range the object could not satisfy.
+    pub(crate) fn range_unsatisfiable(&self) -> bool {
+        self.status == Some(RANGE_UNSATISFIABLE)
     }
 
     pub(crate) fn redirect_region(&self) -> Option<&str> {

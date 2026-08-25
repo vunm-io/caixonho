@@ -429,6 +429,18 @@ pub(crate) mod double {
             (self.answer)()
         }
 
+        /// Nor a head of one.
+        async fn get_object_head(
+            &self,
+            _bucket: &str,
+            _key: &str,
+            _bytes: u64,
+        ) -> Result<crate::store::ObjectHead> {
+            Err(crate::error::Error::Unexpected {
+                detail: "HeldProbes serves probes, not previews".into(),
+            })
+        }
+
         /// And nothing here deletes one, for the same reason as below.
         async fn delete_object(&self, _bucket: &str, _key: &str) -> Result<crate::store::Deleted> {
             Err(crate::error::Error::Unexpected {
