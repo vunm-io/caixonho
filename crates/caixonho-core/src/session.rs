@@ -656,6 +656,80 @@ impl Session {
         handle
     }
 
+    /// Delete one object, off the caller's thread (`XONHO-0021`).
+    ///
+    /// The caller has already taken the second act — the named-key
+    /// confirmation is the window's job, and this function trusts it the
+    /// way `spawn_upload` trusts that `Replace` was an answer. No `Cancel`:
+    /// a delete is one request, and a cancel that raced it would leave the
+    /// user unsure whether the object exists, which is worse than the
+    /// moment of waiting.
+    pub fn spawn_delete<F>(&self, bucket: String, key: String, deliver: F)
+    where
+        F: FnOnce(DeleteOutcome) + Send + 'static,
+    {
+        let store = self
+            .store
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        self.runtime.spawn(async move {
+            let Some(store) = store else {
+                deliver(DeleteOutcome::Failed(Error::MissingConfiguration {
+                    profile: None,
+                    detail: "no connection is open to delete through".into(),
+                }));
+                return;
+            };
+            match store.delete_object(&bucket, &key).await {
+                Ok(deleted) => {
+                    diagnostics::delete_settled(&bucket, deleted.marker.is_some(), None);
+                    deliver(DeleteOutcome::Gone {
+                        marker: deleted.marker,
+                    });
+                }
+                Err(cause) => {
+                    diagnostics::delete_settled(&bucket, false, Some(&cause));
+                    deliver(DeleteOutcome::Failed(cause));
+                }
+            }
+        });
+    }
+
+    /// Remove a delete marker, off the caller's thread (`XONHO-0021`).
+    ///
+    /// The undo. Needs no confirmation — it restores — which is exactly why
+    /// it exists as its own spawn rather than a mode of the delete.
+    pub fn spawn_undo_delete<F>(&self, bucket: String, key: String, version_id: String, deliver: F)
+    where
+        F: FnOnce(UndoOutcome) + Send + 'static,
+    {
+        let store = self
+            .store
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        self.runtime.spawn(async move {
+            let Some(store) = store else {
+                deliver(UndoOutcome::Failed(Error::MissingConfiguration {
+                    profile: None,
+                    detail: "no connection is open to restore through".into(),
+                }));
+                return;
+            };
+            match store.remove_marker(&bucket, &key, &version_id).await {
+                Ok(()) => {
+                    diagnostics::undo_settled(&bucket, None);
+                    deliver(UndoOutcome::Restored);
+                }
+                Err(cause) => {
+                    diagnostics::undo_settled(&bucket, Some(&cause));
+                    deliver(UndoOutcome::Failed(cause));
+                }
+            }
+        });
+    }
+
     /// Save a stored credential, off the caller's thread.
     ///
     /// Both halves: the name, region and access key id to the configuration
@@ -787,6 +861,26 @@ impl Session {
         self.install_scheduler(Arc::new(S3ObjectStore::new(&connection)), credentials);
         Ok(connection)
     }
+}
+
+/// How one delete ended (`XONHO-0021`).
+#[derive(Debug)]
+pub enum DeleteOutcome {
+    /// The service accepted the delete. `marker` is the delete marker's
+    /// version id when one was created — the proof an undo exists, and its
+    /// token.
+    Gone { marker: Option<String> },
+    /// Failed, with the classified cause. The object's row stays.
+    Failed(Error),
+}
+
+/// How one undo ended (`XONHO-0021`).
+#[derive(Debug)]
+pub enum UndoOutcome {
+    /// The marker is gone; the object is back.
+    Restored,
+    /// Failed — the marker still stands, and nothing claims otherwise.
+    Failed(Error),
 }
 
 /// What one or more conditional attempts came to, inside `spawn_upload`.
@@ -1796,5 +1890,96 @@ mod tests {
             ),
             "got {outcome:?}"
         );
+    }
+
+    // ---- Deleting (XONHO-0021) ----
+
+    #[tokio::test]
+    async fn a_delete_reports_the_marker_the_service_created() {
+        let fixture = Fixture::new("delete-versioned");
+        let session = fixture.session("work");
+        let credentials = session.credentials_changed("work");
+        session.install_object_store(Arc::new(StoreDouble::versioned("mk-7")), credentials);
+
+        let (tell, told) = tokio::sync::oneshot::channel();
+        session.spawn_delete("reports".to_owned(), "daily/summary.csv".to_owned(), move |o| {
+            let _ = tell.send(o);
+        });
+
+        match told.await.expect("delivered exactly once") {
+            DeleteOutcome::Gone { marker } => assert_eq!(marker.as_deref(), Some("mk-7")),
+            other => panic!("expected Gone, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unversioned_delete_reports_no_way_back() {
+        let fixture = Fixture::new("delete-unversioned");
+        let session = fixture.session("work");
+        let credentials = session.credentials_changed("work");
+        session.install_object_store(Arc::new(StoreDouble::allows_listing()), credentials);
+
+        let (tell, told) = tokio::sync::oneshot::channel();
+        session.spawn_delete("reports".to_owned(), "daily/summary.csv".to_owned(), move |o| {
+            let _ = tell.send(o);
+        });
+
+        match told.await.expect("delivered") {
+            DeleteOutcome::Gone { marker } => assert!(marker.is_none()),
+            other => panic!("expected Gone, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_undo_restores_through_the_exact_marker() {
+        let fixture = Fixture::new("delete-undo");
+        let session = fixture.session("work");
+        let credentials = session.credentials_changed("work");
+        let double = Arc::new(StoreDouble::versioned("mk-7"));
+        session.install_object_store(double.clone(), credentials);
+
+        let (tell, told) = tokio::sync::oneshot::channel();
+        session.spawn_undo_delete(
+            "reports".to_owned(),
+            "daily/summary.csv".to_owned(),
+            "mk-7".to_owned(),
+            move |o| {
+                let _ = tell.send(o);
+            },
+        );
+
+        assert!(matches!(
+            told.await.expect("delivered"),
+            UndoOutcome::Restored
+        ));
+        assert_eq!(double.markers_removed(), vec!["mk-7".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn a_refused_undo_does_not_claim_restoration() {
+        let fixture = Fixture::new("delete-undo-refused");
+        let session = fixture.session("work");
+        let credentials = session.credentials_changed("work");
+        session.install_object_store(
+            Arc::new(StoreDouble::marker_removal_refused("mk-7")),
+            credentials,
+        );
+
+        let (tell, told) = tokio::sync::oneshot::channel();
+        session.spawn_undo_delete(
+            "reports".to_owned(),
+            "daily/summary.csv".to_owned(),
+            "mk-7".to_owned(),
+            move |o| {
+                let _ = tell.send(o);
+            },
+        );
+
+        match told.await.expect("delivered") {
+            UndoOutcome::Failed(Error::AccessDenied { iam_action }) => {
+                assert_eq!(iam_action, "s3:DeleteObjectVersion");
+            }
+            other => panic!("expected the named refusal, got {other:?}"),
+        }
     }
 }

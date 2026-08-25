@@ -481,6 +481,27 @@ pub(crate) fn upload_settled(bucket: &str, bytes: u64, settled: TransferSettled<
     }
 }
 
+/// What one delete came to (`XONHO-0021`).
+///
+/// Same no-inventory rule as the transfer pair: the bucket and whether a
+/// marker was involved, never the key. "Marker" is worth a field because it
+/// is the difference between reversible and gone, and a log being read
+/// after a bad day should say which one happened.
+pub(crate) fn delete_settled(bucket: &str, marker: bool, cause: Option<&crate::error::Error>) {
+    match cause {
+        None => tracing::info!(bucket, marker, "deleted an object"),
+        Some(error) => tracing::warn!(bucket, cause = %error, "delete failed"),
+    }
+}
+
+/// What one undo came to (`XONHO-0021`).
+pub(crate) fn undo_settled(bucket: &str, cause: Option<&crate::error::Error>) {
+    match cause {
+        None => tracing::info!(bucket, "removed a delete marker"),
+        Some(error) => tracing::warn!(bucket, cause = %error, "removing a delete marker failed"),
+    }
+}
+
 /// How a transfer settled, for [`transfer_settled`].
 pub(crate) enum TransferSettled<'a> {
     /// Complete, at the destination.
@@ -1234,6 +1255,49 @@ mod tests {
         assert_undisclosed(&log, KEY, "the object's key");
         assert_undisclosed(&log, "board-minutes", "the key's filename half");
         assert_undisclosed(&log, DIR, "the local source path");
+    }
+
+    /// The delete direction of the no-inventory rule, undo included.
+    #[test]
+    fn a_delete_and_its_undo_log_outcomes_and_never_the_key() {
+        const KEY: &str = "quarterly/severance-list.xlsx";
+
+        let (log, ()) = recording(everything(), || {
+            runtime().block_on(async {
+                let session = session(Arc::new(SecretStoreDouble::open()));
+                let credentials = session.credentials_changed("work");
+                session.install_object_store(
+                    Arc::new(crate::store::double::StoreDouble::versioned("mk-1")),
+                    credentials,
+                );
+
+                let (tell, told) = tokio::sync::oneshot::channel();
+                session.spawn_delete("finance".to_owned(), KEY.to_owned(), move |o| {
+                    let _ = tell.send(o);
+                });
+                told.await.expect("delivered");
+
+                let (tell, told) = tokio::sync::oneshot::channel();
+                session.spawn_undo_delete(
+                    "finance".to_owned(),
+                    KEY.to_owned(),
+                    "mk-1".to_owned(),
+                    move |o| {
+                        let _ = tell.send(o);
+                    },
+                );
+                told.await.expect("delivered");
+            });
+        });
+
+        assert!(log.contains("deleted an object"), "the delete is recorded:\n{log}");
+        assert!(
+            log.contains("removed a delete marker"),
+            "and the undo:\n{log}"
+        );
+        assert!(log.contains("finance"), "the bucket is the scope:\n{log}");
+        assert_undisclosed(&log, KEY, "the object's key");
+        assert_undisclosed(&log, "severance-list", "the key's filename half");
     }
 
     #[test]

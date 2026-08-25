@@ -50,7 +50,17 @@
 
 ## 2. The session
 
-- [ ] 2.1 `Session::spawn_delete` and `spawn_undo_delete` [dispatch: main]
+- [x] 2.1 `Session::spawn_delete` and `spawn_undo_delete` [dispatch: main]
+      - Done in `main` (2026-08-25). One deliberate narrowing surfaced here
+        rather than absorbed: **no `Cancel` on a delete.** It is one
+        request, and a cancel that raced it would leave the user unsure
+        whether the object exists — worse than the moment of waiting. The
+        spec never promised one (its cancel requirement is `object-transfer`'s,
+        not this capability's).
+      - The undo test asserts the exact marker (`markers_removed()`), and
+        the refused-undo test pins that a failure does not claim
+        restoration. The no-key log test covers delete **and** undo lines in
+        one recording.
   - Paths: `crates/caixonho-core/src/session.rs`,
     `crates/caixonho-core/src/diagnostics.rs`
   - Done criteria: both follow the established contract (deliver exactly
