@@ -7,8 +7,14 @@
 
 ## 1. The port deletes, and can take one back
 
-- [ ] 1.1 `ObjectStore::delete_object` and `remove_marker`, with the double
+- [x] 1.1 `ObjectStore::delete_object` and `remove_marker`, with the double
       [dispatch: main]
+      - Done in `main` (2026-08-25), red first (compile-red: the trait grew
+        two methods and every implementor had to answer). The double records
+        every version id `remove_marker` receives, so the undo test asserts
+        the *right* marker was removed rather than merely that something
+        was. `marker_removal_refused` scripts the asymmetric grant — allowed
+        to delete, not to un-delete — which is a real IAM shape.
   - Paths: `crates/caixonho-core/src/store.rs`
   - Done criteria: `delete_object(bucket, key) -> Result<Deleted>` where
     `Deleted { marker: Option<String> }` carries the marker's version id
@@ -20,7 +26,16 @@
     marker was removed. Red first.
   - Verification: `cargo test -p caixonho-core store::`
 
-- [ ] 1.2 The adapter maps the pair to `DeleteObject` [dispatch: main]
+- [x] 1.2 The adapter maps the pair to `DeleteObject` [dispatch: main]
+      - Done in `main` (2026-08-25). The marker is `Some` only on the
+        **pair** — `delete_marker == true` *and* a version id — because some
+        services set `version_id` on answers that are not markers, and half
+        the proof is not proof. Failures classify through a shared
+        `mutation_failure` helper (put's inline classify refactored into it)
+        with each verb's own IAM action. Live test
+        `this_machine_deleting_and_taking_it_back` seeds conditionally so it
+        cannot clobber, and leaves the probe object behind on purpose —
+        cleanup would use the verb under test to destroy the run's evidence.
   - Paths: `crates/caixonho-core/src/adapter.rs`
   - Done criteria: `delete_object` reads `delete_marker`/`version_id` off
     the response; `remove_marker` issues `DeleteObject` with `.version_id()`;

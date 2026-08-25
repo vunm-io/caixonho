@@ -429,6 +429,28 @@ pub(crate) mod double {
             (self.answer)()
         }
 
+        /// And nothing here deletes one, for the same reason as below.
+        async fn delete_object(
+            &self,
+            _bucket: &str,
+            _key: &str,
+        ) -> Result<crate::store::Deleted> {
+            Err(crate::error::Error::Unexpected {
+                detail: "HeldProbes serves probes, not deletions".into(),
+            })
+        }
+
+        async fn remove_marker(
+            &self,
+            _bucket: &str,
+            _key: &str,
+            _version_id: &str,
+        ) -> Result<()> {
+            Err(crate::error::Error::Unexpected {
+                detail: "HeldProbes serves probes, not deletions".into(),
+            })
+        }
+
         /// And nothing here writes one. Refusing loudly for the same
         /// reason: a double that silently reports success would let a test
         /// believe an object exists.

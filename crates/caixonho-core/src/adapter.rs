@@ -28,7 +28,7 @@ use crate::connection::Connection;
 use crate::error::{Error, Result};
 use crate::listing;
 use crate::store::ObjectStore;
-use crate::store::{IfAbsent, ObjectContent, ObjectRead, PutOutcome};
+use crate::store::{Deleted, IfAbsent, ObjectContent, ObjectRead, PutOutcome};
 use crate::types::{
     AccountListing, Bucket, BucketKind, Cursor, Location, Object, Page, RefusedListing, Region,
 };
@@ -280,6 +280,22 @@ impl S3ObjectStore {
     /// Hands back the SDK's own error rather than a cause: the caller has to
     /// look at the failure before deciding whether it is one, and classifying
     /// here would throw away the redirect on the way past.
+    /// What a failed mutation is reported as, with the IAM action the user
+    /// can act on.
+    fn mutation_failure(
+        &self,
+        failure: &SdkFailure,
+        iam_action: &'static str,
+        bucket: &str,
+        region: Option<&Region>,
+    ) -> Error {
+        let endpoint = match region {
+            Some(region) => self.endpoint_for(region),
+            None => self.endpoint.clone(),
+        };
+        classify(failure, &self.call(iam_action, &endpoint, Some(bucket)))
+    }
+
     async fn read_object(
         &self,
         bucket: &str,
@@ -464,6 +480,56 @@ impl ObjectStore for S3ObjectStore {
             size,
             body: Box::new(SdkRead { body: answer.body }),
         })
+    }
+
+    async fn delete_object(&self, bucket: &str, key: &str) -> Result<Deleted> {
+        let region = self.region_learned_for(bucket);
+        let client = match &region {
+            Some(region) => self.client_for(region),
+            None => self.client.clone(),
+        };
+
+        match client.delete_object().bucket(bucket).key(key).send().await {
+            Ok(answer) => Ok(Deleted {
+                // Both fields, not one: some services set `version_id` on
+                // responses that are not markers. Only the pair — "this is a
+                // marker" and "here is its id" — is proof an undo exists.
+                marker: (answer.delete_marker() == Some(true))
+                    .then(|| answer.version_id().map(ToOwned::to_owned))
+                    .flatten(),
+            }),
+            Err(error) => Err(self.mutation_failure(
+                &SdkFailure::from_sdk(&error),
+                "s3:DeleteObject",
+                bucket,
+                region.as_ref(),
+            )),
+        }
+    }
+
+    async fn remove_marker(&self, bucket: &str, key: &str, version_id: &str) -> Result<()> {
+        let region = self.region_learned_for(bucket);
+        let client = match &region {
+            Some(region) => self.client_for(region),
+            None => self.client.clone(),
+        };
+
+        client
+            .delete_object()
+            .bucket(bucket)
+            .key(key)
+            .version_id(version_id)
+            .send()
+            .await
+            .map(|_| ())
+            .map_err(|error| {
+                self.mutation_failure(
+                    &SdkFailure::from_sdk(&error),
+                    "s3:DeleteObjectVersion",
+                    bucket,
+                    region.as_ref(),
+                )
+            })
     }
 
     async fn put_object(
@@ -1276,6 +1342,77 @@ mod tests {
         if let Some(stated) = content.size {
             assert_eq!(total, stated, "the stream and the stated size disagree");
         }
+    }
+
+    /// Marker semantics on a real **versioned** bucket, observed end to end:
+    /// delete reports the marker, the undo removes it, the object lists
+    /// again.
+    ///
+    /// `#[ignore]`d: needs an account, a versioned bucket, and it writes.
+    /// It seeds its own probe object first (conditional, so it cannot
+    /// clobber), deletes it, asserts the marker was reported, undoes, and
+    /// asserts the key is listable again. It is the only place the whole
+    /// undo story can be observed — every unit test proves the double's
+    /// markers behave, which says nothing about the service's.
+    ///
+    /// It leaves the probe object behind on purpose, same as its
+    /// neighbour: cleanup would use the very verb under test to destroy
+    /// the evidence of the run.
+    ///
+    /// ```text
+    /// CAIXONHO_PROFILE=<profile> CAIXONHO_VERSIONED_BUCKET=<name> \
+    ///   CAIXONHO_DELETE_KEY=<key> \
+    ///   cargo test -p caixonho-core this_machine_deleting -- --ignored --nocapture
+    /// ```
+    #[tokio::test]
+    #[ignore = "needs a real versioned bucket, and writes to it"]
+    async fn this_machine_deleting_and_taking_it_back() {
+        let profile = std::env::var("CAIXONHO_PROFILE").expect("CAIXONHO_PROFILE");
+        let bucket = std::env::var("CAIXONHO_VERSIONED_BUCKET").expect("CAIXONHO_VERSIONED_BUCKET");
+        let key = std::env::var("CAIXONHO_DELETE_KEY").expect("CAIXONHO_DELETE_KEY");
+
+        let config = aws_config::defaults(BehaviorVersion::latest())
+            .profile_name(&profile)
+            .load()
+            .await;
+        let region = config
+            .region()
+            .map(|region| region.to_string())
+            .expect("the profile states a region");
+        let store = S3ObjectStore::over(config, &profile, &region, None);
+
+        // Seed conditionally: if the key exists this probe reuses it, and
+        // if it does not the write cannot clobber anything.
+        let dir = std::env::temp_dir().join("caixonho-live-delete");
+        std::fs::create_dir_all(&dir).expect("fixture dir");
+        let path = dir.join("probe.txt");
+        std::fs::write(&path, b"caixonho delete-undo probe").expect("fixture file");
+        let seeded = store
+            .put_object(&bucket, &key, &path, IfAbsent::Refuse)
+            .await
+            .expect("seeding is answered");
+        println!("seed: {seeded:?}");
+
+        let deleted = store.delete_object(&bucket, &key).await.expect("deletes");
+        println!("delete reported marker: {:?}", deleted.marker);
+        let marker = deleted.marker.expect(
+            "a versioned bucket must report the marker — if this is None, either the \
+             bucket is not versioned or the endpoint drops the header, and the undo \
+             story is not real here",
+        );
+
+        store
+            .remove_marker(&bucket, &key, &marker)
+            .await
+            .expect("the marker is removable");
+
+        let listing = store
+            .list_objects(&Location::bucket(&bucket), None)
+            .await
+            .expect("the bucket lists");
+        let restored = listing.objects.iter().any(|object| object.key == key);
+        println!("restored and listed: {restored}");
+        assert!(restored, "the object should be back after the marker is removed");
     }
 
     /// Whether a real endpoint honours `If-None-Match: *`, observed rather

@@ -77,6 +77,28 @@ pub trait ObjectStore: Send + Sync {
     /// itself, as an error and never as a shorter object.
     async fn get_object(&self, bucket: &str, key: &str) -> Result<ObjectContent>;
 
+    /// Delete one object (`XONHO-0021`).
+    ///
+    /// The response is the oracle on reversibility: [`Deleted::marker`] holds
+    /// the delete marker's version id exactly when the service reported that
+    /// one was created — a versioned bucket's answer — and `None` when the
+    /// deletion is what it looks like. No `GetBucketVersioning` probe stands
+    /// in front of this: it would spend a call and a permission predicting
+    /// what this response states as fact, and a prediction can be stale
+    /// where the response cannot.
+    ///
+    /// S3 answers success for a key that holds nothing; that arrives here as
+    /// an ordinary `Deleted` and is reported as what the service said.
+    async fn delete_object(&self, bucket: &str, key: &str) -> Result<Deleted>;
+
+    /// Remove a delete marker, restoring the object it hides (`XONHO-0021`).
+    ///
+    /// Its own method rather than a parameter on [`Self::delete_object`]:
+    /// the two have different permission surfaces (`s3:DeleteObject` vs
+    /// `s3:DeleteObjectVersion`), different failure wordings, and this is
+    /// the one that may run without a confirmation — it restores.
+    async fn remove_marker(&self, bucket: &str, key: &str, version_id: &str) -> Result<()>;
+
     /// Write one local file to `key` (`XONHO-0020`).
     ///
     /// `if_absent` decides whether the write is conditional. With
@@ -101,6 +123,14 @@ pub trait ObjectStore: Send + Sync {
         path: &std::path::Path,
         if_absent: IfAbsent,
     ) -> Result<PutOutcome>;
+}
+
+/// What a delete came to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Deleted {
+    /// The delete marker's version id, when the service created one — the
+    /// proof an undo exists, and the token it needs.
+    pub marker: Option<String>,
 }
 
 /// Whether a write refuses to replace what is already at the key.
@@ -184,6 +214,13 @@ pub mod double {
         /// write's *outcome* should say so, and one that merely writes
         /// should not have to.
         writes: Writes,
+        /// What `delete_object` and `remove_marker` do. Unversioned by
+        /// default, for the same reason `writes` defaults to accepting.
+        removals: Removals,
+        /// Every version id `remove_marker` was called with, so a test can
+        /// assert the *right* marker was removed rather than merely that
+        /// something was.
+        removed_markers: std::sync::Mutex<Vec<String>>,
     }
 
     enum Outcome {
@@ -209,6 +246,20 @@ pub mod double {
         Refused(fn() -> Error),
     }
 
+    /// What `delete_object` answers with — and what `remove_marker` does.
+    enum Removals {
+        /// Deletes report no marker: the unversioned shape.
+        Unversioned,
+        /// Deletes report a marker with this version id.
+        Versioned(&'static str),
+        /// The delete itself is refused.
+        Refused(fn() -> Error),
+        /// Deletes succeed with a marker, but removing it is refused — the
+        /// shape of `s3:DeleteObject` granted without
+        /// `s3:DeleteObjectVersion`.
+        MarkerRefused(&'static str, fn() -> Error),
+    }
+
     /// What `get_object` answers with. Independent of `Outcome`: a test
     /// scripting content should not have to decide bucket-listing behaviour
     /// to do it.
@@ -232,6 +283,8 @@ pub mod double {
                 page: Page::default(),
                 content: Content::Unscripted,
                 writes: Writes::Accepts,
+                removals: Removals::Unversioned,
+                removed_markers: std::sync::Mutex::new(Vec::new()),
             }
         }
 
@@ -359,6 +412,41 @@ pub mod double {
             double
         }
 
+        /// Deletes answer with this delete marker — the versioned shape.
+        pub fn versioned(marker: &'static str) -> Self {
+            let mut double = Self::allows_listing();
+            double.removals = Removals::Versioned(marker);
+            double
+        }
+
+        /// Refuses `delete_object` the way a policy without
+        /// `s3:DeleteObject` answers.
+        pub fn delete_refused() -> Self {
+            let mut double = Self::allows_listing();
+            double.removals = Removals::Refused(|| Error::AccessDenied {
+                iam_action: "s3:DeleteObject",
+            });
+            double
+        }
+
+        /// Deletes succeed with `marker`, but removing it is refused — the
+        /// undo-denied shape.
+        pub fn marker_removal_refused(marker: &'static str) -> Self {
+            let mut double = Self::allows_listing();
+            double.removals = Removals::MarkerRefused(marker, || Error::AccessDenied {
+                iam_action: "s3:DeleteObjectVersion",
+            });
+            double
+        }
+
+        /// The version ids `remove_marker` has been called with.
+        pub fn markers_removed(&self) -> Vec<String> {
+            self.removed_markers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        }
+
         /// Every conditional write meets a taken key.
         pub fn key_taken() -> Self {
             let mut double = Self::allows_listing();
@@ -408,6 +496,8 @@ pub mod double {
                 page: Page::default(),
                 content: Content::Unscripted,
                 writes: Writes::Accepts,
+                removals: Removals::Unversioned,
+                removed_markers: std::sync::Mutex::new(Vec::new()),
             }
         }
     }
@@ -456,6 +546,34 @@ pub mod double {
                 Outcome::Buckets(_) => Ok(()),
                 Outcome::Fail(make) => Err(make()),
             }
+        }
+
+        async fn delete_object(&self, _bucket: &str, _key: &str) -> Result<super::Deleted> {
+            Ok(match &self.removals {
+                Removals::Unversioned => super::Deleted { marker: None },
+                Removals::Versioned(marker) | Removals::MarkerRefused(marker, _) => {
+                    super::Deleted {
+                        marker: Some((*marker).to_owned()),
+                    }
+                }
+                Removals::Refused(make) => return Err(make()),
+            })
+        }
+
+        async fn remove_marker(
+            &self,
+            _bucket: &str,
+            _key: &str,
+            version_id: &str,
+        ) -> Result<()> {
+            if let Removals::MarkerRefused(_, make) = &self.removals {
+                return Err(make());
+            }
+            self.removed_markers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(version_id.to_owned());
+            Ok(())
         }
 
         /// Writes answer from the scripted `Writes`. The double reads the
@@ -987,5 +1105,77 @@ mod tests {
         let path = dir.join("file.bin");
         std::fs::write(&path, bytes).expect("fixture file");
         path
+    }
+
+    /// `object-deletion` spec (`XONHO-0021`) — the port half: the response
+    /// is the oracle on reversibility.
+    #[tokio::test]
+    async fn an_unversioned_delete_reports_no_marker() {
+        let store: Box<dyn ObjectStore> = Box::new(StoreDouble::allows_listing());
+
+        let deleted = store
+            .delete_object("reports", "daily/summary.csv")
+            .await
+            .expect("deletes");
+        assert_eq!(deleted.marker, None, "no marker means no undo is offered");
+    }
+
+    #[tokio::test]
+    async fn a_versioned_delete_carries_the_marker_that_undoes_it() {
+        let store: Box<dyn ObjectStore> = Box::new(StoreDouble::versioned("mk-123"));
+
+        let deleted = store
+            .delete_object("reports", "daily/summary.csv")
+            .await
+            .expect("deletes");
+        assert_eq!(deleted.marker.as_deref(), Some("mk-123"));
+    }
+
+    /// Undo removes exactly the marker the delete reported — not "a"
+    /// version, the one the response named.
+    #[tokio::test]
+    async fn undo_removes_exactly_the_reported_marker() {
+        let double = std::sync::Arc::new(StoreDouble::versioned("mk-123"));
+        let store: std::sync::Arc<dyn ObjectStore> = double.clone();
+
+        let deleted = store
+            .delete_object("reports", "daily/summary.csv")
+            .await
+            .expect("deletes");
+        let marker = deleted.marker.expect("versioned");
+        store
+            .remove_marker("reports", "daily/summary.csv", &marker)
+            .await
+            .expect("restores");
+
+        assert_eq!(double.markers_removed(), vec!["mk-123".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn a_refused_delete_names_the_delete_permission() {
+        let store: Box<dyn ObjectStore> = Box::new(StoreDouble::delete_refused());
+
+        match store.delete_object("reports", "k").await {
+            Err(Error::AccessDenied { iam_action }) => {
+                assert_eq!(iam_action, "s3:DeleteObject")
+            }
+            other => panic!("expected AccessDenied, got {other:?}"),
+        }
+    }
+
+    /// The asymmetric grant: allowed to delete, not to un-delete. The undo's
+    /// refusal names the version permission, which is the one to go ask for.
+    #[tokio::test]
+    async fn a_refused_undo_names_the_version_permission() {
+        let store: Box<dyn ObjectStore> = Box::new(StoreDouble::marker_removal_refused("mk-9"));
+
+        let deleted = store.delete_object("reports", "k").await.expect("deletes");
+        let marker = deleted.marker.expect("the delete still reported it");
+        match store.remove_marker("reports", "k", &marker).await {
+            Err(Error::AccessDenied { iam_action }) => {
+                assert_eq!(iam_action, "s3:DeleteObjectVersion")
+            }
+            other => panic!("expected AccessDenied, got {other:?}"),
+        }
     }
 }
