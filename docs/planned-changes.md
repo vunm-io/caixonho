@@ -64,6 +64,32 @@ asking for the first N KB instead of the whole object.
 > here because this section reads as a future plan, and the two-directions
 > lesson in the header is about exactly this sentence going stale.
 
+### A declined prompt is a choice, not a failure (2026-08-25)
+
+The owner, on meeting it for the fourth time: the panel is an eyesore. It
+is, and the reason is a category error rather than a styling one.
+
+When the OS credential prompt is declined, the app renders the full red
+failure panel — the same weight it gives a network outage or a refused
+credential. But declining a prompt is *the user answering a question*, not
+something breaking. `XONHO-0009`'s own design language says an error is
+"an inline message with the cause and a single action"; this has the cause
+and the action right and the **severity** wrong, which no amount of correct
+wording fixes.
+
+Two things to weigh when this is scoped:
+
+- `CredentialStoreProblem::Refused` should probably not share a surface with
+  `Locked` and `Absent`. Those two are conditions of the machine; this one
+  is a sentence the user just spoke.
+- The retry loop is the actual irritant. A declined prompt today leaves the
+  connection selected and failed, so the next click asks again — the app
+  should probably remember the decline for the session rather than
+  re-asking on every selection.
+
+Not scoped here. §4.6, beside the copy gap above; both are quality-of-life
+findings from the same sitting.
+
 ### Nothing on screen can be copied (2026-08-25)
 
 Reported by the owner while trying to hand a bucket name to a command: the
