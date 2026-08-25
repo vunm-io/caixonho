@@ -123,7 +123,28 @@
   - Done criteria: all four jobs successful for the tip; run id here
   - Verification: `gh run list --limit 1 --repo vunm-io/caixonho`
 
-- [ ] 4.3 Live: the prompt count actually falls [dispatch: main]
+- [x] 4.3 Live: the prompt count actually falls [dispatch: main]
+      - Done on the owner's machine, 2026-08-25, on a binary built minutes
+        earlier so no grant existed for it. **Owner's count: one prompt at
+        launch, one on the first connection click — then silence.** The log
+        for the same window shows one stored connection opened **three**
+        times and another **twice**: five opens, and the owner was asked
+        about neither of the repeats.
+      - The second-open timing is the same fact from the other side: the
+        first open of that connection took 1.11s, the next two took 0.07s
+        and 0.09s. What was slow was the keychain, once.
+      - **The prompt at launch is worth a second look and is not this
+        change's doing** — nothing here reads a secret at startup, so
+        something on the startup path asks the store before any connection
+        is chosen. Recorded rather than explained; it costs one prompt per
+        run and is its own small investigation.
+      - **What did not move, exactly as the review predicted:** profile
+        connections still take 4.07–9.50s in the same window
+        (`vunm` ×4, `r2-caixonho` ×3), against 0.06–0.09s for a remembered
+        stored credential. That is `credential_process`, measured at 3.99s
+        warm, and it is a path this change never touches. The prediction
+        being right is the point: the claim was narrowed *before* the
+        measurement, not after it.
   - Paths: none
   - Done criteria: on the owner's machine, with the app freshly built so no
     grant is recorded for the new binary: switch between two stored
