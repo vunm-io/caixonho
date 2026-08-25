@@ -560,12 +560,7 @@ pub mod double {
             })
         }
 
-        async fn remove_marker(
-            &self,
-            _bucket: &str,
-            _key: &str,
-            version_id: &str,
-        ) -> Result<()> {
+        async fn remove_marker(&self, _bucket: &str, _key: &str, version_id: &str) -> Result<()> {
             if let Removals::MarkerRefused(_, make) = &self.removals {
                 return Err(make());
             }

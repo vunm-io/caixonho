@@ -75,7 +75,12 @@
 
 ## 3. The window
 
-- [ ] 3.1 Delete action and the named-key confirmation [dispatch: main]
+- [x] 3.1 Delete action and the named-key confirmation [dispatch: main]
+      - Done in `main` (2026-08-25). The button wears the danger colour and
+        sits after the three benign verbs; it only ever sets `Confirming`.
+        Window tests pin the two-act rule from both ends: dismissing leaves
+        nothing (and nothing was spawned — only `confirm_delete` spawns),
+        and the action refuses folders and empty selections outright.
   - Paths: `crates/caixonho-gui/src/app.rs`
   - Done criteria: a Delete action enabled only on an object selection (the
     Open/Download gating), rendered apart from the three benign verbs; it
@@ -90,7 +95,21 @@
     consistent with the owner's 2026-08-24 decision that destructive-capable
     verbs cost a deliberate click
 
-- [ ] 3.2 The outcome strip, with Undo exactly on proof [dispatch: main]
+- [x] 3.2 The outcome strip, with Undo exactly on proof [dispatch: main]
+      - Done in `main` (2026-08-25). Undo renders only on
+        `Gone { marker: Some }` and `undo_delete` re-checks the proof before
+        spawning. The re-read is the same `go_to` the navigation uses —
+        observable in the test as the listing dropping to `Loading` — and
+        `go_to` learned the one distinction this needed: navigating *away*
+        drops the strip, re-reading the *same* location keeps it, because
+        the strip's own outcome is what triggers that re-read.
+      - The stale-connection guard drops the whole outcome (above all its
+        Undo) when the event's deletion belongs to a connection no longer
+        active; a failed undo speaks the undo's words (`during_undo`) and
+        claims no restoration. Clippy caught a `marker` field on `Restoring`
+        that nothing read — removed rather than kept: a field nobody reads
+        is how retry-shaped ideas sneak in unreviewed.
+      - Both decision states are in the screenshot harness: 18 images.
   - Paths: `crates/caixonho-gui/src/app.rs`
   - Done criteria: after success the location re-reads through the existing
     path and the strip says either "gone — permanent" (no marker) or

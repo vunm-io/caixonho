@@ -430,22 +430,13 @@ pub(crate) mod double {
         }
 
         /// And nothing here deletes one, for the same reason as below.
-        async fn delete_object(
-            &self,
-            _bucket: &str,
-            _key: &str,
-        ) -> Result<crate::store::Deleted> {
+        async fn delete_object(&self, _bucket: &str, _key: &str) -> Result<crate::store::Deleted> {
             Err(crate::error::Error::Unexpected {
                 detail: "HeldProbes serves probes, not deletions".into(),
             })
         }
 
-        async fn remove_marker(
-            &self,
-            _bucket: &str,
-            _key: &str,
-            _version_id: &str,
-        ) -> Result<()> {
+        async fn remove_marker(&self, _bucket: &str, _key: &str, _version_id: &str) -> Result<()> {
             Err(crate::error::Error::Unexpected {
                 detail: "HeldProbes serves probes, not deletions".into(),
             })

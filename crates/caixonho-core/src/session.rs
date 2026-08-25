@@ -1902,9 +1902,13 @@ mod tests {
         session.install_object_store(Arc::new(StoreDouble::versioned("mk-7")), credentials);
 
         let (tell, told) = tokio::sync::oneshot::channel();
-        session.spawn_delete("reports".to_owned(), "daily/summary.csv".to_owned(), move |o| {
-            let _ = tell.send(o);
-        });
+        session.spawn_delete(
+            "reports".to_owned(),
+            "daily/summary.csv".to_owned(),
+            move |o| {
+                let _ = tell.send(o);
+            },
+        );
 
         match told.await.expect("delivered exactly once") {
             DeleteOutcome::Gone { marker } => assert_eq!(marker.as_deref(), Some("mk-7")),
@@ -1920,9 +1924,13 @@ mod tests {
         session.install_object_store(Arc::new(StoreDouble::allows_listing()), credentials);
 
         let (tell, told) = tokio::sync::oneshot::channel();
-        session.spawn_delete("reports".to_owned(), "daily/summary.csv".to_owned(), move |o| {
-            let _ = tell.send(o);
-        });
+        session.spawn_delete(
+            "reports".to_owned(),
+            "daily/summary.csv".to_owned(),
+            move |o| {
+                let _ = tell.send(o);
+            },
+        );
 
         match told.await.expect("delivered") {
             DeleteOutcome::Gone { marker } => assert!(marker.is_none()),

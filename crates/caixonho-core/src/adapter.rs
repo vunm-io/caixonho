@@ -1412,7 +1412,10 @@ mod tests {
             .expect("the bucket lists");
         let restored = listing.objects.iter().any(|object| object.key == key);
         println!("restored and listed: {restored}");
-        assert!(restored, "the object should be back after the marker is removed");
+        assert!(
+            restored,
+            "the object should be back after the marker is removed"
+        );
     }
 
     /// Whether a real endpoint honours `If-None-Match: *`, observed rather

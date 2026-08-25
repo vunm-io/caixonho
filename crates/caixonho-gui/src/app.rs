@@ -66,6 +66,11 @@ pub(crate) struct CaixonhoApp {
     transfer: Option<Transfer>,
     /// Where a download's progress and outcome come back.
     transfers: flume::Sender<TransferEvent>,
+    /// The one deletion being confirmed, in flight, or just settled
+    /// (`XONHO-0021`).
+    deletion: Option<Deletion>,
+    /// Where delete and undo outcomes come back.
+    deletions: flume::Sender<DeleteEvent>,
     /// The connection whose removal has been asked for and not yet confirmed.
     /// Removing a credential cannot be undone, so it takes a second deliberate
     /// act on a surface of its own — not a button that changes its label under
@@ -217,6 +222,43 @@ enum TransferPhase {
     },
     Cancelled,
     Failed(Error),
+}
+
+/// One deletion, from confirmation to its aftermath (`XONHO-0021`).
+///
+/// Its own state and its own strip — deliberately not a `Transfer` arm:
+/// deletion moves nothing, and "Downloading…" vocabulary does not belong one
+/// enum away from a destructive verb. The connection rides along so a stale
+/// outcome can never offer an Undo against an account the user has left
+/// (`XONHO-0019`'s discipline).
+struct Deletion {
+    connection: ConnectionId,
+    bucket: String,
+    key: String,
+    phase: DeletePhase,
+}
+
+enum DeletePhase {
+    /// The second act has not happened; nothing has been deleted.
+    Confirming,
+    /// The delete is in flight.
+    Deleting,
+    /// The service accepted it. `marker` is the undo's proof and token.
+    Gone { marker: Option<String> },
+    /// The undo is in flight. The marker travelled with the spawn; nothing
+    /// here needs it again, and a field nobody reads is how retry-shaped
+    /// ideas sneak in unreviewed.
+    Restoring,
+    /// The marker is gone; the object is back.
+    Restored,
+    /// A delete or undo failed. `during_undo` picks the words.
+    Failed { error: Error, during_undo: bool },
+}
+
+/// What a deletion reports back to the window.
+enum DeleteEvent {
+    Settled(caixonho_core::session::DeleteOutcome),
+    UndoSettled(caixonho_core::session::UndoOutcome),
 }
 
 /// Where the user is, and the connection they got there on.
@@ -498,6 +540,21 @@ impl CaixonhoApp {
         })
         .detach();
 
+        // Deletions get their own channel rather than riding the transfer
+        // one — same reasoning as the strip: plumbing is cheap, and mixed
+        // vocabulary is not (`XONHO-0021`).
+        let (deletions, deleting) = flume::unbounded::<DeleteEvent>();
+        cx.spawn_in(window, async move |this, cx| {
+            while let Ok(event) = deleting.recv_async().await {
+                let applied =
+                    this.update_in(cx, |app, window, cx| app.apply_delete(event, window, cx));
+                if applied.is_err() {
+                    break; // The window is gone.
+                }
+            }
+        })
+        .detach();
+
         // A third channel, for the one operation that reports twice: once when
         // there is a code to put on screen, and once when it is over.
         let (sign_ins, signing) = flume::unbounded::<SignInEvent>();
@@ -529,6 +586,8 @@ impl CaixonhoApp {
             form: None,
             transfer: None,
             transfers,
+            deletion: None,
+            deletions,
             confirming: None,
             unavailable: std::collections::HashMap::new(),
             region: RegionChoice::All,
@@ -590,6 +649,13 @@ impl CaixonhoApp {
     /// Everything shown about position is derived from the location this sets,
     /// so there is nowhere else to keep in step.
     fn go_to(&mut self, location: Location, window: &mut Window, cx: &mut Context<Self>) {
+        // Walking somewhere else takes the deletion strip along — its key
+        // belongs to the location it was deleted at. A re-read of the *same*
+        // location keeps it, because that re-read is how the strip's own
+        // outcome refreshes the listing (`XONHO-0021`).
+        if self.location() != Some(&location) {
+            self.deletion = None;
+        }
         self.path.update(cx, |state, cx| {
             state.set_value(location.to_string(), window, cx);
         });
@@ -900,6 +966,121 @@ impl CaixonhoApp {
         self.start_upload(transfer.bucket, transfer.key, source, collision, cx);
     }
 
+    /// Ask to delete the selected object (`XONHO-0021` task 3.1).
+    ///
+    /// Asks. The first act deletes nothing: it puts the named-key
+    /// confirmation on screen, and only the confirmation's own button
+    /// issues the delete.
+    fn delete_selected(&mut self, cx: &mut Context<Self>) {
+        let (Some(location), Some(key)) = (self.location().cloned(), self.selected_object_key(cx))
+        else {
+            return;
+        };
+        self.deletion = Some(Deletion {
+            connection: self.outcome.active(),
+            bucket: location.bucket,
+            key,
+            phase: DeletePhase::Confirming,
+        });
+        cx.notify();
+    }
+
+    /// The second act: the confirmation's own button.
+    fn confirm_delete(&mut self, cx: &mut Context<Self>) {
+        let Some(deletion) = self.deletion.as_mut() else {
+            return;
+        };
+        if !matches!(deletion.phase, DeletePhase::Confirming) {
+            return;
+        }
+        let Some(session) = self.session.clone() else {
+            return;
+        };
+        deletion.phase = DeletePhase::Deleting;
+        let inbox = self.deletions.clone();
+        session.spawn_delete(
+            deletion.bucket.clone(),
+            deletion.key.clone(),
+            move |outcome| {
+                let _ = inbox.send(DeleteEvent::Settled(outcome));
+            },
+        );
+        cx.notify();
+    }
+
+    /// Undo: remove the marker the delete's own response reported.
+    fn undo_delete(&mut self, cx: &mut Context<Self>) {
+        let Some(deletion) = self.deletion.as_mut() else {
+            return;
+        };
+        let DeletePhase::Gone {
+            marker: Some(marker),
+        } = &deletion.phase
+        else {
+            return; // No proof, no undo — the button only exists on proof.
+        };
+        let Some(session) = self.session.clone() else {
+            return;
+        };
+        let marker = marker.clone();
+        deletion.phase = DeletePhase::Restoring;
+        let inbox = self.deletions.clone();
+        session.spawn_undo_delete(
+            deletion.bucket.clone(),
+            deletion.key.clone(),
+            marker,
+            move |outcome| {
+                let _ = inbox.send(DeleteEvent::UndoSettled(outcome));
+            },
+        );
+        cx.notify();
+    }
+
+    /// Apply a delete or undo outcome, unless the deletion it belongs to has
+    /// left the screen — dismissed, or the connection was switched.
+    fn apply_delete(&mut self, event: DeleteEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(deletion) = self.deletion.as_mut() else {
+            return; // Dismissed while in flight; nothing to apply to.
+        };
+        if deletion.connection != self.outcome.active() {
+            // A switch happened. An outcome — and above all an Undo — from
+            // the account the user left must not render under the new one's
+            // name (`XONHO-0019`).
+            self.deletion = None;
+            cx.notify();
+            return;
+        }
+        use caixonho_core::session::{DeleteOutcome, UndoOutcome};
+        match event {
+            DeleteEvent::Settled(DeleteOutcome::Gone { marker }) => {
+                deletion.phase = DeletePhase::Gone { marker };
+                // The row leaves because the service says so: re-read.
+                if let Some(location) = self.location().cloned() {
+                    self.go_to(location, window, cx);
+                }
+            }
+            DeleteEvent::Settled(DeleteOutcome::Failed(error)) => {
+                deletion.phase = DeletePhase::Failed {
+                    error,
+                    during_undo: false,
+                };
+            }
+            DeleteEvent::UndoSettled(UndoOutcome::Restored) => {
+                deletion.phase = DeletePhase::Restored;
+                if let Some(location) = self.location().cloned() {
+                    self.go_to(location, window, cx);
+                }
+            }
+            DeleteEvent::UndoSettled(UndoOutcome::Failed(error)) => {
+                deletion.phase = DeletePhase::Failed {
+                    error,
+                    during_undo: true,
+                };
+            }
+        }
+        cx.notify();
+    }
+
     /// Start one download and hold it as the window's transfer.
     fn start_download(
         &mut self,
@@ -1044,6 +1225,9 @@ impl CaixonhoApp {
     /// the guard keeps the display correct, this keeps the state honest.
     fn end_location(&mut self, cx: &mut Context<Self>) {
         self.position = None;
+        // A deletion's confirmation or outcome is about a key at a location;
+        // leaving the location takes it along (`XONHO-0021`).
+        self.deletion = None;
         self.listing = Listing::Idle;
         self.more = None;
         self.fetching = false;
@@ -1971,6 +2155,19 @@ impl CaixonhoApp {
                     ),
                 )
                 .child(
+                    // Apart from the three benign verbs, and in the danger
+                    // colour: this is the one that destroys. It only opens
+                    // the confirmation — nothing deletes on this click.
+                    div().debug_selector(|| "delete-action".into()).child(
+                        Button::new("delete-action")
+                            .label("Delete…")
+                            .ghost()
+                            .danger()
+                            .disabled(!on_object)
+                            .on_click(cx.listener(|app, _, _, cx| app.delete_selected(cx))),
+                    ),
+                )
+                .child(
                     Button::new("edit-path")
                         .label("Type a location")
                         .ghost()
@@ -2096,6 +2293,147 @@ impl CaixonhoApp {
             // family of bug as the `h_flex` one in `design-language.md`.
             .child(v_flex().flex_1().min_h_0().child(body))
             .children(self.transfer_line(cx))
+            .children(self.deletion_line(cx))
+    }
+
+    /// The deletion, from its confirmation to its aftermath — one line under
+    /// the listing, like the transfer's, and deliberately not the same
+    /// widget (`XONHO-0021`).
+    fn deletion_line(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        let deletion = self.deletion.as_ref()?;
+        let key = deletion.key.clone();
+
+        let dismiss = || {
+            Button::new("delete-dismiss")
+                .label("Dismiss")
+                .ghost()
+                .on_click(cx.listener(|app, _, _, cx| {
+                    app.deletion = None;
+                    cx.notify();
+                }))
+        };
+
+        let line = match &deletion.phase {
+            DeletePhase::Confirming => h_flex()
+                .debug_selector(|| "delete-confirm-strip".into())
+                .w_full()
+                .gap(space::TIGHT)
+                .items_center()
+                // The strong wording, always: no safety net is promised
+                // before the service has produced one. The net is announced
+                // after, when the response proves it exists.
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().danger)
+                        .child(format!("Delete `{key}` from this bucket?")),
+                )
+                .child(div().flex_1())
+                .child(
+                    div().debug_selector(|| "delete-confirm".into()).child(
+                        Button::new("delete-confirm")
+                            .label("Delete")
+                            .danger()
+                            .on_click(cx.listener(|app, _, _, cx| app.confirm_delete(cx))),
+                    ),
+                )
+                .child(
+                    div().debug_selector(|| "delete-cancel".into()).child(
+                        Button::new("delete-cancel")
+                            .label("Cancel")
+                            .ghost()
+                            .on_click(cx.listener(|app, _, _, cx| {
+                                app.deletion = None;
+                                cx.notify();
+                            })),
+                    ),
+                )
+                .into_any_element(),
+            DeletePhase::Deleting => h_flex()
+                .debug_selector(|| "delete-in-flight".into())
+                .w_full()
+                .items_center()
+                .child(div().text_sm().child(format!("Deleting `{key}`…")))
+                .into_any_element(),
+            DeletePhase::Gone { marker } => {
+                let mut line = h_flex()
+                    .debug_selector(|| "delete-gone".into())
+                    .w_full()
+                    .gap(space::TIGHT)
+                    .items_center();
+                line = match marker {
+                    // The undo exists exactly when the response proved it.
+                    Some(_) => line
+                        .child(div().text_sm().child(format!(
+                            "Deleted `{key}` — the bucket versions, so a marker was placed."
+                        )))
+                        .child(div().flex_1())
+                        .child(
+                            div().debug_selector(|| "delete-undo".into()).child(
+                                Button::new("delete-undo")
+                                    .label("Undo")
+                                    .ghost()
+                                    .on_click(cx.listener(|app, _, _, cx| app.undo_delete(cx))),
+                            ),
+                        ),
+                    None => line
+                        .child(div().text_sm().child(format!(
+                            "Deleted `{key}`. This bucket keeps no versions — it is gone."
+                        )))
+                        .child(div().flex_1()),
+                };
+                line.child(dismiss()).into_any_element()
+            }
+            DeletePhase::Restoring => h_flex()
+                .debug_selector(|| "delete-restoring".into())
+                .w_full()
+                .items_center()
+                .child(div().text_sm().child(format!("Restoring `{key}`…")))
+                .into_any_element(),
+            DeletePhase::Restored => h_flex()
+                .debug_selector(|| "delete-restored".into())
+                .w_full()
+                .gap(space::TIGHT)
+                .items_center()
+                .child(div().text_sm().child(format!("`{key}` is back.")))
+                .child(div().flex_1())
+                .child(dismiss())
+                .into_any_element(),
+            DeletePhase::Failed { error, during_undo } => {
+                let rendered = error.to_string();
+                h_flex()
+                    .debug_selector(|| "delete-failed".into())
+                    .w_full()
+                    .gap(space::TIGHT)
+                    .items_center()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().danger)
+                            // A failed undo must not read as a failed
+                            // delete: the object is still deleted and the
+                            // marker still stands.
+                            .child(if *during_undo {
+                                format!(
+                                    "Could not restore `{key}` — the marker still stands: {rendered}"
+                                )
+                            } else {
+                                format!("Delete failed: {rendered}")
+                            }),
+                    )
+                    .child(div().flex_1())
+                    .child(dismiss())
+                    .into_any_element()
+            }
+        };
+        Some(
+            div()
+                .w_full()
+                .px(space::TIGHT)
+                .py(space::TIGHT)
+                .child(line)
+                .into_any_element(),
+        )
     }
 
     /// The one transfer, said under the listing it belongs to — a line, not
@@ -3263,6 +3601,165 @@ mod tests {
         });
     }
 
+    // ---- Deleting (XONHO-0021 tasks 3.1–3.2) ----
+
+    /// The two-act rule at the window: the action confirms, only the
+    /// confirmation deletes, and dismissing leaves nothing behind.
+    #[gpui::test]
+    fn delete_asks_first_and_dismissing_deletes_nothing(cx: &mut TestAppContext) {
+        let (app, cx) = looking_at(cx, "reports");
+        app.update(cx, |app, cx| {
+            app.objects.update(cx, |state, _| {
+                state.delegate_mut().show(
+                    CorePrefix::root(),
+                    Vec::new(),
+                    vec![an_object("daily/summary.csv", 10)],
+                );
+            });
+            app.objects
+                .update(cx, |state, cx| state.set_selected_row(0, cx));
+            app.delete_selected(cx);
+        });
+        app.read_with(cx, |app, _| {
+            let deletion = app.deletion.as_ref().expect("the confirmation is up");
+            assert!(matches!(deletion.phase, DeletePhase::Confirming));
+            assert_eq!(deletion.key, "daily/summary.csv");
+        });
+
+        // Dismiss: the deletion state is gone and — the point of the
+        // two-act rule — nothing was ever spawned, because only
+        // confirm_delete spawns and it was never called.
+        app.update(cx, |app, cx| {
+            app.deletion = None;
+            cx.notify();
+        });
+        app.read_with(cx, |app, _| assert!(app.deletion.is_none()));
+    }
+
+    /// No selection, or a folder selected: the action does nothing at all.
+    #[gpui::test]
+    fn delete_gates_on_an_object_selection(cx: &mut TestAppContext) {
+        let (app, cx) = looking_at(cx, "reports");
+        app.update(cx, |app, cx| {
+            app.objects.update(cx, |state, _| {
+                state.delegate_mut().show(
+                    CorePrefix::root(),
+                    vec![caixonho_core::Folder {
+                        prefix: CorePrefix::parse("daily/"),
+                    }],
+                    Vec::new(),
+                );
+            });
+            app.delete_selected(cx);
+            assert!(app.deletion.is_none(), "no selection, no confirmation");
+            app.objects
+                .update(cx, |state, cx| state.set_selected_row(0, cx));
+            app.delete_selected(cx);
+        });
+        app.read_with(cx, |app, _| {
+            assert!(
+                app.deletion.is_none(),
+                "a folder is selected, and a folder is not deletable here"
+            );
+        });
+    }
+
+    /// The undo is offered exactly on proof, and a settled delete re-reads
+    /// the listing — observable as the listing going back to Loading.
+    #[gpui::test]
+    fn a_settled_delete_shows_its_proofed_undo_and_rereads(cx: &mut TestAppContext) {
+        let (app, cx) = looking_at(cx, "reports");
+        app.update_in(cx, |app, window, cx| {
+            app.deletion = Some(Deletion {
+                connection: app.outcome.active(),
+                bucket: "reports".into(),
+                key: "daily/summary.csv".into(),
+                phase: DeletePhase::Deleting,
+            });
+            app.apply_delete(
+                DeleteEvent::Settled(caixonho_core::session::DeleteOutcome::Gone {
+                    marker: Some("mk-9".into()),
+                }),
+                window,
+                cx,
+            );
+        });
+        app.read_with(cx, |app, _| {
+            match &app.deletion.as_ref().expect("the outcome is up").phase {
+                DeletePhase::Gone { marker } => assert_eq!(marker.as_deref(), Some("mk-9")),
+                _ => panic!("expected Gone"),
+            }
+            assert!(
+                matches!(app.listing, Listing::Loading),
+                "the row leaves because the service says so: a re-read is in flight"
+            );
+        });
+    }
+
+    /// An outcome from a connection the user has left is dropped whole —
+    /// above all its Undo, which would otherwise restore into the wrong
+    /// account's screen.
+    #[gpui::test]
+    fn an_outcome_from_a_left_connection_is_dropped(cx: &mut TestAppContext) {
+        let (app, cx) = looking_at(cx, "reports");
+        app.update_in(cx, |app, window, cx| {
+            app.deletion = Some(Deletion {
+                connection: ConnectionId(9_999),
+                bucket: "reports".into(),
+                key: "daily/summary.csv".into(),
+                phase: DeletePhase::Deleting,
+            });
+            app.apply_delete(
+                DeleteEvent::Settled(caixonho_core::session::DeleteOutcome::Gone {
+                    marker: Some("mk-9".into()),
+                }),
+                window,
+                cx,
+            );
+        });
+        app.read_with(cx, |app, _| {
+            assert!(
+                app.deletion.is_none(),
+                "a stale outcome renders nothing, offers nothing"
+            );
+        });
+    }
+
+    /// A failed undo keeps the truth straight: not restored, and not a
+    /// failed delete either.
+    #[gpui::test]
+    fn a_failed_undo_claims_no_restoration(cx: &mut TestAppContext) {
+        let (app, cx) = looking_at(cx, "reports");
+        app.update_in(cx, |app, window, cx| {
+            app.deletion = Some(Deletion {
+                connection: app.outcome.active(),
+                bucket: "reports".into(),
+                key: "daily/summary.csv".into(),
+                phase: DeletePhase::Restoring,
+            });
+            app.apply_delete(
+                DeleteEvent::UndoSettled(caixonho_core::session::UndoOutcome::Failed(
+                    Error::AccessDenied {
+                        iam_action: "s3:DeleteObjectVersion",
+                    },
+                )),
+                window,
+                cx,
+            );
+        });
+        app.read_with(cx, |app, _| {
+            match &app.deletion.as_ref().expect("held").phase {
+                DeletePhase::Failed { during_undo, .. } => {
+                    assert!(
+                        during_undo,
+                        "the words must be the undo's, not the delete's"
+                    )
+                }
+                _ => panic!("expected Failed"),
+            }
+        });
+    }
+
     fn phase_name(phase: &TransferPhase) -> &'static str {
         match phase {
             TransferPhase::Running => "Running",
@@ -3715,6 +4212,40 @@ mod tests {
                     cancel: caixonho_core::transfer::Cancel::default(),
                     phase: TransferPhase::ConditionUnsupported {
                         key: "daily/summary.csv".into(),
+                    },
+                });
+            },
+        ));
+
+        // The deletion's two decision states (`XONHO-0021`): the second act,
+        // and the aftermath that proves its undo.
+        written.push(shoot(
+            "bucket-09-delete-confirm",
+            Arc::new(StoreDouble::allows_listing()),
+            |app, _, cx| {
+                inside(app, cx);
+                app.listing = Listing::Loaded;
+                app.deletion = Some(Deletion {
+                    connection: app.outcome.active(),
+                    bucket: "reports".into(),
+                    key: "daily/summary.csv".into(),
+                    phase: DeletePhase::Confirming,
+                });
+            },
+        ));
+
+        written.push(shoot(
+            "bucket-10-deleted-with-undo",
+            Arc::new(StoreDouble::allows_listing()),
+            |app, _, cx| {
+                inside(app, cx);
+                app.listing = Listing::Loaded;
+                app.deletion = Some(Deletion {
+                    connection: app.outcome.active(),
+                    bucket: "reports".into(),
+                    key: "daily/summary.csv".into(),
+                    phase: DeletePhase::Gone {
+                        marker: Some("mk-screenshot".into()),
                     },
                 });
             },

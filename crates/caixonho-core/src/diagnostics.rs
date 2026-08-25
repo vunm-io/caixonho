@@ -1290,7 +1290,10 @@ mod tests {
             });
         });
 
-        assert!(log.contains("deleted an object"), "the delete is recorded:\n{log}");
+        assert!(
+            log.contains("deleted an object"),
+            "the delete is recorded:\n{log}"
+        );
         assert!(
             log.contains("removed a delete marker"),
             "and the undo:\n{log}"
