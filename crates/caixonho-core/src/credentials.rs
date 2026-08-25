@@ -76,11 +76,22 @@ impl StoredCredential {
 
 /// The part of a stored credential that is.
 ///
-/// Exists only between the form that produced it and the credential store, or
-/// between the credential store and the SDK client it signs for. It is never
-/// written to a file, never logged, and never rendered — see the hand-written
-/// [`std::fmt::Debug`] below, which is what keeps a stray `{:?}` from being
-/// the exception.
+/// It is never written to a file, never logged, and never rendered — see the
+/// hand-written [`std::fmt::Debug`] below, which is what keeps a stray
+/// `{:?}` from being the exception.
+///
+/// **How long one lives changed in `XONHO-0022`.** This comment used to say
+/// the type existed only in transit — between the form that produced it and
+/// the credential store, or between the store and the SDK client it signs
+/// for. [`Remembering`] now holds the pieces of one for the length of a run,
+/// so that is no longer true and the comment says so rather than quietly
+/// describing a lifetime the code stopped having.
+///
+/// What did **not** change is how it is held: these are ordinary `String`s
+/// and they are not wiped on drop, so a secret is readable in the process
+/// image while the program has it either way. The change is duration, not
+/// exposure — and making the type wipe itself is real, separate work,
+/// because it touches every construction site rather than one seam.
 #[derive(Clone, PartialEq, Eq)]
 pub struct CredentialSecret {
     secret_access_key: String,
@@ -324,6 +335,108 @@ fn problem_for(error: &keyring::Error) -> CredentialStoreProblem {
     }
 }
 
+/// A shared store is a store.
+///
+/// So a caller can hold one `Arc` and hand the same store to both a
+/// [`Remembering`] and to whatever wants to look at it directly — which is
+/// how a test asserts what the *inner* store was asked while the session
+/// talks only to the outer one.
+impl<S: SecretStore + ?Sized> SecretStore for std::sync::Arc<S> {
+    fn put(&self, connection: &str, field: SecretField, secret: &str) -> Result<()> {
+        (**self).put(connection, field, secret)
+    }
+
+    fn get(&self, connection: &str, field: SecretField) -> Result<Option<String>> {
+        (**self).get(connection, field)
+    }
+
+    fn delete(&self, connection: &str, field: SecretField) -> Result<()> {
+        (**self).delete(connection, field)
+    }
+}
+
+/// A [`SecretStore`] that asks the one beneath it at most once per entry
+/// (`XONHO-0022`).
+///
+/// A decorator rather than a map on the session, and the difference is the
+/// whole point: `put` and `delete` go through here too, so **saving a
+/// credential is invalidating it**. A call site that forgets to invalidate
+/// cannot be written, where with a map beside the session every future
+/// save-or-forget path would have to remember.
+///
+/// What is remembered lives as long as this value does and no longer —
+/// nothing reaches disk from here, and a new run starts knowing nothing.
+///
+/// Two answers are deliberately treated differently. An **absent** entry is
+/// remembered, because these items have exactly one writer — this
+/// application, through this decorator — so nothing can appear behind its
+/// back. A **refusal** is never remembered: a keychain that was locked a
+/// moment ago may be open now, and holding on to the "no" would strand the
+/// user behind a state that has passed.
+#[derive(Debug)]
+pub(crate) struct Remembering<S: SecretStore> {
+    inner: S,
+    known: std::sync::Mutex<std::collections::HashMap<(String, SecretField), Option<String>>>,
+}
+
+impl<S: SecretStore> Remembering<S> {
+    /// Wrap `inner`, remembering what it answers.
+    pub(crate) fn new(inner: S) -> Self {
+        Self {
+            inner,
+            known: std::sync::Mutex::default(),
+        }
+    }
+
+    /// The map, with a poisoned lock recovered rather than propagated — the
+    /// same choice `Session` makes, and for the same reason: the worst this
+    /// data can be is absent, which costs one extra question.
+    fn known(
+        &self,
+    ) -> std::sync::MutexGuard<'_, std::collections::HashMap<(String, SecretField), Option<String>>>
+    {
+        self.known
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+impl<S: SecretStore> SecretStore for Remembering<S> {
+    fn put(&self, connection: &str, field: SecretField, secret: &str) -> Result<()> {
+        // Written first, forgotten after: a write that failed leaves what
+        // was remembered still true, and forgetting it early would cost a
+        // question for nothing.
+        self.inner.put(connection, field, secret)?;
+        self.known().remove(&(connection.to_owned(), field));
+        Ok(())
+    }
+
+    fn get(&self, connection: &str, field: SecretField) -> Result<Option<String>> {
+        let key = (connection.to_owned(), field);
+        if let Some(known) = self.known().get(&key) {
+            return Ok(known.clone());
+        }
+        let answer = self.inner.get(connection, field)?;
+        self.known().insert(key, answer.clone());
+        Ok(answer)
+    }
+
+    fn delete(&self, connection: &str, field: SecretField) -> Result<()> {
+        self.inner.delete(connection, field)?;
+        self.known().remove(&(connection.to_owned(), field));
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+impl Remembering<double::SecretStoreDouble> {
+    /// How many times the wrapped store was actually asked. The assertion
+    /// this change is about.
+    fn inner_reads_of(&self, connection: &str, field: SecretField) -> usize {
+        self.inner.reads_of(connection, field)
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod double {
     //! A credential store a test can hold in its hand: what it was given,
@@ -343,6 +456,10 @@ pub(crate) mod double {
     #[derive(Debug, Default)]
     pub(crate) struct SecretStoreDouble {
         held: Mutex<Held>,
+        /// Every `get` this store served, in order. "Read once" is a claim
+        /// about a *number*, and a test can only make it if something holds
+        /// the number (`XONHO-0022`).
+        reads: Mutex<Vec<(String, SecretField)>>,
         /// The cause every refused call reports, and which field is refused —
         /// `None` for all of them.
         refusing: Option<(CredentialStoreProblem, Option<SecretField>)>,
@@ -358,6 +475,7 @@ pub(crate) mod double {
         pub(crate) fn refusing(problem: CredentialStoreProblem) -> Self {
             Self {
                 held: Mutex::default(),
+                reads: Mutex::default(),
                 refusing: Some((problem, None)),
             }
         }
@@ -369,6 +487,7 @@ pub(crate) mod double {
         pub(crate) fn refusing_only(problem: CredentialStoreProblem, field: SecretField) -> Self {
             Self {
                 held: Mutex::default(),
+                reads: Mutex::default(),
                 refusing: Some((problem, Some(field))),
             }
         }
@@ -379,6 +498,22 @@ pub(crate) mod double {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .clone()
+        }
+
+        /// Every `get` served, in the order it was asked.
+        pub(crate) fn reads(&self) -> Vec<(String, SecretField)> {
+            self.reads
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
+        }
+
+        /// How many times this store was asked for `(connection, field)`.
+        pub(crate) fn reads_of(&self, connection: &str, field: SecretField) -> usize {
+            self.reads()
+                .iter()
+                .filter(|(c, f)| c == connection && *f == field)
+                .count()
         }
 
         /// Whether this call is one the store refuses, and with what.
@@ -408,6 +543,13 @@ pub(crate) mod double {
         }
 
         fn get(&self, connection: &str, field: SecretField) -> Result<Option<String>> {
+            // Counted before the refusal check: a call that was refused was
+            // still a call, and a test about how often the store is reached
+            // wants to know about it.
+            self.reads
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push((connection.to_owned(), field));
             if let Some(refusal) = self.refusal(connection, field) {
                 return Err(refusal);
             }
@@ -855,6 +997,147 @@ mod tests {
             SecretField::SecretAccessKey.service(),
             SecretField::SessionToken.service(),
             "one entry per field, or saving the second would overwrite the first"
+        );
+    }
+
+    // ---- Remembering (XONHO-0022 task 1.2) ----
+
+    /// The claim this change exists for, as a number.
+    #[test]
+    fn the_same_entry_is_asked_for_once() {
+        let inner = SecretStoreDouble::open();
+        inner
+            .put("work", SecretField::SecretAccessKey, SECRET)
+            .expect("an open store accepts it");
+        let reads_before = inner.reads_of("work", SecretField::SecretAccessKey);
+        let store = Remembering::new(inner);
+
+        for _ in 0..3 {
+            assert_eq!(
+                store
+                    .get("work", SecretField::SecretAccessKey)
+                    .expect("reads"),
+                Some(SECRET.to_owned())
+            );
+        }
+        assert_eq!(
+            store.inner_reads_of("work", SecretField::SecretAccessKey) - reads_before,
+            1,
+            "three gets, one question"
+        );
+    }
+
+    /// One entry does not stand in for another — neither across
+    /// connections nor across the two fields of one credential.
+    #[test]
+    fn each_entry_is_its_own_question() {
+        let store = Remembering::new(SecretStoreDouble::open());
+        store
+            .put("work", SecretField::SecretAccessKey, SECRET)
+            .expect("accepts");
+        store
+            .put("home", SecretField::SecretAccessKey, "other")
+            .expect("accepts");
+
+        assert_eq!(
+            store
+                .get("work", SecretField::SecretAccessKey)
+                .expect("reads"),
+            Some(SECRET.to_owned())
+        );
+        assert_eq!(
+            store
+                .get("home", SecretField::SecretAccessKey)
+                .expect("reads"),
+            Some("other".to_owned())
+        );
+        assert_eq!(
+            store.get("work", SecretField::SessionToken).expect("reads"),
+            None,
+            "the same connection's other field is a different question"
+        );
+    }
+
+    /// A credential with no session token asks about it once, not once per
+    /// open — the absent answer is an answer.
+    #[test]
+    fn an_absent_entry_is_not_asked_about_twice() {
+        let store = Remembering::new(SecretStoreDouble::open());
+
+        for _ in 0..3 {
+            assert_eq!(
+                store.get("work", SecretField::SessionToken).expect("reads"),
+                None
+            );
+        }
+        assert_eq!(
+            store.inner_reads_of("work", SecretField::SessionToken),
+            1,
+            "there is nothing there, and finding that out once is enough"
+        );
+    }
+
+    /// Writing invalidates — and it does so because the write goes through
+    /// here, not because a caller remembered to say so.
+    #[test]
+    fn a_write_replaces_what_was_remembered() {
+        let store = Remembering::new(SecretStoreDouble::open());
+        store
+            .put("work", SecretField::SecretAccessKey, SECRET)
+            .expect("accepts");
+        assert_eq!(
+            store
+                .get("work", SecretField::SecretAccessKey)
+                .expect("reads"),
+            Some(SECRET.to_owned())
+        );
+
+        store
+            .put("work", SecretField::SecretAccessKey, "a new secret")
+            .expect("accepts");
+        assert_eq!(
+            store
+                .get("work", SecretField::SecretAccessKey)
+                .expect("reads"),
+            Some("a new secret".to_owned()),
+            "the secret the user just saved is the one that gets signed with"
+        );
+    }
+
+    #[test]
+    fn a_removal_is_not_papered_over_by_what_was_remembered() {
+        let store = Remembering::new(SecretStoreDouble::open());
+        store
+            .put("work", SecretField::SecretAccessKey, SECRET)
+            .expect("accepts");
+        let _ = store.get("work", SecretField::SecretAccessKey);
+
+        store
+            .delete("work", SecretField::SecretAccessKey)
+            .expect("accepts");
+        assert_eq!(
+            store
+                .get("work", SecretField::SecretAccessKey)
+                .expect("reads"),
+            None,
+            "a forgotten credential is forgotten"
+        );
+    }
+
+    /// A store that refused once may be askable a moment later — a locked
+    /// keychain is unlocked, and remembering the refusal would strand the
+    /// user behind a state that has passed.
+    #[test]
+    fn a_refusal_is_never_remembered() {
+        let store = Remembering::new(SecretStoreDouble::refusing(CredentialStoreProblem::Locked));
+
+        for _ in 0..3 {
+            assert!(store.get("work", SecretField::SecretAccessKey).is_err());
+        }
+        assert_eq!(
+            store.inner_reads_of("work", SecretField::SecretAccessKey),
+            3,
+            "every attempt reached the store; none was answered from memory"
         );
     }
 }

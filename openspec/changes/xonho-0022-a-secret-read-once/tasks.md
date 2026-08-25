@@ -6,7 +6,10 @@
 
 ## 1. The decorator
 
-- [ ] 1.1 `SecretStoreDouble` counts what it was asked [dispatch: main]
+- [x] 1.1 `SecretStoreDouble` counts what it was asked [dispatch: main]
+      - Done in `main` (2026-08-25). Reads are recorded **before** the
+        refusal check: a call that was refused still reached the store, and
+        a test about how often the store is consulted wants to know.
   - Paths: `crates/caixonho-core/src/credentials.rs`
   - Done criteria: the double records every `get(connection, field)` it
     serves, and exposes the count — so a test can assert *how many times*
@@ -14,7 +17,17 @@
     unaffected.
   - Verification: `cargo test -p caixonho-core credentials::`
 
-- [ ] 1.2 `Remembering`, wrapping any `SecretStore` [dispatch: main]
+- [x] 1.2 `Remembering`, wrapping any `SecretStore` [dispatch: main]
+      - Done in `main` (2026-08-25), red first: six tests against a
+        `todo!()` body, all six listed below now green.
+      - One addition beyond the plan, small and needed: a blanket
+        `impl SecretStore for Arc<S>`, so one `Arc` can be handed to a
+        `Remembering` *and* held for direct inspection — which is how the
+        session test asserts what the inner store was asked while the
+        session talks only to the outer one.
+      - `put` writes first and forgets after: a write that failed leaves
+        what was remembered still true, and forgetting early would cost a
+        question for nothing.
   - Paths: `crates/caixonho-core/src/credentials.rs`
   - Done criteria: `get` memoizes by `(connection, field)` including the
     `None` answer; `put` and `delete` drop that key's entry; a poisoned lock
@@ -34,8 +47,17 @@
 
 ## 2. The session uses it
 
-- [ ] 2.1 Wrap `Keyring`, and correct the type's documentation
+- [x] 2.1 Wrap `Keyring`, and correct the type's documentation
       [dispatch: main]
+      - Done in `main` (2026-08-25). `CredentialSecret`'s comment no longer
+        claims the type exists only in transit, and says both what changed
+        (duration) and what did not (these are plain `String`s, unwiped —
+        so exposure class is the same either way).
+      - A `#[cfg(test)]` belonging to `mod double` was briefly captured by
+        the new struct during editing, which made `Remembering` "configured
+        out" and produced three confusing errors. Noted because the symptom
+        — *unresolved import for a type you can see* — reads as anything
+        but an attribute one line out of place.
   - Paths: `crates/caixonho-core/src/session.rs`,
     `crates/caixonho-core/src/credentials.rs`
   - Done criteria: `Session::new` builds `Remembering::new(Keyring)`;
@@ -45,8 +67,13 @@
     run, and the comment says so and says why.
   - Verification: `cargo test -p caixonho-core`
 
-- [ ] 2.2 The session-level assertion: one open, then another
+- [x] 2.2 The session-level assertion: one open, then another
       [dispatch: main]
+      - Done in `main` (2026-08-25). Both opens fail at the network — this
+        machine reaches nothing — but both reach the credential store
+        first, which is the part under test.
+      - Ablated to confirm the assertions bite: removing the memory lookup
+        turns three tests red, at both the decorator and the session tier.
   - Paths: `crates/caixonho-core/src/session.rs`
   - Done criteria: a test opens the same stored connection twice through a
     `Session` built over a counting double wrapped in `Remembering`, and

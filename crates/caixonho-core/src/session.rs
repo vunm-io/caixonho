@@ -15,7 +15,7 @@ use crate::adapter::S3ObjectStore;
 use crate::capability::{Capability, CapabilityStore, CredentialsId, Observation, Scope};
 use crate::connection::{self, Connection, ConnectionSource};
 use crate::connections::{self, ConfigDirectory, ConnectionFile};
-use crate::credentials::{CredentialSecret, Keyring, SecretStore, StoredCredential};
+use crate::credentials::{CredentialSecret, Keyring, Remembering, SecretStore, StoredCredential};
 use crate::diagnostics;
 use crate::error::{Error, Result};
 use crate::outcome::{Outcome, TaggedOutcome};
@@ -100,7 +100,12 @@ impl Session {
             runtime,
             http,
             paths,
-            secrets: Arc::new(Keyring),
+            // Wrapped, so the credential store is asked once per entry per
+            // run rather than once per connection open (`XONHO-0022`).
+            // `with_secret_store` deliberately still takes a bare store: a
+            // test that wants to count reads should decide for itself
+            // whether the counting sits inside or outside the memory.
+            secrets: Arc::new(Remembering::new(Keyring)),
             connections: Arc::new(ConfigDirectory),
             capabilities: Arc::new(Mutex::new(CapabilityStore::new())),
             scheduler: Arc::default(),
@@ -2270,5 +2275,82 @@ mod tests {
             PreviewOutcome::NoPreview
         ));
         assert_eq!(double.gets_served(), 0);
+    }
+
+    // ---- Reading a secret once per run (XONHO-0022) ----
+
+    /// The claim, where a real caller lives: two opens of the same stored
+    /// connection consult the credential store once.
+    #[tokio::test]
+    async fn opening_the_same_connection_twice_asks_the_store_once() {
+        let fixture = Fixture::new("secret-read-once");
+        let session = fixture.session("work");
+        let double = Arc::new(SecretStoreDouble::open());
+        credentials::save(
+            double.as_ref(),
+            &stored(),
+            &CredentialSecret::new(SECRET, None),
+        )
+        .expect("an open store accepts it");
+        let reads_before = double.reads_of(
+            stored().name(),
+            crate::credentials::SecretField::SecretAccessKey,
+        );
+        let session = session.with_secret_store(Arc::new(crate::credentials::Remembering::new(
+            double.clone(),
+        )));
+
+        // Both opens fail at the network — this machine reaches nothing —
+        // but both reach the credential store first, which is the part
+        // under test.
+        let _ = session.open(ConnectionId(1), stored()).await;
+        let _ = session.open(ConnectionId(2), stored()).await;
+
+        assert_eq!(
+            double.reads_of(
+                stored().name(),
+                crate::credentials::SecretField::SecretAccessKey
+            ) - reads_before,
+            1,
+            "two opens, one question to the credential store"
+        );
+    }
+
+    /// And the invalidation, at the same seam: a secret saved between two
+    /// opens is the one the second open uses.
+    #[tokio::test]
+    async fn a_secret_saved_between_opens_is_the_one_used() {
+        let fixture = Fixture::new("secret-resaved");
+        let double = Arc::new(SecretStoreDouble::open());
+        let remembering = Arc::new(crate::credentials::Remembering::new(double.clone()));
+        credentials::save(
+            remembering.as_ref(),
+            &stored(),
+            &CredentialSecret::new(SECRET, None),
+        )
+        .expect("accepts");
+        let session = fixture
+            .session("work")
+            .with_secret_store(remembering.clone());
+
+        let _ = session.open(ConnectionId(1), stored()).await;
+
+        // Saved through the same handle the session holds — which is what
+        // makes invalidation structural rather than something this test had
+        // to arrange.
+        credentials::save(
+            remembering.as_ref(),
+            &stored(),
+            &CredentialSecret::new("a replacement secret", None),
+        )
+        .expect("accepts");
+
+        let loaded = credentials::load(remembering.as_ref(), stored().name())
+            .expect("the credential is still there");
+        assert_eq!(
+            loaded.secret_access_key(),
+            "a replacement secret",
+            "the secret the user just saved is the one that gets signed with"
+        );
     }
 }
