@@ -97,7 +97,14 @@
 
 ## 4. The window
 
-- [ ] 4.1 The Preview action and the surface [dispatch: main]
+- [x] 4.1 The Preview action and the surface [dispatch: main]
+      - Done in `main` (2026-08-25). One correction made against the plan
+        *during* implementation rather than after: the first cut of the
+        surface replaced the whole contents pane, path bar included — the
+        plan says "path bar stays", and it now does, so every verb remains
+        reachable while a preview is open. The truncation line renders
+        exactly when total exceeds shown, with both numbers through the
+        shared `readable`.
   - Paths: `crates/caixonho-gui/src/app.rs`
   - Done criteria: a Preview action with the object-selection gating,
     placed with the benign verbs; `preview: Option<Preview>` carrying its
@@ -110,7 +117,12 @@
     Selectors: `preview-action`, `preview-surface`, `preview-back`.
   - Verification: `cargo test -p caixonho-gui`
 
-- [ ] 4.2 Staleness, and the harness [dispatch: main]
+- [x] 4.2 Staleness, and the harness [dispatch: main]
+      - Done in `main` (2026-08-25). The lifecycle mirrors the deletion
+        strip's and is tested with the same shapes: a same-location re-read
+        keeps the preview, departure and `leave_bucket` drop it, and an
+        outcome for a left connection is dropped whole. The text and binary
+        states are in the harness: 20 images.
   - Paths: `crates/caixonho-gui/src/app.rs`
   - Done criteria: the preview drops on `end_location`, on `go_to` to a
     different location, and on a result arriving for a connection no longer
@@ -121,7 +133,12 @@
 
 ## 5. Reader-facing documents, in this change
 
-- [ ] 5.1 README, roadmap, requirements-status [dispatch: main]
+- [x] 5.1 README, roadmap, requirements-status [dispatch: main]
+      - Done in `main` (2026-08-25). The §4.5 preview `[S]` row enters as
+        **partial** with markdown rendering named as the gap; the summary
+        prose recounts §4.5 at 5 rows. The not-there-yet line swaps
+        "previewing an object" for the narrower truth, "rendered markdown
+        preview". Counts by the script.
   - Paths: `README.md`, `docs/roadmap.md`, `docs/requirements-status.md`
   - Done criteria: README says what previews and what honestly refuses;
     roadmap's M3 table gains this change's row; requirements-status §4.5
@@ -132,8 +149,10 @@
 
 ## 6. Close-out
 
-- [ ] 6.1 `cargo fmt --all`, `cargo clippy --workspace --all-targets --
+- [x] 6.1 `cargo fmt --all`, `cargo clippy --workspace --all-targets --
       -D warnings`, `cargo test --workspace` green [dispatch: main]
+      - Done in `main` (2026-08-25): fmt checked, clippy zero at
+        `-D warnings`, 334 core + 62 window green (8 + 1 ignored).
   - Paths: whole workspace
   - Done criteria: all three exit zero
   - Verification: the commands themselves
@@ -154,7 +173,32 @@
     withheld.
   - Verification: the log shows preview outcomes with no keys
 
-- [ ] 6.4 Close-out review per `AGENTS.md` [dispatch: main]
+- [x] 6.4 Close-out review per `AGENTS.md` [dispatch: main]
+      - Run 2026-08-25, before the live check as with the last three.
+      - **Q1, two departures caught while the change was warm, both now
+        held to:** the first surface cut replaced the path bar the plan said
+        stays (fixed in 4.1, noted there), and the too-large refusal
+        hardcoded a sentence where the spec says *states the size* — clippy
+        flagged the unread `size` field, and the flag was the requirement
+        going unmet, not a field going spare. The refusal now says the size
+        through the shared formatter.
+      - **Q2 both directions:** README/roadmap/requirements in the commits
+        that made them true; the not-there-yet line narrowed to the exact
+        remaining gap (rendered markdown). Rows either side: `0007`, `0020`,
+        `0021` all still *awaiting live acceptance*, correctly.
+      - **Q3:** no dead API; the double's `gets_served` counter has three
+        asserting callers; nothing commented out; the probe additions are
+        refusals with reasons, not stubs.
+      - **Q4, named residue for 6.3:** the truncation line's numbers against
+        a real ranged response (the double's total is scripted, the
+        service's is parsed from `content_range` — the parse itself has no
+        unit test against a real header string, which is exactly what the
+        `#[ignore]`d head test prints for eyeballing); gpui's decode of a
+        real image's bytes (the unit path stops at handing bytes to
+        `gpui::Image`, which defers decode to render); and the 416
+        empty-object arm, which no canned test drives.
+      - **Q5:** everything undone is a row in requirements-status or this
+        file's 6.3; nothing lives only in conversation.
   - Paths: this change
   - Done criteria: the five questions answered and recorded here, question
     2 read the wide way.

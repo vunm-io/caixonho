@@ -86,6 +86,7 @@ the first one moved.
 | Create "folder"; delete single/bulk/recursive with a counted confirmation | partial | `XONHO-0021`: one object, through a confirmation that names the exact key — stronger than a count of 1. Bulk, recursive and create-folder are not started; the counted confirmation belongs to bulk, where a mistake multiplies |
 | Copy/move within and across buckets, multipart above the `CopyObject` cap | none | |
 | Properties panel: size, ETag, storage class, encryption, metadata, tags, owner, version id | none | Size, class and ETag already cross the port for the listing; the panel does not exist |
+| Preview without full download: ranged first-N-KB for text kinds; images; markdown (`[S]`) | partial | `XONHO-0008`. Text kinds show their first 64 KiB with both numbers from the ranged response; images draw whole under a 20 MiB gate (a truncated raster does not decode, so ranged was never an option there — recorded in the change's design); binary wearing a text name is called binary. The gap is markdown *rendering* — it previews as the text it is |
 | Delete on a versioned bucket creates a marker ⇒ offer Undo, hide it on unversioned (`[S]`) | done | `XONHO-0021`. The offer is derived from the delete response's own `delete_marker`/`version_id` pair — no versioning probe, no guess; a refused undo names `s3:DeleteObjectVersion` and claims no restoration |
 
 ## §4.6 — M3 and later
@@ -99,9 +100,9 @@ started** — §4.1 has 2 done, 5 partial, 1 not started; §4.2 has 3, 3 and 1;
 §4.3, the headline, has 6, 2 and 1. Outside M1, §7–8 stands at 2 done, 3
 partial and nothing unstarted; §4.4 — opened by `XONHO-0007` on
 2026-08-24 — at 1 done, 3 partial, 3 not started of its 7; and §4.5 —
-opened by `XONHO-0021` on 2026-08-25 — at 1 done, 1 partial, 2 not started
-of its 4 (three `[M]` and the marker-undo `[S]`, listed because it is
-built).
+opened by `XONHO-0021` on 2026-08-25 — at 1 done, 2 partial, 2 not started
+of its 5 (three `[M]` plus the two built `[S]` rows, listed because a done
+or partial `[S]` unlisted would make the section read emptier than it is).
 
 The nearest gap is signing in to IAM Identity Center from the app — mandatory,
 unbuilt, and stepped over by four changes running. Entering a credential and

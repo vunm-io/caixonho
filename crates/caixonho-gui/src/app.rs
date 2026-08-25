@@ -71,6 +71,10 @@ pub(crate) struct CaixonhoApp {
     deletion: Option<Deletion>,
     /// Where delete and undo outcomes come back.
     deletions: flume::Sender<DeleteEvent>,
+    /// The preview on screen or in flight, if any (`XONHO-0008`).
+    preview: Option<Preview>,
+    /// Where preview outcomes come back.
+    previews: flume::Sender<caixonho_core::preview::PreviewOutcome>,
     /// The connection whose removal has been asked for and not yet confirmed.
     /// Removing a credential cannot be undone, so it takes a second deliberate
     /// act on a surface of its own — not a button that changes its label under
@@ -259,6 +263,37 @@ enum DeletePhase {
 enum DeleteEvent {
     Settled(caixonho_core::session::DeleteOutcome),
     UndoSettled(caixonho_core::session::UndoOutcome),
+}
+
+/// One preview, in flight or on screen (`XONHO-0008`).
+///
+/// Carries its connection for the `XONHO-0019` discipline: a page fetched
+/// under one account must never render under another's name.
+struct Preview {
+    connection: ConnectionId,
+    key: String,
+    phase: PreviewPhase,
+}
+
+enum PreviewPhase {
+    /// The fetch is in flight.
+    Loading,
+    /// A first page of text, with the numbers for the truncation line.
+    Text {
+        content: SharedString,
+        shown: u64,
+        total: Option<u64>,
+    },
+    /// A whole raster, ready to draw.
+    Image(std::sync::Arc<gpui::Image>),
+    /// The name said text; the bytes said otherwise.
+    Binary,
+    /// Over the gate; nothing was fetched.
+    TooLarge { size: u64 },
+    /// No preview serves this kind.
+    NoPreview,
+    /// The fetch failed, with its classified cause.
+    Failed(Error),
 }
 
 /// Where the user is, and the connection they got there on.
@@ -555,6 +590,17 @@ impl CaixonhoApp {
         })
         .detach();
 
+        let (previews, previewing) = flume::unbounded::<caixonho_core::preview::PreviewOutcome>();
+        cx.spawn_in(window, async move |this, cx| {
+            while let Ok(outcome) = previewing.recv_async().await {
+                let applied = this.update_in(cx, |app, _, cx| app.apply_preview(outcome, cx));
+                if applied.is_err() {
+                    break; // The window is gone.
+                }
+            }
+        })
+        .detach();
+
         // A third channel, for the one operation that reports twice: once when
         // there is a code to put on screen, and once when it is over.
         let (sign_ins, signing) = flume::unbounded::<SignInEvent>();
@@ -588,6 +634,8 @@ impl CaixonhoApp {
             transfers,
             deletion: None,
             deletions,
+            preview: None,
+            previews,
             confirming: None,
             unavailable: std::collections::HashMap::new(),
             region: RegionChoice::All,
@@ -655,6 +703,7 @@ impl CaixonhoApp {
         // outcome refreshes the listing (`XONHO-0021`).
         if self.location() != Some(&location) {
             self.deletion = None;
+            self.preview = None;
         }
         self.path.update(cx, |state, cx| {
             state.set_value(location.to_string(), window, cx);
@@ -966,6 +1015,79 @@ impl CaixonhoApp {
         self.start_upload(transfer.bucket, transfer.key, source, collision, cx);
     }
 
+    /// Preview the selected object (`XONHO-0008` task 4.1).
+    fn preview_selected(&mut self, cx: &mut Context<Self>) {
+        let (Some(location), Some(index)) = (
+            self.location().cloned(),
+            self.objects.read(cx).selected_row(),
+        ) else {
+            return;
+        };
+        let Some(crate::views::objects::Entry::Object(object)) =
+            self.objects.read(cx).delegate().row(index).cloned()
+        else {
+            return;
+        };
+        let Some(session) = self.session.clone() else {
+            return;
+        };
+        self.preview = Some(Preview {
+            connection: self.outcome.active(),
+            key: object.key.clone(),
+            phase: PreviewPhase::Loading,
+        });
+        let inbox = self.previews.clone();
+        session.spawn_preview(location.bucket, object.key, object.size, move |outcome| {
+            let _ = inbox.send(outcome);
+        });
+        cx.notify();
+    }
+
+    /// Apply a preview outcome, unless its preview has left the screen.
+    fn apply_preview(
+        &mut self,
+        outcome: caixonho_core::preview::PreviewOutcome,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(preview) = self.preview.as_mut() else {
+            return; // Backed out while the fetch was in flight.
+        };
+        if preview.connection != self.outcome.active() {
+            // Fetched under an account the user has left; render nothing
+            // under the new one's name (`XONHO-0019`).
+            self.preview = None;
+            cx.notify();
+            return;
+        }
+        use caixonho_core::preview::{PreviewOutcome, RasterKind};
+        preview.phase = match outcome {
+            PreviewOutcome::Text {
+                content,
+                shown,
+                total,
+            } => PreviewPhase::Text {
+                content: content.into(),
+                shown,
+                total,
+            },
+            PreviewOutcome::Image { bytes, format } => {
+                let format = match format {
+                    RasterKind::Png => gpui::ImageFormat::Png,
+                    RasterKind::Jpeg => gpui::ImageFormat::Jpeg,
+                    RasterKind::Gif => gpui::ImageFormat::Gif,
+                    RasterKind::Webp => gpui::ImageFormat::Webp,
+                    RasterKind::Bmp => gpui::ImageFormat::Bmp,
+                };
+                PreviewPhase::Image(std::sync::Arc::new(gpui::Image::from_bytes(format, bytes)))
+            }
+            PreviewOutcome::Binary => PreviewPhase::Binary,
+            PreviewOutcome::ImageTooLarge { size } => PreviewPhase::TooLarge { size },
+            PreviewOutcome::NoPreview => PreviewPhase::NoPreview,
+            PreviewOutcome::Failed(error) => PreviewPhase::Failed(error),
+        };
+        cx.notify();
+    }
+
     /// Ask to delete the selected object (`XONHO-0021` task 3.1).
     ///
     /// Asks. The first act deletes nothing: it puts the named-key
@@ -1226,8 +1348,10 @@ impl CaixonhoApp {
     fn end_location(&mut self, cx: &mut Context<Self>) {
         self.position = None;
         // A deletion's confirmation or outcome is about a key at a location;
-        // leaving the location takes it along (`XONHO-0021`).
+        // leaving the location takes it along (`XONHO-0021`). The preview is
+        // about one too (`XONHO-0008`).
         self.deletion = None;
+        self.preview = None;
         self.listing = Listing::Idle;
         self.more = None;
         self.fetching = false;
@@ -2122,6 +2246,15 @@ impl CaixonhoApp {
                 .gap(space::TIGHT)
                 .child(div().flex_1().child(trail))
                 .child(
+                    div().debug_selector(|| "preview-action".into()).child(
+                        Button::new("preview-action")
+                            .label("Preview")
+                            .ghost()
+                            .disabled(!on_object)
+                            .on_click(cx.listener(|app, _, _, cx| app.preview_selected(cx))),
+                    ),
+                )
+                .child(
                     div().debug_selector(|| "open-action".into()).child(
                         Button::new("open-action")
                             .label("Open")
@@ -2220,6 +2353,120 @@ impl CaixonhoApp {
                 cx.notify();
             }
         }
+    }
+
+    /// The preview, in the listing's place (`XONHO-0008`).
+    fn preview_surface(&mut self, location: Location, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(preview) = self.preview.as_ref() else {
+            return v_flex().into_any_element();
+        };
+        let key = preview.key.clone();
+
+        let body = match &preview.phase {
+            PreviewPhase::Loading => skeleton_rows(6),
+            PreviewPhase::Text {
+                content,
+                shown,
+                total,
+            } => {
+                let mut page = v_flex().size_full().gap(space::TIGHT);
+                // The truncation line exists exactly when the object goes on
+                // past what was fetched, and both numbers are the service's.
+                if let Some(total) = total.filter(|total| total > shown) {
+                    page = page.child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!(
+                                "First {} of {} — Open or Download for the rest.",
+                                crate::views::objects::readable(*shown),
+                                crate::views::objects::readable(total)
+                            )),
+                    );
+                }
+                page.child(
+                    div()
+                        .id("preview-text")
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .font_family("monospace")
+                        .text_sm()
+                        .child(content.clone()),
+                )
+                .into_any_element()
+            }
+            PreviewPhase::Image(image) => div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(gpui::img(image.clone()).max_w_full().max_h_full())
+                .into_any_element(),
+            PreviewPhase::Binary => empty_state(
+                IconName::File,
+                "This is not text.",
+                "The name suggested text, the bytes did not. Open it with the \
+                 application that owns this kind.",
+                cx,
+            ),
+            PreviewPhase::TooLarge { size } => empty_state(
+                IconName::File,
+                "Too large to preview.",
+                // The size is said, per the spec — clippy flagged this field
+                // as unread, which was the requirement going unmet, not a
+                // field going spare.
+                format!(
+                    "This image is {} — over the 20 MiB preview limit. Open or \
+                     download it instead.",
+                    crate::views::objects::readable(*size)
+                ),
+                cx,
+            ),
+            PreviewPhase::NoPreview => empty_state(
+                IconName::File,
+                "No preview for this kind.",
+                "Open it with the application that owns it — the preview shows \
+                 text and images only.",
+                cx,
+            ),
+            PreviewPhase::Failed(error) => {
+                let rendered = error.to_string();
+                let panel = self.failure_panel_from(rendered, error, cx);
+                panel.into_any_element()
+            }
+        };
+
+        v_flex()
+            .debug_selector(|| "preview-surface".into())
+            .size_full()
+            .gap(space::TIGHT)
+            // The path bar stays — the preview replaces the listing, not the
+            // location (`XONHO-0008` plan, held to).
+            .child(self.path_bar(&location, cx))
+            .child(
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .gap(space::TIGHT)
+                    .child(
+                        div().debug_selector(|| "preview-back".into()).child(
+                            Button::new("preview-back").label("Back").ghost().on_click(
+                                cx.listener(|app, _, window, cx| {
+                                    app.preview = None;
+                                    // Back lands on a fresh listing, the same
+                                    // re-read the deletion strip uses.
+                                    if let Some(location) = app.location().cloned() {
+                                        app.go_to(location, window, cx);
+                                    }
+                                }),
+                            ),
+                        ),
+                    )
+                    .child(div().text_sm().child(key)),
+            )
+            .child(v_flex().flex_1().min_h_0().child(body))
+            .into_any_element()
     }
 
     /// What one location holds, or why it does not say.
@@ -2757,8 +3004,13 @@ impl CaixonhoApp {
 
         // Inside a bucket, the panel shows what that location holds. This is
         // the one branch browsing adds here; everything it renders lives in
-        // `views/objects.rs` (task 1.1, amended).
+        // `views/objects.rs` (task 1.1, amended). A preview, when one is
+        // open, takes the listing's place — path bar intact, Back to leave
+        // (`XONHO-0008`).
         if let Some(location) = self.location().cloned() {
+            if self.preview.is_some() {
+                return self.preview_surface(location, cx).into_any_element();
+            }
             return self.contents(location, cx).into_any_element();
         }
 
@@ -3858,6 +4110,143 @@ mod tests {
         });
     }
 
+    // ---- Previewing (XONHO-0008 tasks 4.1–4.2) ----
+
+    fn a_preview(phase: PreviewPhase) -> Preview {
+        Preview {
+            connection: ConnectionId(0),
+            key: "daily/big.log".into(),
+            phase,
+        }
+    }
+
+    /// The verb gates like the others: an object selection or nothing.
+    #[gpui::test]
+    fn preview_gates_on_an_object_selection(cx: &mut TestAppContext) {
+        let (app, cx) = looking_at(cx, "reports");
+        app.update(cx, |app, cx| {
+            app.objects.update(cx, |state, _| {
+                state.delegate_mut().show(
+                    CorePrefix::root(),
+                    vec![caixonho_core::Folder {
+                        prefix: CorePrefix::parse("daily/"),
+                    }],
+                    vec![an_object("daily/big.log", 100_000)],
+                );
+            });
+            app.preview_selected(cx);
+            assert!(app.preview.is_none(), "no selection previews nothing");
+            app.objects
+                .update(cx, |state, cx| state.set_selected_row(0, cx));
+            app.preview_selected(cx);
+            assert!(app.preview.is_none(), "a folder previews nothing");
+            app.objects
+                .update(cx, |state, cx| state.set_selected_row(1, cx));
+            app.preview_selected(cx);
+        });
+        app.read_with(cx, |app, _| {
+            let preview = app.preview.as_ref().expect("in flight");
+            assert!(matches!(preview.phase, PreviewPhase::Loading));
+            assert_eq!(preview.key, "daily/big.log");
+        });
+    }
+
+    /// A text outcome lands with both numbers; a stale one lands nowhere.
+    #[gpui::test]
+    fn a_text_outcome_lands_and_a_stale_one_is_dropped(cx: &mut TestAppContext) {
+        let (app, cx) = looking_at(cx, "reports");
+        app.update(cx, |app, cx| {
+            app.preview = Some(Preview {
+                connection: app.outcome.active(),
+                key: "daily/big.log".into(),
+                phase: PreviewPhase::Loading,
+            });
+            app.apply_preview(
+                caixonho_core::preview::PreviewOutcome::Text {
+                    content: "first page".into(),
+                    shown: 10,
+                    total: Some(100_000),
+                },
+                cx,
+            );
+        });
+        app.read_with(cx, |app, _| {
+            match &app.preview.as_ref().expect("on screen").phase {
+                PreviewPhase::Text { shown, total, .. } => {
+                    assert_eq!((*shown, *total), (10, Some(100_000)));
+                }
+                _ => panic!("expected Text"),
+            }
+        });
+
+        // The stale shape: fetched under a connection the user has left.
+        let (app, cx) = looking_at(cx, "reports");
+        app.update(cx, |app, cx| {
+            app.preview = Some(a_preview(PreviewPhase::Loading)); // ConnectionId(0) ≠ active
+            app.preview.as_mut().unwrap().connection = ConnectionId(9_999);
+            app.apply_preview(caixonho_core::preview::PreviewOutcome::Binary, cx);
+        });
+        app.read_with(cx, |app, _| {
+            assert!(
+                app.preview.is_none(),
+                "a page fetched under one account never renders under another's name"
+            );
+        });
+    }
+
+    /// The refusals each become their own phase — the window has three
+    /// different honest sentences, so the states must stay distinct.
+    #[gpui::test]
+    fn each_refusal_keeps_its_own_shape(cx: &mut TestAppContext) {
+        use caixonho_core::preview::PreviewOutcome;
+        let (app, cx) = looking_at(cx, "reports");
+        let cases: Vec<(PreviewOutcome, &'static str)> = vec![
+            (PreviewOutcome::Binary, "Binary"),
+            (PreviewOutcome::ImageTooLarge { size: 999 }, "TooLarge"),
+            (PreviewOutcome::NoPreview, "NoPreview"),
+        ];
+        for (outcome, expected) in cases {
+            app.update(cx, |app, cx| {
+                app.preview = Some(Preview {
+                    connection: app.outcome.active(),
+                    key: "k.bin".into(),
+                    phase: PreviewPhase::Loading,
+                });
+                app.apply_preview(outcome, cx);
+            });
+            app.read_with(cx, |app, _| {
+                let name = match &app.preview.as_ref().expect("held").phase {
+                    PreviewPhase::Binary => "Binary",
+                    PreviewPhase::TooLarge { .. } => "TooLarge",
+                    PreviewPhase::NoPreview => "NoPreview",
+                    _ => "other",
+                };
+                assert_eq!(name, expected);
+            });
+        }
+    }
+
+    /// The lifecycle: departure drops it, a same-location re-read keeps it —
+    /// the deletion strip's rule, applied to the second location-scoped
+    /// surface.
+    #[gpui::test]
+    fn the_preview_departs_with_the_location(cx: &mut TestAppContext) {
+        let (app, cx) = looking_at(cx, "reports");
+        app.update_in(cx, |app, window, cx| {
+            let here = app.location().cloned().expect("looking at a bucket");
+            app.preview = Some(a_preview(PreviewPhase::Binary));
+            app.go_to(here, window, cx);
+            assert!(app.preview.is_some(), "a re-read is not a departure");
+
+            app.go_to(Location::bucket("logs"), window, cx);
+            assert!(app.preview.is_none(), "walking away takes it along");
+
+            app.preview = Some(a_preview(PreviewPhase::Binary));
+            app.leave_bucket(cx);
+            assert!(app.preview.is_none(), "and so does leaving entirely");
+        });
+    }
+
     fn phase_name(phase: &TransferPhase) -> &'static str {
         match phase {
             TransferPhase::Running => "Running",
@@ -4345,6 +4734,44 @@ mod tests {
                     phase: DeletePhase::Gone {
                         marker: Some("mk-screenshot".into()),
                     },
+                });
+            },
+        ));
+
+        // The preview's two faces (`XONHO-0008`): a first page with its
+        // truncation line, and an honest refusal.
+        written.push(shoot(
+            "bucket-11-preview-text",
+            Arc::new(StoreDouble::allows_listing()),
+            |app, _, cx| {
+                inside(app, cx);
+                app.listing = Listing::Loaded;
+                app.preview = Some(Preview {
+                    connection: app.outcome.active(),
+                    key: "daily/build.log".into(),
+                    phase: PreviewPhase::Text {
+                        content: "2026-08-25T07:12:04 INFO  the run began\n\
+                                  2026-08-25T07:12:05 INFO  247 objects listed\n\
+                                  2026-08-25T07:12:09 WARN  one page came back slow\n\
+                                  2026-08-25T07:12:11 INFO  settled clean\n"
+                            .into(),
+                        shown: 65_536,
+                        total: Some(4_402_133),
+                    },
+                });
+            },
+        ));
+
+        written.push(shoot(
+            "bucket-12-preview-binary",
+            Arc::new(StoreDouble::allows_listing()),
+            |app, _, cx| {
+                inside(app, cx);
+                app.listing = Listing::Loaded;
+                app.preview = Some(Preview {
+                    connection: app.outcome.active(),
+                    key: "daily/export.txt".into(),
+                    phase: PreviewPhase::Binary,
                 });
             },
         ));

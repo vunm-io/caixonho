@@ -58,6 +58,12 @@ Working today:
   offers **Undo**, which restores the object exactly; on one that does not,
   it says plainly that the object is gone. The Undo appears only when the
   service's own response proves it exists — never as decoration.
+- **Previews an object without downloading it** — a text-like file shows its
+  first page from one ranged read, saying honestly how much of the whole you
+  are looking at; a small image is drawn whole; and everything else says
+  plainly that there is no preview for its kind and points you at Open.
+  Binary content wearing a text name is called binary instead of rendered as
+  noise, and nothing on the preview path ever touches the disk.
 - Downloads an object to a folder you choose, and **opens** one with whatever
   your machine already opens that kind of file with — the app renders no
   format itself; it downloads to a cache it owns
@@ -74,8 +80,8 @@ Working today:
   turns the detail up for an investigation. No secret is ever written to it.
 
 Not there yet: bulk and folder deletion, uploading folders, multipart for
-large files, the transfer queue, previewing an object without downloading it,
-sorting or searching a listing,
+large files, the transfer queue, rendered markdown preview, sorting or
+searching a listing,
 and signing in to IAM Identity Center from the app rather than through the AWS
 CLI. Those are the next changes — see [`docs/planned-changes.md`](docs/planned-changes.md),
 and [`docs/requirements-status.md`](docs/requirements-status.md) for every

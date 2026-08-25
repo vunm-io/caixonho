@@ -91,6 +91,7 @@ that only that arrangement produced. The full reasoning is in
 | Change | Delivers | State |
 |---|---|---|
 | `XONHO-0021` | Deleting one object through a named-key confirmation, with Undo offered exactly when the delete's own response reports a marker — and a refused undo that names `s3:DeleteObjectVersion` | landed, awaiting live acceptance |
+| `XONHO-0008` | Previewing without downloading: a ranged first page for text with an honest truncation line, whole small images under a 20 MiB gate, and plain refusals for everything else — nothing on the path touches disk | landed, awaiting live acceptance |
 
 ## What this project will not do
 

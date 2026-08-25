@@ -19,13 +19,13 @@ use crate::credentials::{CredentialSecret, Keyring, SecretStore, StoredCredentia
 use crate::diagnostics;
 use crate::error::{Error, Result};
 use crate::outcome::{Outcome, TaggedOutcome};
+use crate::preview::{self, PreviewOutcome};
 use crate::probe::{ProbeScheduler, ProbeSink, ProbeTarget};
 use crate::profiles::ConfigPaths;
 use crate::sso::{Abandon, DeviceAuthorization, RealTime, SignInLocation, SignInOutcome};
 use crate::sso_adapter::SsoOidcSignIn;
 use crate::store::ObjectStore;
 use crate::tls::HttpStack;
-use crate::preview::{self, PreviewOutcome};
 use crate::transfer::{self, Cancel, Collision, DownloadOutcome, UploadOutcome};
 use crate::types::{ConnectionId, Cursor, Location, Page};
 
@@ -765,9 +765,7 @@ impl Session {
                     deliver(PreviewOutcome::NoPreview);
                     return;
                 }
-                preview::PreviewKind::Text => {
-                    text_preview(&*store, &bucket, &key).await
-                }
+                preview::PreviewKind::Text => text_preview(&*store, &bucket, &key).await,
                 preview::PreviewKind::Image(format) => {
                     if listed_size > preview::IMAGE_PREVIEW_LIMIT {
                         // Refused by the listing, before any request leaves.
@@ -2147,7 +2145,10 @@ mod tests {
             credentials,
         );
 
-        match previewing(&session, "big.log", 100_000).await.expect("delivered") {
+        match previewing(&session, "big.log", 100_000)
+            .await
+            .expect("delivered")
+        {
             PreviewOutcome::Text {
                 content,
                 shown,
@@ -2155,7 +2156,11 @@ mod tests {
             } => {
                 assert_eq!(shown, crate::preview::TEXT_PREVIEW_PAGE);
                 assert_eq!(content.len() as u64, shown);
-                assert_eq!(total, Some(100_000), "the whole object's size, for the line");
+                assert_eq!(
+                    total,
+                    Some(100_000),
+                    "the whole object's size, for the line"
+                );
             }
             other => panic!("expected Text, got {other:?}"),
         }
@@ -2167,12 +2172,16 @@ mod tests {
         let session = fixture.session("work");
         let credentials = session.credentials_changed("work");
         session.install_object_store(
-            Arc::new(StoreDouble::serving_chunks(vec![b"MZ\x00\x01real bytes".to_vec()])),
+            Arc::new(StoreDouble::serving_chunks(vec![
+                b"MZ\x00\x01real bytes".to_vec(),
+            ])),
             credentials,
         );
 
         assert!(matches!(
-            previewing(&session, "notes.txt", 14).await.expect("delivered"),
+            previewing(&session, "notes.txt", 14)
+                .await
+                .expect("delivered"),
             PreviewOutcome::Binary
         ));
     }
@@ -2183,11 +2192,16 @@ mod tests {
         let session = fixture.session("work");
         let credentials = session.credentials_changed("work");
         session.install_object_store(
-            Arc::new(StoreDouble::serving_chunks(vec![b"fake png bytes".to_vec()])),
+            Arc::new(StoreDouble::serving_chunks(vec![
+                b"fake png bytes".to_vec(),
+            ])),
             credentials,
         );
 
-        match previewing(&session, "photo.png", 14).await.expect("delivered") {
+        match previewing(&session, "photo.png", 14)
+            .await
+            .expect("delivered")
+        {
             PreviewOutcome::Image { bytes, format } => {
                 assert_eq!(bytes, b"fake png bytes");
                 assert_eq!(format, crate::preview::RasterKind::Png);
@@ -2207,7 +2221,10 @@ mod tests {
         session.install_object_store(double.clone(), credentials);
 
         let size = crate::preview::IMAGE_PREVIEW_LIMIT + 1;
-        match previewing(&session, "huge.png", size).await.expect("delivered") {
+        match previewing(&session, "huge.png", size)
+            .await
+            .expect("delivered")
+        {
             PreviewOutcome::ImageTooLarge { size: said } => assert_eq!(said, size),
             other => panic!("expected ImageTooLarge, got {other:?}"),
         }
@@ -2227,7 +2244,10 @@ mod tests {
             credentials,
         );
 
-        match previewing(&session, "liar.png", 1_000).await.expect("delivered") {
+        match previewing(&session, "liar.png", 1_000)
+            .await
+            .expect("delivered")
+        {
             PreviewOutcome::Failed(Error::Unexpected { detail }) => {
                 assert!(detail.contains("outgrew its listing"), "{detail}");
             }
@@ -2244,7 +2264,9 @@ mod tests {
         session.install_object_store(double.clone(), credentials);
 
         assert!(matches!(
-            previewing(&session, "archive.zip", 10).await.expect("delivered"),
+            previewing(&session, "archive.zip", 10)
+                .await
+                .expect("delivered"),
             PreviewOutcome::NoPreview
         ));
         assert_eq!(double.gets_served(), 0);
