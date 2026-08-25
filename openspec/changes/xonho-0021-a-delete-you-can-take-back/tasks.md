@@ -145,8 +145,11 @@
 
 ## 5. Close-out
 
-- [ ] 5.1 `cargo fmt --all`, `cargo clippy --workspace --all-targets --
+- [x] 5.1 `cargo fmt --all`, `cargo clippy --workspace --all-targets --
       -D warnings`, `cargo test --workspace` green [dispatch: main]
+      - Done in `main` (2026-08-25): fmt clean via `--check`, clippy zero at
+        `-D warnings`, 319 core + 58 window green (7 + 1 ignored, the live
+        and screenshot ones).
   - Paths: whole workspace
   - Done criteria: all three exit zero
   - Verification: the commands themselves
@@ -166,7 +169,38 @@
     written here, names withheld.
   - Verification: the log shows delete and undo outcomes with no keys
 
-- [ ] 5.4 Close-out review per `AGENTS.md` [dispatch: main]
+- [x] 5.4 Close-out review per `AGENTS.md` [dispatch: main]
+      - Run 2026-08-25, before the live check as with the last two changes.
+      - **Q4, three catches, all now tests:** `confirm_delete`'s transition
+        was driven by nothing (the two-act rule's *second* act was asserted
+        in prose only — and its from-any-other-phase no-op matters because
+        the state machine must not rely on the render layer for the rule);
+        `undo_delete`'s no-proof guard likewise; and the `go_to`
+        conditional — strip survives a same-location re-read, departs on
+        navigation — which was the subtlest line in the change and had no
+        assertion. All three green after the state machine already worked,
+        which is the honest note: these are guards against regression, not
+        red-first design tests, and are recorded as such.
+      - **Q3:** clippy's dead-field catch (`Restoring { marker }`) was
+        already acted on in 3.2; nothing else unused — every new pub item
+        has non-test callers or is the port double's scripting surface.
+      - **Q1 departures:** one, surfaced in 2.1's note rather than
+        absorbed — no `Cancel` on the delete spawn, because a cancel racing
+        a one-request destructive call leaves the user unsure whether the
+        object exists. The spec's cancel requirement belongs to
+        `object-transfer`, not this capability, so no spec edit was needed.
+      - **Q2 both directions:** README/roadmap/requirements written in the
+        commits that made them true (4.1). Rows either side: `XONHO-0007`
+        and `XONHO-0020` both still correctly *awaiting live acceptance*;
+        M1/M2 tables untouched by this change.
+      - **Q5:** what remains is written where it will be found — 5.3's live
+        check in this file, and the marker semantics' only observable venue
+        (`this_machine_deleting_and_taking_it_back`) documented on the test
+        itself. Nothing lives only in conversation.
+      - **Q4 residue for 5.3:** marker semantics against a real endpoint
+        (the double's markers prove nothing about the service's), the
+        listing re-read against real latency, and R2's versioning behaviour
+        — R2 supports it, but "supports" is a docs claim until driven.
   - Paths: this change
   - Done criteria: the five questions answered and recorded here, question
     2 read the wide way.

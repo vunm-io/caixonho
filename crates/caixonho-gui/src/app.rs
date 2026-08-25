@@ -3760,6 +3760,104 @@ mod tests {
         });
     }
 
+    /// The close-out review's finds: the three deletion paths that were
+    /// asserted in prose and driven by nothing.
+    #[gpui::test]
+    fn confirming_is_what_arms_the_delete(cx: &mut TestAppContext) {
+        let (app, cx) = looking_at(cx, "reports");
+        app.update(cx, |app, cx| {
+            app.deletion = Some(Deletion {
+                connection: app.outcome.active(),
+                bucket: "reports".into(),
+                key: "daily/summary.csv".into(),
+                phase: DeletePhase::Confirming,
+            });
+            app.confirm_delete(cx);
+        });
+        app.read_with(cx, |app, _| {
+            assert!(
+                matches!(
+                    app.deletion.as_ref().expect("held").phase,
+                    DeletePhase::Deleting
+                ),
+                "the second act moves it to in-flight"
+            );
+        });
+
+        // And from any other phase, the same call is a no-op: the button
+        // only exists on Confirming, but the state machine must not rely on
+        // the render layer for that.
+        let (app, cx) = looking_at(cx, "reports");
+        app.update(cx, |app, cx| {
+            app.deletion = Some(Deletion {
+                connection: app.outcome.active(),
+                bucket: "reports".into(),
+                key: "daily/summary.csv".into(),
+                phase: DeletePhase::Restored,
+            });
+            app.confirm_delete(cx);
+        });
+        app.read_with(cx, |app, _| {
+            assert!(matches!(
+                app.deletion.as_ref().expect("held").phase,
+                DeletePhase::Restored
+            ));
+        });
+    }
+
+    #[gpui::test]
+    fn undo_without_proof_does_nothing(cx: &mut TestAppContext) {
+        let (app, cx) = looking_at(cx, "reports");
+        app.update(cx, |app, cx| {
+            app.deletion = Some(Deletion {
+                connection: app.outcome.active(),
+                bucket: "reports".into(),
+                key: "daily/summary.csv".into(),
+                phase: DeletePhase::Gone { marker: None },
+            });
+            app.undo_delete(cx);
+        });
+        app.read_with(cx, |app, _| {
+            assert!(
+                matches!(
+                    app.deletion.as_ref().expect("held").phase,
+                    DeletePhase::Gone { marker: None }
+                ),
+                "no proof, no restore attempt — the guard holds without the render layer"
+            );
+        });
+    }
+
+    /// The one conditional `go_to` learned for this change: navigating away
+    /// takes the strip along, a same-location re-read keeps it.
+    #[gpui::test]
+    fn the_strip_survives_a_reread_and_not_a_departure(cx: &mut TestAppContext) {
+        let (app, cx) = looking_at(cx, "reports");
+        let gone = || Deletion {
+            connection: ConnectionId(0),
+            bucket: "reports".into(),
+            key: "daily/summary.csv".into(),
+            phase: DeletePhase::Gone { marker: None },
+        };
+
+        app.update_in(cx, |app, window, cx| {
+            let here = app.location().cloned().expect("looking at a bucket");
+            app.deletion = Some(gone());
+            app.go_to(here, window, cx);
+            assert!(
+                app.deletion.is_some(),
+                "a re-read of the same location is the strip's own refresh"
+            );
+
+            app.deletion = Some(gone());
+            app.go_to(Location::bucket("logs"), window, cx);
+            assert!(
+                app.deletion.is_none(),
+                "walking somewhere else takes the strip along"
+            );
+        });
+    }
+
     fn phase_name(phase: &TransferPhase) -> &'static str {
         match phase {
             TransferPhase::Running => "Running",
