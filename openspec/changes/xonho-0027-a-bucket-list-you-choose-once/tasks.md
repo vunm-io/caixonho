@@ -149,7 +149,10 @@
         window green (8 + 1 ignored).
   - Verification: the commands themselves
 
-- [ ] 3.2 CI green on both targets, run id recorded here [dispatch: main]
+- [x] 3.2 CI green on both targets, run id recorded here [dispatch: main]
+      - Run `32954957225` on `5084e05`: `build (windows-latest)`,
+        `build (macos-latest)`, `dependency audit` and `rustfmt` all success.
+        That run's artifacts carry everything through `XONHO-0027`.
   - Verification: `gh run list --limit 1 --repo vunm-io/caixonho`
 
 - [ ] 3.3 Live: the work account, chosen once and still chosen tomorrow
