@@ -9,7 +9,7 @@ whole thing.
 | | Milestone | State |
 |---|---|---|
 | **M0a** | The stack builds — CI green on Windows and macOS, artifacts uploaded | **done** |
-| **M0b** | The stack is smooth — measured on real hardware, ADR-0001 filled in | **done bar one cell**: a Windows machine without a working Vulkan driver, where the required outcome is a graceful failure. ADR-0001 stays `Proposed` until then |
+| **M0b** | The stack is smooth — measured on real hardware, ADR-0001 filled in | **done bar one cell**: a Windows machine without a working Vulkan driver, where the required outcome is a graceful failure. ADR-0001 stays `Proposed` until then. The *application* first opened on Windows on 2026-08-26 (CI run `32928254599`) — new, since every ADR-0001 row was measured against the M0 spike, but not this cell: that machine has working Vulkan |
 | **M1** | Read-only browser — credentials, bucket list, prefix navigation, permission awareness | **in progress** |
 | **M2** | Transfers — up and download including folders, multipart, a queue with progress, cancel and retry | **in progress** — `XONHO-0007` landed the first slice: single-object download and open-with-the-system; uploads and the queue remain |
 | **M3** | Object operations, safe subset first — create folder, delete with a counted confirmation, properties, presigned URLs | **in progress** — `XONHO-0021` landed single-object delete with the named-key confirmation and the marker-aware Undo; bulk, folders, properties and presigned URLs remain |

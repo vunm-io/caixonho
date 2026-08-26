@@ -90,7 +90,18 @@ M0 is split so the expensive half runs on machines other than the developer's:
 | Behavior without Vulkan (Win VM/RDP) | _TBD_ | n/a | graceful error, no silent crash |
 
 Windows 11 evidence: owner's screenshots, 2026-08-18, spike from CI run #1
-artifacts. One launch defect found and fixed the same day: the default window
+artifacts. **The application itself — not the spike — was first opened on
+Windows on 2026-08-26**, from the `caixonho-app-windows-latest` artifact of
+CI run `32928254599`, and the window came up normally. That is a different
+claim from the table above and worth separating: every row there was measured
+against the M0 spike, and the app has since grown connections, listings,
+previews, transfers, deletes, folders and filters. It says the window opens;
+it does not re-measure first paint, FPS or RSS, and the rest of the Windows
+live checks are unrun.
+
+The `_TBD_` row is **still `_TBD_`**. That machine evidently has a working
+Vulkan driver, which is the case the table already covers; the open question
+is the machine that does not. One launch defect found and fixed the same day: the default window
 bounds could place the native title bar off-screen (looked like a missing
 header until maximized). Fixed by adopting `TitleBar` + centered window
 bounds; the FPS HUD also no longer overlaps the status line.
