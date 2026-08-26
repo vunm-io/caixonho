@@ -58,7 +58,36 @@ else
     IDENTITY=""
 fi
 if [ -n "$IDENTITY" ]; then
-    codesign --force --sign "$IDENTITY" "$APP"
+    # Diagnosed rather than left to `set -e`, because the state this fails in
+    # is worse than a failed build and does not look like one. `--force` has
+    # already replaced the old signature by the time it gives up, so what is
+    # left on disk is the linker's *ad-hoc* signature — a bundle that opens
+    # perfectly well and asks for the keychain password on every single
+    # connection, because every grant is bound to the signature it was given
+    # under. Seen 2026-08-26: the dialog names `codesign`, so it reads as the
+    # app demanding a password at launch, which is not what is happening.
+    if ! codesign --force --sign "$IDENTITY" "$APP"; then
+        cat >&2 <<MSG
+
+codesign could not sign with "$IDENTITY", and $APP is now ad-hoc signed.
+Do not open it: an ad-hoc bundle asks for the keychain on every connection.
+
+The usual cause is the login keychain being locked — after sleep, or a fresh
+login. macOS asks in a dialog that names *codesign*, not this app. Clicking
+"Always Allow" there is the one-click fix; it lets codesign use the key from
+then on. Otherwise unlock the keychain and run this script again:
+
+    security unlock-keychain ~/Library/Keychains/login.keychain-db
+
+If the dialog returns on every build, grant codesign the key once. It asks for
+the password itself — never put it on the command line:
+
+    security set-key-partition-list -S apple-tool:,apple:,codesign: \\
+        -s -l identity ~/Library/Keychains/login.keychain-db
+
+MSG
+        exit 1
+    fi
     signed="signed as $IDENTITY"
 else
     signed="UNSIGNED — run scripts/dev-signing-identity.sh to stop the keychain
