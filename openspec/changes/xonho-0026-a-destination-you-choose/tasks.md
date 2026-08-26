@@ -119,7 +119,12 @@
         window green (8 + 1 ignored).
   - Verification: the commands themselves
 
-- [ ] 3.2 CI green on both targets, run id recorded here [dispatch: main]
+- [x] 3.2 CI green on both targets, run id recorded here [dispatch: main]
+      - Run `32928254599` on `0de278a`: `build (windows-latest)`,
+        `build (macos-latest)`, `dependency audit` and `rustfmt` all success.
+      - That run's `caixonho-app-windows-latest` artifact (13.9 MB, expires
+        2026-11-24) is the first build of this application anyone has tried to
+        **run** on Windows — see the M0b note in `docs/roadmap.md`.
   - Verification: `gh run list --limit 1 --repo vunm-io/caixonho`
 
 - [ ] 3.3 Live: a folder made the way `XONHO-0024` says to [dispatch: main]
