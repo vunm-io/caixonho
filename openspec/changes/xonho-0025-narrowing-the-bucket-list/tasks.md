@@ -36,6 +36,14 @@
         rendered rows alone would have passed the broken version for the wrong
         reason — the bug is not that the row is missing now, it is that the row
         can never come back, and only the submitted probe targets show that.
+      - **Correction, 2026-08-26, and it is the worse of the two failures
+        this change had.** The done-criteria below list six tests. Five were
+        written. The sixth — a probe settling to denied while the narrowing is
+        on — was never implemented, and the note above nonetheless read as
+        though the set were complete. The owner hit the resulting defect on
+        the first screen they tried the filter on.
+      - A gap admitted gets looked at; a gap claimed as covered does not.
+        Struck through where it was planned, and fixed in 2.6.
       - **`Probing` is covered by construction, not by a test.** Getting a
         probe genuinely in flight in a window test needs the core probe
         double, and the predicate treats `Probing` and `Unobserved`
@@ -54,8 +62,9 @@
     - a bucket whose read failed with an expired session / unreachable network
       / wrong region is **still shown**, because none of those is a denial
       (`capability-awareness`);
-    - a probe settling to denied while the narrowing is on removes the row and
-      moves the count.
+    - ~~a probe settling to denied while the narrowing is on removes the row
+      and moves the count~~ — **planned here and never written. It is the
+      defect the owner found; see 2.6.**
   - **Ablate it**: change the predicate to `== Open` and confirm the
     `Unobserved` test *and* the viewport test both go red. If only the render
     test goes red, the suite is not guarding the failure that matters — the
@@ -228,6 +237,29 @@
       - Worth carrying forward: when the object listing gets its name control,
         that one **is** a filter over loaded rows and must say so — which is
         the half of §4.2 this change deliberately left unbuilt.
+  - Paths: `crates/caixonho-gui/src/app.rs`
+  - Verification: `cargo test -p caixonho-gui`
+
+- [x] 2.6 A settling probe re-narrows the list [dispatch: main]
+      - **The defect 1.2 planned a test for and did not write.** Found live by
+        the owner, 2026-08-26: switch account, turn "Accessible only" on
+        immediately, and every refused bucket stays listed for ever — each
+        wearing its own **No access** badge, which is the most literal way a
+        filter can look broken.
+      - A settled probe only called `cx.notify()`: it redrew. Four of the five
+        narrowings read data that cannot change while the user sits still; the
+        accessibility one reads an **observation**, and observations arrive
+        *after* the click that turned it on. The list was frozen at the moment
+        nothing had been answered — the worst moment available.
+      - Fixed with `probe_settled`, which re-narrows **only when that
+        narrowing is on**: it is the only one an answer can move, and paying
+        for a re-narrow on every probe otherwise would be work for nothing.
+      - Two tests, and the second earns its place as much as the first: a
+        denial settling while the narrowing is on removes its row, and a probe
+        settling while it is **off** changes nothing. Ablated: reverting to a
+        bare `cx.notify()` turns the first red and leaves the second green.
+      - The channel half — probe sink to `probe_settled` — is one line
+        verified by reading, as `XONHO-0023` did for `spawn_sign_in`.
   - Paths: `crates/caixonho-gui/src/app.rs`
   - Verification: `cargo test -p caixonho-gui`
 
