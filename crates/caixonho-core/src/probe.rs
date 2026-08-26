@@ -469,6 +469,10 @@ pub(crate) mod double {
             })
         }
 
+        async fn create_folder(&self, _bucket: &str, _key: &str) -> Result<()> {
+            unreachable!("the probe double is only ever asked to probe")
+        }
+
         /// Nothing here reads an object either; refusing loudly beats a
         /// silent empty body a test would then have to explain.
         async fn get_object(

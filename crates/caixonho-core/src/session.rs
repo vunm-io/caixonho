@@ -708,6 +708,61 @@ impl Session {
     /// a delete is one request, and a cancel that raced it would leave the
     /// user unsure whether the object exists, which is worse than the
     /// moment of waiting.
+    /// Make a folder at `at`, off the caller's thread (`XONHO-0024`).
+    ///
+    /// `kind` comes from the listing the user is looking at, and deciding from
+    /// it is the point rather than an optimisation: a directory bucket removes
+    /// a directory the moment it empties, so the marker would be gone before
+    /// the next listing. Learning that by attempting it would spend a request
+    /// to discover something already on screen — and, worse, would sometimes
+    /// *succeed*, leaving a zero-byte object in a store whose whole model is
+    /// that directories are structural.
+    pub fn spawn_create_folder<F>(
+        &self,
+        bucket: String,
+        at: crate::types::Prefix,
+        kind: crate::types::BucketKind,
+        name: String,
+        deliver: F,
+    ) where
+        F: FnOnce(FolderOutcome) + Send + 'static,
+    {
+        // Both refusals before the store is even taken, so neither can be read
+        // as "something went wrong out there".
+        if kind == crate::types::BucketKind::Directory {
+            deliver(FolderOutcome::NotOnADirectoryBucket);
+            return;
+        }
+        let key = match crate::folder::key_for(&at, &name) {
+            Ok(key) => key,
+            Err(bad) => {
+                deliver(FolderOutcome::BadName(bad));
+                return;
+            }
+        };
+
+        let store = self
+            .store
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        self.runtime.spawn(async move {
+            let Some(store) = store else {
+                deliver(FolderOutcome::Failed(Error::MissingConfiguration {
+                    profile: None,
+                    detail: "no connection is open to make a folder through".into(),
+                }));
+                return;
+            };
+            let made = store.create_folder(&bucket, &key).await;
+            diagnostics::folder_settled(&bucket, made.as_ref().err());
+            deliver(match made {
+                Ok(()) => FolderOutcome::Made { key },
+                Err(cause) => FolderOutcome::Failed(cause),
+            });
+        });
+    }
+
     pub fn spawn_delete<F>(&self, bucket: String, key: String, deliver: F)
     where
         F: FnOnce(DeleteOutcome) + Send + 'static,
@@ -1049,6 +1104,28 @@ impl Session {
     fn forget_opened_connections(&self) {
         self.opened_slot().clear();
     }
+}
+
+/// How making a folder ended (`XONHO-0024`).
+#[derive(Debug)]
+pub enum FolderOutcome {
+    /// The marker is written; the folder is there.
+    Made {
+        /// The key that was written, ending in `/`.
+        key: String,
+    },
+    /// The name could not be one, and nothing was sent.
+    BadName(crate::folder::BadFolderName),
+    /// This bucket keeps a directory only while something is in it, so an
+    /// empty folder cannot be made here — and **nothing was sent** to find
+    /// that out.
+    ///
+    /// Not an [`Error`]. Nothing failed: the service is behaving exactly as
+    /// documented, the user did nothing wrong, and reporting it as a failure
+    /// would send someone to fix a bucket that is fine.
+    NotOnADirectoryBucket,
+    /// Failed, with the classified cause.
+    Failed(Error),
 }
 
 /// How one delete ended (`XONHO-0021`).
@@ -2718,5 +2795,128 @@ mod tests {
 
         assert_eq!(builds(&store, &stored()), 2);
         assert_eq!(builds(&store, &other_stored()), 2);
+    }
+
+    // ---- A folder you can make (XONHO-0024) ----
+
+    /// A session pointed at `store`, ready to be asked for a folder.
+    fn session_over(fixture: &Fixture, store: Arc<StoreDouble>) -> (Session, Arc<StoreDouble>) {
+        let session = fixture.session("work");
+        let credentials = session.credentials_changed("work");
+        session.install_object_store(Arc::clone(&store) as Arc<dyn ObjectStore>, credentials);
+        (session, store)
+    }
+
+    /// Deliver the outcome onto this thread.
+    async fn folder_outcome(
+        session: &Session,
+        bucket: &str,
+        at: crate::types::Prefix,
+        kind: crate::types::BucketKind,
+        name: &str,
+    ) -> FolderOutcome {
+        let (tx, rx) = std::sync::mpsc::channel();
+        session.spawn_create_folder(
+            bucket.to_owned(),
+            at,
+            kind,
+            name.to_owned(),
+            move |outcome| {
+                let _ = tx.send(outcome);
+            },
+        );
+        tokio::task::spawn_blocking(move || rx.recv().expect("an outcome arrives"))
+            .await
+            .expect("the waiter finishes")
+    }
+
+    #[tokio::test]
+    async fn a_folder_on_a_general_purpose_bucket_writes_the_marker() {
+        let fixture = Fixture::new("folder-made");
+        let (session, store) = session_over(&fixture, Arc::new(StoreDouble::allows_listing()));
+
+        let outcome = folder_outcome(
+            &session,
+            "reports",
+            crate::types::Prefix::parse("2026/"),
+            crate::types::BucketKind::General,
+            "august",
+        )
+        .await;
+
+        assert!(matches!(&outcome, FolderOutcome::Made { key } if key == "2026/august/"));
+        assert_eq!(
+            store.folders_made(),
+            vec![("reports".to_owned(), "2026/august/".to_owned())]
+        );
+    }
+
+    /// The test this change turns on. A directory bucket removes a directory
+    /// as soon as it empties, so the refusal has to be decided from the kind
+    /// already in the listing — and *nothing may be sent* to find that out.
+    #[tokio::test]
+    async fn a_directory_bucket_is_refused_without_spending_a_request() {
+        let fixture = Fixture::new("folder-directory");
+        let (session, store) = session_over(&fixture, Arc::new(StoreDouble::allows_listing()));
+
+        let outcome = folder_outcome(
+            &session,
+            "vault--x-s3",
+            crate::types::Prefix::root(),
+            crate::types::BucketKind::Directory,
+            "august",
+        )
+        .await;
+
+        assert!(matches!(outcome, FolderOutcome::NotOnADirectoryBucket));
+        assert!(
+            store.folders_made().is_empty(),
+            "a request was sent to learn something already on screen — and on a directory \
+             bucket it may even have succeeded, leaving a zero-byte object behind"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_name_that_cannot_be_a_folder_never_reaches_the_service() {
+        let fixture = Fixture::new("folder-bad-name");
+        let (session, store) = session_over(&fixture, Arc::new(StoreDouble::allows_listing()));
+
+        for name in ["", "   ", "reports/august"] {
+            let outcome = folder_outcome(
+                &session,
+                "reports",
+                crate::types::Prefix::root(),
+                crate::types::BucketKind::General,
+                name,
+            )
+            .await;
+            assert!(
+                matches!(outcome, FolderOutcome::BadName(_)),
+                "`{name}` should have been refused before anything was sent"
+            );
+        }
+        assert!(store.folders_made().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_refused_folder_keeps_its_classified_cause() {
+        let fixture = Fixture::new("folder-refused");
+        let (session, _) = session_over(&fixture, Arc::new(StoreDouble::put_refused()));
+
+        let outcome = folder_outcome(
+            &session,
+            "reports",
+            crate::types::Prefix::root(),
+            crate::types::BucketKind::General,
+            "august",
+        )
+        .await;
+
+        assert!(matches!(
+            outcome,
+            FolderOutcome::Failed(Error::AccessDenied {
+                iam_action: "s3:PutObject"
+            })
+        ));
     }
 }

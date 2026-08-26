@@ -44,6 +44,75 @@ enum Access {
     Unobserved,
 }
 
+/// Which kinds of bucket the user wants to see.
+///
+/// In the window rather than in core, unlike [`RegionChoice`]: a region choice
+/// has to be *derived* from a listing, because only the account knows which
+/// regions it uses. There are two kinds of bucket and there always will be, so
+/// nothing has to be discovered and core learns nothing by holding this.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum KindChoice {
+    #[default]
+    Any,
+    Directory,
+    General,
+}
+
+impl KindChoice {
+    /// Whether this bucket survives the choice.
+    fn matches(&self, bucket: &Bucket) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Directory => bucket.kind == BucketKind::Directory,
+            Self::General => bucket.kind == BucketKind::General,
+        }
+    }
+
+    /// How the choice reads in the selector.
+    pub(crate) fn label(&self) -> SharedString {
+        match self {
+            Self::Any => "All kinds".into(),
+            Self::Directory => "Directory buckets".into(),
+            Self::General => "General purpose".into(),
+        }
+    }
+
+    /// Every choice, in the order they are offered.
+    pub(crate) fn all() -> [Self; 3] {
+        [Self::Any, Self::Directory, Self::General]
+    }
+}
+
+/// Everything the user has chosen to narrow the account listing by.
+///
+/// One value rather than four fields scattered over the window, because the
+/// count has to be of the *final* set: four narrowings applied in four passes
+/// with four counts is how the number comes to disagree with the rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Narrowing {
+    pub(crate) region: RegionChoice,
+    pub(crate) kind: KindChoice,
+    /// Matched case-insensitively against the bucket's name. Empty means no
+    /// narrowing at all, which is not the same as matching nothing.
+    pub(crate) name: String,
+    /// Leave out the buckets an authorization denial has been observed for.
+    pub(crate) accessible_only: bool,
+}
+
+impl Default for Narrowing {
+    /// Written out rather than derived, because `RegionChoice` has no
+    /// `Default` and giving core one for the window's convenience would be
+    /// this change reaching into a crate it has no business changing.
+    fn default() -> Self {
+        Self {
+            region: RegionChoice::All,
+            kind: KindChoice::Any,
+            name: String::new(),
+            accessible_only: false,
+        }
+    }
+}
+
 /// The region selector's own state, kept as `SharedString` because the control
 /// selects labels; the choice each one stands for is looked up alongside.
 pub(crate) type RegionSelect = SelectState<SearchableVec<SharedString>>;
@@ -117,6 +186,18 @@ impl BucketsDelegate {
         kinds.all(|kind| kind == first).then_some(first)
     }
 
+    /// What kind of bucket `name` is, according to the listing already held.
+    ///
+    /// By name and over `rows` rather than `shown`, because the question is
+    /// asked from *inside* a bucket — where the account listing may since have
+    /// been narrowed, and a narrowing must not change what a bucket is.
+    pub(crate) fn kind_of(&self, name: &str) -> Option<BucketKind> {
+        self.rows
+            .iter()
+            .find(|row| row.name == name)
+            .map(|row| row.kind)
+    }
+
     /// The bucket a shown row names.
     ///
     /// Through `shown` rather than `rows`: the row the user clicked is a row
@@ -144,6 +225,41 @@ impl BucketsDelegate {
         if let Some(row) = self.rows.iter_mut().find(|row| row.name == bucket) {
             row.region = region.clone();
         }
+    }
+
+    /// Apply every narrowing at once, in one pass.
+    ///
+    /// Here rather than in the window because one of the four predicates —
+    /// accessibility — is an *observation*, and only the delegate can read it.
+    /// Moving it up would mean handing the window the capability store.
+    pub(crate) fn narrow(&mut self, narrowing: &Narrowing) {
+        let name = narrowing.name.trim().to_lowercase();
+        self.shown = self
+            .rows
+            .iter()
+            .enumerate()
+            .filter(|(_, bucket)| {
+                narrowing.region.matches(bucket)
+                    && narrowing.kind.matches(bucket)
+                    && (name.is_empty() || bucket.name.to_lowercase().contains(&name))
+                    && (!narrowing.accessible_only || self.access(bucket) != Access::Denied)
+            })
+            .map(|(index, _)| index)
+            .collect();
+    }
+
+    /// How many buckets are shown, of how many the listing returned.
+    pub(crate) fn shown_of_loaded(&self) -> (usize, usize) {
+        (self.shown.len(), self.rows.len())
+    }
+
+    /// Whether the account has buckets and the narrowing is hiding all of them.
+    ///
+    /// The distinction this exists for: an account that holds nothing and an
+    /// account whose buckets are all narrowed away must not read the same, or
+    /// the only cure for an empty screen is guessing which control emptied it.
+    pub(crate) fn hidden_by_narrowing(&self) -> bool {
+        self.shown.is_empty() && !self.rows.is_empty()
     }
 
     /// The probe targets for a range of shown rows.

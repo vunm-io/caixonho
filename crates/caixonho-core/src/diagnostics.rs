@@ -461,6 +461,18 @@ pub(crate) fn listing_settled(
     }
 }
 
+/// Making a folder settled (`XONHO-0024`).
+///
+/// The bucket, never the key: a folder's name is the user's own words about
+/// their own data, and a log they may send to a stranger has no business
+/// carrying it — the same rule the location listing follows.
+pub(crate) fn folder_settled(bucket: &str, cause: Option<&Error>) {
+    match cause {
+        None => tracing::info!(bucket, "made a folder"),
+        Some(error) => tracing::warn!(bucket, cause = %error, "making a folder failed"),
+    }
+}
+
 /// A capability probe settled, and what it turned out to be evidence of.
 /// What reading one location came to.
 ///

@@ -43,6 +43,7 @@ that each own a subsystem and land on their own:
 | `XONHO-0019` | A pane that cannot outlive the connection it was read on: switching connection ends the location instead of leaving the previous account's bucket named | built, awaiting live acceptance |
 | `XONHO-0022` | Asking the OS credential store once per credential per run instead of once per connection open — the keychain stopped interrupting a session of browsing | landed |
 | `XONHO-0023` | Building a connection's client once per run and reusing it, so choosing a profile again costs a listing rather than a fresh credential resolution | built, awaiting live acceptance |
+| `XONHO-0025` | Narrowing the account listing by region, kind, name and whether a bucket can be used — composing into one pass, with an empty state that says the filters did it | built, awaiting live acceptance |
 
 Three cells were corrected on 2026-08-22, all in the same direction — a row
 that was easier to write than to check:
@@ -94,6 +95,7 @@ that only that arrangement produced. The full reasoning is in
 |---|---|---|
 | `XONHO-0021` | Deleting one object through a named-key confirmation, with Undo offered exactly when the delete's own response reports a marker — and a refused undo that names `s3:DeleteObjectVersion` | landed, awaiting live acceptance |
 | `XONHO-0008` | Previewing without downloading: a ranged first page for text with an honest truncation line, whole small images under a 20 MiB gate, and plain refusals for everything else — nothing on the path touches disk | landed, awaiting live acceptance |
+| `XONHO-0024` | Making a folder: a zero-byte marker on a general purpose bucket, and on a directory bucket an honest refusal — the service removes an empty directory immediately — that names uploading into the path as what works instead | built, awaiting live acceptance |
 
 ## What this project will not do
 

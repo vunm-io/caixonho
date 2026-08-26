@@ -12,7 +12,7 @@ use gpui_component::{
     ActiveTheme, Disableable as _, Icon, IconName, IndexPath, Side, TitleBar,
     button::{Button, ButtonVariants},
     h_flex,
-    input::{Input, InputState},
+    input::{Input, InputEvent, InputState},
     menu::PopupMenuItem,
     select::{SearchableVec, Select, SelectEvent},
     sidebar::{Sidebar, SidebarFooter, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem},
@@ -25,7 +25,7 @@ use gpui_component::{
 use crate::components::{empty_state, icon_tile, inline_message, skeleton_rows, status_badge};
 use crate::scroll::{self, ScrollAccel};
 use crate::theme::{space, tile};
-use crate::views::buckets::{BucketsDelegate, RegionSelect, region_label};
+use crate::views::buckets::{BucketsDelegate, KindChoice, Narrowing, RegionSelect, region_label};
 use crate::views::credential_form::CredentialForm;
 use crate::views::failure::{guidance_for, refusal_detail, refusal_headline, unavailable_reason};
 use crate::views::format::split_zonal_name;
@@ -69,6 +69,14 @@ pub(crate) struct CaixonhoApp {
     /// The one deletion being confirmed, in flight, or just settled
     /// (`XONHO-0021`).
     deletion: Option<Deletion>,
+    /// The folder being made, if one is (`XONHO-0024`).
+    making_folder: Option<MakingFolder>,
+    /// Where a folder's outcome arrives, off the runtime.
+    folder_inbox: flume::Sender<caixonho_core::session::FolderOutcome>,
+    /// What the folder is being called. Its own input rather than a `String`
+    /// on the phase, because the control is what the user is typing into and
+    /// two places holding one answer is how they come to disagree.
+    folder_name: Entity<InputState>,
     /// Where delete and undo outcomes come back.
     deletions: flume::Sender<DeleteEvent>,
     /// The preview on screen or in flight, if any (`XONHO-0008`).
@@ -85,8 +93,19 @@ pub(crate) struct CaixonhoApp {
     /// marked where it is chosen rather than only where its listing would have
     /// been.
     unavailable: std::collections::HashMap<usize, SharedString>,
-    /// Which region the list is narrowed to.
-    region: RegionChoice,
+    /// Everything the account listing is narrowed by — region, kind, name and
+    /// accessibility, in one value so the count is of the final set.
+    ///
+    /// Held only in the window, and reset when the connection changes. Nothing
+    /// persists it, and the design says why at length: half the connections are
+    /// profiles discovered in `~/.aws` with no record anywhere to hang a
+    /// setting on, and a narrowing set on one account silently applying to
+    /// another is how someone comes to believe a bucket has gone missing.
+    narrowing: Narrowing,
+    /// The kind choices, in the order the selector offers them.
+    kind_select: Entity<RegionSelect>,
+    /// The name to match, as its own control.
+    filter: Entity<InputState>,
     /// The choices currently on offer, in the order the selector shows them.
     /// Held so a confirmed label can be turned back into the choice it means.
     region_options: Vec<RegionChoice>,
@@ -257,6 +276,38 @@ enum DeletePhase {
     Restored,
     /// A delete or undo failed. `during_undo` picks the words.
     Failed { error: Error, during_undo: bool },
+}
+
+/// Making a folder, from naming it to what became of it (`XONHO-0024`).
+///
+/// Its own state rather than a phase on `Deletion`, for that type's own
+/// reason: nothing here is destructive, and a confirmation strip written in
+/// the danger colour is not where a benign act belongs. The connection rides
+/// along for `XONHO-0019`'s discipline — an answer that arrives after the
+/// user has switched accounts must not report a folder into a bucket of the
+/// same name somewhere else.
+struct MakingFolder {
+    connection: ConnectionId,
+    bucket: String,
+    at: Prefix,
+    kind: BucketKind,
+    phase: FolderPhase,
+}
+
+enum FolderPhase {
+    /// The name is being typed; nothing has been sent.
+    Naming,
+    /// The marker is in flight.
+    Making,
+    /// It is there.
+    Made { key: String },
+    /// The name could not be one. Nothing was sent.
+    BadName(caixonho_core::folder::BadFolderName),
+    /// A directory bucket keeps a folder only while something is in it.
+    /// Nothing was sent, and nothing failed.
+    NotOnADirectoryBucket,
+    /// The service refused it.
+    Failed(Error),
 }
 
 /// What a deletion reports back to the window.
@@ -466,6 +517,47 @@ impl CaixonhoApp {
                 cx,
             )
         });
+        // The kind choices never change — there are two kinds of bucket and
+        // there always will be — so unlike the region selector this one is
+        // built once and never re-offered.
+        let kind_select = cx.new(|cx| {
+            RegionSelect::new(
+                SearchableVec::new(
+                    KindChoice::all()
+                        .iter()
+                        .map(KindChoice::label)
+                        .collect::<Vec<SharedString>>(),
+                ),
+                Some(IndexPath::new(0)),
+                window,
+                cx,
+            )
+        });
+        cx.subscribe(
+            &kind_select,
+            |app, _, event: &SelectEvent<SearchableVec<SharedString>>, cx| {
+                let SelectEvent::Confirm(label) = event;
+                let Some(label) = label else { return };
+                let Some(chosen) = KindChoice::all()
+                    .into_iter()
+                    .find(|choice| choice.label() == *label)
+                else {
+                    return;
+                };
+                app.narrowing.kind = chosen;
+                app.narrow_rows(cx);
+            },
+        )
+        .detach();
+        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter by name"));
+        let folder_name = cx.new(|cx| InputState::new(window, cx).placeholder("Folder name"));
+        cx.subscribe(&filter, |app, state, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                app.narrowing.name = state.read(cx).value().to_string();
+                app.narrow_rows(cx);
+            }
+        })
+        .detach();
         cx.subscribe(
             &region_select,
             |app, _, event: &SelectEvent<SearchableVec<SharedString>>, cx| {
@@ -479,7 +571,7 @@ impl CaixonhoApp {
                     .find(|choice| region_label(choice) == *label)
                     .cloned();
                 if let Some(choice) = chosen {
-                    app.region = choice;
+                    app.narrowing.region = choice;
                     app.narrow_rows(cx);
                 }
             },
@@ -590,6 +682,20 @@ impl CaixonhoApp {
         })
         .detach();
 
+        // And a channel for folders, for the same reason again (`XONHO-0024`).
+        let (folders, foldering) = flume::unbounded::<caixonho_core::session::FolderOutcome>();
+        cx.spawn_in(window, async move |this, cx| {
+            while let Ok(outcome) = foldering.recv_async().await {
+                let applied = this.update_in(cx, |app, window, cx| {
+                    app.folder_settled(outcome, window, cx)
+                });
+                if applied.is_err() {
+                    break; // The window is gone.
+                }
+            }
+        })
+        .detach();
+
         let (previews, previewing) = flume::unbounded::<caixonho_core::preview::PreviewOutcome>();
         cx.spawn_in(window, async move |this, cx| {
             while let Ok(outcome) = previewing.recv_async().await {
@@ -633,12 +739,17 @@ impl CaixonhoApp {
             transfer: None,
             transfers,
             deletion: None,
+            making_folder: None,
+            folder_name,
+            folder_inbox: folders,
             deletions,
             preview: None,
             previews,
             confirming: None,
             unavailable: std::collections::HashMap::new(),
-            region: RegionChoice::All,
+            narrowing: Narrowing::default(),
+            kind_select,
+            filter,
             region_options: vec![RegionChoice::All],
             region_select,
             position: None,
@@ -667,6 +778,12 @@ impl CaixonhoApp {
         self.active_profile = Some(index);
         self.next_connection += 1;
         let id = ConnectionId(self.next_connection);
+        // The narrowings go with the account they were chosen for. A filter
+        // set on one account and silently applied to the next is how someone
+        // comes to believe a bucket has gone missing — and the region choice
+        // could not survive anyway, since the regions on offer are derived
+        // from whichever listing arrives.
+        self.clear_narrowing(window, cx);
         // Clears the previous profile's rows and error before anything of the
         // new one's arrives.
         self.outcome.switch_to(id);
@@ -921,6 +1038,91 @@ impl CaixonhoApp {
     /// Send a local file into the location on screen (`XONHO-0020` task
     /// 4.1). Unlike Open and Download…, this needs no selection — the
     /// destination is the location, not a row.
+    /// Start naming a folder to be made here (`XONHO-0024`).
+    ///
+    /// The bucket's kind is read now, from the listing already held, rather
+    /// than at the moment of the request: a directory bucket removes a folder
+    /// as soon as it is empty, so there is no point sending anything, and
+    /// discovering that by attempting it would sometimes *succeed* and leave a
+    /// zero-byte object in a store whose model is that directories are
+    /// structural.
+    fn new_folder_here(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(location) = self.location().cloned() else {
+            return;
+        };
+        let kind = self
+            .table
+            .read(cx)
+            .delegate()
+            .kind_of(&location.bucket)
+            .unwrap_or(BucketKind::General);
+        self.folder_name.update(cx, |state, cx| {
+            state.set_value("", window, cx);
+        });
+        self.making_folder = Some(MakingFolder {
+            connection: self.outcome.active(),
+            bucket: location.bucket.clone(),
+            at: location.prefix.clone(),
+            kind,
+            phase: FolderPhase::Naming,
+        });
+        cx.notify();
+    }
+
+    /// Send it, once there is a name.
+    fn confirm_new_folder(&mut self, cx: &mut Context<Self>) {
+        let Some(making) = self.making_folder.as_mut() else {
+            return;
+        };
+        if !matches!(making.phase, FolderPhase::Naming) {
+            return;
+        }
+        let name = self.folder_name.read(cx).value().to_string();
+        let (bucket, at, kind) = (making.bucket.clone(), making.at.clone(), making.kind);
+        making.phase = FolderPhase::Making;
+
+        if let Some(session) = self.session.clone() {
+            let inbox = self.folder_inbox.clone();
+            session.spawn_create_folder(bucket, at, kind, name, move |outcome| {
+                let _ = inbox.send(outcome);
+            });
+        }
+        cx.notify();
+    }
+
+    /// Apply what became of it, unless the user has left that connection.
+    fn folder_settled(
+        &mut self,
+        outcome: caixonho_core::session::FolderOutcome,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use caixonho_core::session::FolderOutcome;
+        let Some(making) = self.making_folder.as_mut() else {
+            return;
+        };
+        if making.connection != self.outcome.active() {
+            // A folder made into an account the user has left must not be
+            // announced over the one they are looking at (`XONHO-0019`).
+            self.making_folder = None;
+            cx.notify();
+            return;
+        }
+        making.phase = match outcome {
+            FolderOutcome::Made { key } => FolderPhase::Made { key },
+            FolderOutcome::BadName(bad) => FolderPhase::BadName(bad),
+            FolderOutcome::NotOnADirectoryBucket => FolderPhase::NotOnADirectoryBucket,
+            FolderOutcome::Failed(cause) => FolderPhase::Failed(cause),
+        };
+        // A folder nobody can see is a folder nobody believes in.
+        if matches!(making.phase, FolderPhase::Made { .. })
+            && let Some(location) = self.location().cloned()
+        {
+            self.go_to(location, window, cx);
+        }
+        cx.notify();
+    }
+
     fn upload_here(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(location) = self.location().cloned() else {
             return;
@@ -1663,14 +1865,14 @@ impl CaixonhoApp {
     fn set_rows(&mut self, rows: Vec<Bucket>, window: &mut Window, cx: &mut Context<Self>) {
         // A choice the new listing cannot satisfy would render an empty table
         // whose only cure is guessing which control emptied it.
-        self.region = self.region.clone().retained_for(&rows);
+        self.narrowing.region = self.narrowing.region.clone().retained_for(&rows);
         self.region_options = region_choices(&rows);
 
         let labels: Vec<SharedString> = self.region_options.iter().map(region_label).collect();
         let selected = self
             .region_options
             .iter()
-            .position(|choice| *choice == self.region)
+            .position(|choice| *choice == self.narrowing.region)
             .unwrap_or(0);
         self.region_select.update(cx, |select, cx| {
             select.set_items(SearchableVec::new(labels), window, cx);
@@ -1684,24 +1886,38 @@ impl CaixonhoApp {
         self.narrow_rows(cx);
     }
 
+    /// Put every narrowing back to showing everything.
+    ///
+    /// The controls are reset with the state, not merely the state: a cleared
+    /// filter whose text box still holds a word is a screen disagreeing with
+    /// itself about what is in force.
+    fn clear_narrowing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.narrowing = Narrowing::default();
+        self.kind_select.update(cx, |select, cx| {
+            select.set_selected_index(Some(IndexPath::new(0)), window, cx);
+        });
+        self.filter.update(cx, |state, cx| {
+            state.set_value("", window, cx);
+        });
+    }
+
     /// Apply the region choice to the listing already held.
     ///
     /// No request is made: the service can filter a listing by region, but only
     /// for a request sent to an endpoint in that same region, which would cost
     /// a client per region to narrow a list already in hand.
     fn narrow_rows(&mut self, cx: &mut Context<Self>) {
-        let choice = self.region.clone();
+        let narrowing = self.narrowing.clone();
         self.table.update(cx, |state, cx| {
-            let delegate = state.delegate_mut();
-            delegate.shown = delegate
-                .rows
-                .iter()
-                .enumerate()
-                .filter(|(_, bucket)| choice.matches(bucket))
-                .map(|(index, _)| index)
-                .collect();
+            state.delegate_mut().narrow(&narrowing);
             cx.notify();
         });
+        // Still reported after narrowing, and this line is load-bearing: the
+        // viewport is built from the *shown* rows, so a bucket left out of
+        // `shown` is never probed. That is exactly why the accessibility
+        // narrowing removes observed denials rather than keeping observed
+        // opens — the second would hide every unanswered bucket, which would
+        // stop it being probed, which would mean its answer never came.
         self.report_visible_rows(cx);
         cx.notify();
     }
@@ -1720,16 +1936,40 @@ impl CaixonhoApp {
         session.submit_viewport(&table.delegate().targets(rows));
     }
 
-    /// The region selector, offering only regions this account uses.
+    /// Everything that narrows the account listing, and what it is hiding.
     fn region_picker(&self, cx: &Context<Self>) -> impl IntoElement {
-        // Said once, here, when every row is the same kind — instead of a
-        // badge repeated down the whole table. Silence for an account of
-        // ordinary buckets: that is the unremarkable case, and naming it would
-        // put a label on every screen to no purpose.
+        // The badge stays, and stays *derived*: it says every shown row
+        // happens to be a directory bucket, which is a different sentence from
+        // the kind control's "show me directory buckets" — an account can be
+        // all directory buckets without anyone having asked for that. It is
+        // suppressed only when the kind control already says the same thing,
+        // because two controls saying one thing is where a screen starts to
+        // lie about which of them is in force.
         let all_directory = matches!(
             self.table.read(cx).delegate().shown_kind(),
             Some(BucketKind::Directory)
-        );
+        ) && self.narrowing.kind == KindChoice::Any;
+        // The count these narrowings need — "N of M buckets" — was already on
+        // screen before this change, in the status bar, and it reads
+        // `shown.len()` against the listing's own length so it covers every
+        // narrowing including the new ones. A second count up here was written
+        // and then deleted: two controls saying almost the same thing is how a
+        // screen starts lying about which of them is in force.
+
+        // Filled when it is on, ghosted when it is not — the same way every
+        // other toggle in this window says so. A label that changed with the
+        // state would be a second answer to a question the fill has answered.
+        let accessible_only = Button::new("accessible-only")
+            .label("Accessible only")
+            .on_click(cx.listener(|app, _, _, cx| {
+                app.narrowing.accessible_only = !app.narrowing.accessible_only;
+                app.narrow_rows(cx);
+            }));
+        let accessible_only = if self.narrowing.accessible_only {
+            accessible_only.primary()
+        } else {
+            accessible_only.ghost()
+        };
 
         h_flex()
             .gap_2()
@@ -1737,8 +1977,24 @@ impl CaixonhoApp {
             .items_center()
             .child(
                 div()
-                    .w(px(240.))
+                    .w(px(200.))
                     .child(Select::new(&self.region_select).title_prefix("Region: ")),
+            )
+            .child(
+                div()
+                    .w(px(190.))
+                    .debug_selector(|| "kind-choice".into())
+                    .child(Select::new(&self.kind_select).title_prefix("Kind: ")),
+            )
+            .child(
+                div()
+                    .w(px(200.))
+                    .child(Input::new(&self.filter).cleanable(true)),
+            )
+            .child(
+                div()
+                    .debug_selector(|| "accessible-only".into())
+                    .child(accessible_only),
             )
             .children(all_directory.then(|| {
                 div()
@@ -2288,6 +2544,18 @@ impl CaixonhoApp {
                     ),
                 )
                 .child(
+                    div().debug_selector(|| "new-folder-action".into()).child(
+                        Button::new("new-folder-action")
+                            .label("New folder…")
+                            .ghost()
+                            // Acts on the location like `Upload…` does, so it
+                            // needs no selected row and carries no `disabled`.
+                            .on_click(
+                                cx.listener(|app, _, window, cx| app.new_folder_here(window, cx)),
+                            ),
+                    ),
+                )
+                .child(
                     // Apart from the three benign verbs, and in the danger
                     // colour: this is the one that destroys. It only opens
                     // the confirmation — nothing deletes on this click.
@@ -2541,6 +2809,107 @@ impl CaixonhoApp {
             .child(v_flex().flex_1().min_h_0().child(body))
             .children(self.transfer_line(cx))
             .children(self.deletion_line(cx))
+            .children(self.folder_line(cx))
+    }
+
+    /// Making a folder, from naming it to what became of it (`XONHO-0024`).
+    ///
+    /// One strip under the listing, like the transfer's and the deletion's —
+    /// and, like the deletion's, its own rather than a shared one, because the
+    /// wording is where the meaning is and nothing here is destructive.
+    fn folder_line(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        let making = self.making_folder.as_ref()?;
+
+        let dismiss = |id: &'static str| {
+            Button::new(id)
+                .label("Dismiss")
+                .ghost()
+                .on_click(cx.listener(|app, _, _, cx| {
+                    app.making_folder = None;
+                    cx.notify();
+                }))
+        };
+
+        let line = match &making.phase {
+            FolderPhase::Naming => h_flex()
+                .debug_selector(|| "folder-naming-strip".into())
+                .w_full()
+                .gap(space::TIGHT)
+                .items_center()
+                .child(div().text_sm().child("New folder here:"))
+                .child(div().w(px(260.)).child(Input::new(&self.folder_name)))
+                .child(div().flex_1())
+                .child(
+                    div().debug_selector(|| "folder-confirm".into()).child(
+                        Button::new("folder-confirm")
+                            .label("Create")
+                            .primary()
+                            .on_click(cx.listener(|app, _, _, cx| app.confirm_new_folder(cx))),
+                    ),
+                )
+                .child(dismiss("folder-cancel")),
+            FolderPhase::Making => h_flex()
+                .debug_selector(|| "folder-making-strip".into())
+                .w_full()
+                .items_center()
+                .child(div().text_sm().child("Making the folder…")),
+            FolderPhase::Made { key } => h_flex()
+                .debug_selector(|| "folder-made-strip".into())
+                .w_full()
+                .gap(space::TIGHT)
+                .items_center()
+                .child(div().text_sm().child(format!("`{key}` is there.")))
+                .child(div().flex_1())
+                .child(dismiss("folder-made-dismiss")),
+            // Nothing failed, and the wording has to carry that or the user
+            // goes looking for a broken bucket. It names what a directory
+            // bucket does and what makes a folder there instead.
+            //
+            // A strip and not a card, which took the owner pointing at it. The
+            // slot under the listing has one voice — `transfer_line` and
+            // `deletion_line` are both flat full-width lines, text left,
+            // actions right — and this arrived as a bordered, shadowed card
+            // with an icon tile: a heavier treatment than a *failed upload*
+            // gets, for a message where nothing is even wrong.
+            FolderPhase::NotOnADirectoryBucket => h_flex()
+                .debug_selector(|| "folder-not-here-strip".into())
+                .w_full()
+                .gap(space::TIGHT)
+                .items_center()
+                .child(div().text_sm().child(
+                    "This bucket keeps a folder only while something is in it — upload a \
+                     file into the path you want and the folder comes with it.",
+                ))
+                .child(div().flex_1())
+                .child(dismiss("folder-not-here-dismiss")),
+            FolderPhase::BadName(bad) => h_flex()
+                .debug_selector(|| "folder-bad-name-strip".into())
+                .w_full()
+                .gap(space::TIGHT)
+                .items_center()
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().danger)
+                        .child(bad.to_string()),
+                )
+                .child(div().flex_1())
+                .child(dismiss("folder-bad-name-dismiss")),
+            FolderPhase::Failed(error) => h_flex()
+                .debug_selector(|| "folder-failed-strip".into())
+                .w_full()
+                .gap(space::TIGHT)
+                .items_center()
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().danger)
+                        .child(format!("The folder could not be made — {error}")),
+                )
+                .child(div().flex_1())
+                .child(dismiss("folder-failed-dismiss")),
+        };
+        Some(line.into_any_element())
     }
 
     /// The deletion, from its confirmation to its aftermath — one line under
@@ -3042,24 +3411,43 @@ impl CaixonhoApp {
                     cx,
                 ),
             },
-            Outcome::Loaded(listing) => v_flex()
-                .size_full()
-                .child(self.region_picker(cx))
-                .children(
-                    listing
-                        .refused
-                        .as_ref()
-                        .map(|refused| Self::refusal_line(refused, cx)),
-                )
-                .child(
-                    div()
-                        .relative()
-                        .min_h_0()
-                        .flex_1()
-                        .child(DataTable::new(&self.table))
-                        .child(scroll::accelerator(self.table.clone(), self.accel.clone())),
-                )
-                .into_any_element(),
+            Outcome::Loaded(listing) => {
+                // An account that holds nothing and an account whose buckets
+                // are all narrowed away must not read the same: the only cure
+                // for the second is knowing which control emptied it, and the
+                // controls stay on screen above this so undoing it is one
+                // click rather than a hunt.
+                let hidden = self.table.read(cx).delegate().hidden_by_narrowing();
+                v_flex()
+                    .size_full()
+                    .child(self.region_picker(cx))
+                    .children(
+                        listing
+                            .refused
+                            .as_ref()
+                            .map(|refused| Self::refusal_line(refused, cx)),
+                    )
+                    .child(if hidden {
+                        div()
+                            .debug_selector(|| "hidden-by-narrowing".into())
+                            .flex_1()
+                            .child(empty_state(
+                                IconName::Search,
+                                "Every bucket is hidden by the filters.",
+                                "The account has buckets — these are narrowed out. \
+                                 Widen or clear a filter above to see them.",
+                                cx,
+                            ))
+                    } else {
+                        div()
+                            .relative()
+                            .min_h_0()
+                            .flex_1()
+                            .child(DataTable::new(&self.table))
+                            .child(scroll::accelerator(self.table.clone(), self.accel.clone()))
+                    })
+                    .into_any_element()
+            }
         }
     }
 
@@ -3115,11 +3503,15 @@ impl Render for CaixonhoApp {
         let status: SharedString = match (self.active_profile, self.outcome.state()) {
             (None, _) => "".into(),
             (Some(_), Outcome::Loading) => "Listing buckets…".into(),
-            (Some(_), Outcome::Loaded(listing)) => {
-                // Says both numbers while a region is chosen: reporting the
+            (Some(_), Outcome::Loaded(_)) => {
+                // Says both numbers while anything is narrowing: reporting the
                 // account's total beside a narrowed table reads as rows lost.
-                let shown = self.table.read(cx).delegate().shown.len();
-                let total = listing.buckets.len();
+                //
+                // Both numbers from the delegate, which is the only thing that
+                // knows the final set. It used to count `shown` here and the
+                // total from the listing — two sources for one sentence, and
+                // `XONHO-0025` gave them three more chances to disagree.
+                let (shown, total) = self.table.read(cx).delegate().shown_of_loaded();
                 if shown == total {
                     format!("{total} buckets").into()
                 } else {
@@ -3192,7 +3584,7 @@ mod tests {
 
     use super::*;
     use caixonho_core::store::double::StoreDouble;
-    use caixonho_core::{Object, Region, types::Prefix as CorePrefix};
+    use caixonho_core::{Object, Observation, Region, Scope, types::Prefix as CorePrefix};
     use gpui::TestAppContext;
     use gpui_component::table::TableDelegate as _;
     use std::sync::Arc;
@@ -4507,6 +4899,46 @@ mod tests {
             |app, _, cx| settled(app, cx),
         ));
 
+        // Narrowed, and narrowed to nothing. The second is the one worth
+        // judging: it has to read as "your filters did this" and not as "this
+        // account is empty", and the controls have to still be there to undo
+        // it (`XONHO-0025`).
+        written.push(shoot(
+            "account-04a-narrowed",
+            Arc::new(StoreDouble::allows_listing()),
+            |app, window, cx| {
+                settled(app, cx);
+                // Through the controls, not past them. The first version of
+                // this frame set the narrowing directly and photographed a
+                // filter in force above a selector still reading "All kinds" —
+                // a state no user can reach, which is the exact class of
+                // harness bug `XONHO-0009` was written to stop.
+                app.filter.update(cx, |state, cx| {
+                    state.set_value("re", window, cx);
+                });
+                app.narrowing.name = "re".to_owned();
+                app.narrowing.accessible_only = true;
+                app.narrow_rows(cx);
+            },
+        ));
+
+        written.push(shoot(
+            "account-04b-narrowed-to-nothing",
+            Arc::new(StoreDouble::allows_listing()),
+            |app, window, cx| {
+                settled(app, cx);
+                // Through the control, not past it. Setting the narrowing
+                // alone would draw a filter in force above an empty text box —
+                // a state no user can reach, and the harness's job is to
+                // photograph states that exist.
+                app.filter.update(cx, |state, cx| {
+                    state.set_value("nothing-matches-this", window, cx);
+                });
+                app.narrowing.name = "nothing-matches-this".to_owned();
+                app.narrow_rows(cx);
+            },
+        ));
+
         // Partial: buckets came back and something else did not. Kept apart
         // from the failure panel on purpose, so the line has to be judged
         // beside a list rather than in place of one.
@@ -4711,6 +5143,37 @@ mod tests {
             },
         ));
 
+        // Making a folder (`XONHO-0024`). The second of these is the one to
+        // judge hardest: nothing has failed, the user did nothing wrong, and
+        // the words have to carry that or someone goes looking for a broken
+        // bucket. Driven through the real controls, not past them — a lesson
+        // from `XONHO-0025`, which photographed two states no user can reach.
+        written.push(shoot(
+            "bucket-13-new-folder-naming",
+            Arc::new(StoreDouble::allows_listing()),
+            |app, window, cx| {
+                inside(app, cx);
+                app.listing = Listing::Loaded;
+                app.new_folder_here(window, cx);
+                app.folder_name.update(cx, |state, cx| {
+                    state.set_value("august", window, cx);
+                });
+            },
+        ));
+
+        written.push(shoot(
+            "bucket-14-new-folder-not-on-a-directory-bucket",
+            Arc::new(StoreDouble::allows_listing()),
+            |app, window, cx| {
+                inside(app, cx);
+                app.listing = Listing::Loaded;
+                app.new_folder_here(window, cx);
+                app.making_folder.as_mut().expect("the strip is up").phase =
+                    FolderPhase::NotOnADirectoryBucket;
+                let _ = window;
+            },
+        ));
+
         // The deletion's two decision states (`XONHO-0021`): the second act,
         // and the aftermath that proves its undo.
         written.push(shoot(
@@ -4832,5 +5295,358 @@ mod tests {
             written.len(),
             judgement_dir().display()
         );
+    }
+
+    // ---- Narrowing the bucket list (XONHO-0025) ----
+
+    fn bucket_of(name: &str, kind: BucketKind) -> Bucket {
+        Bucket {
+            name: name.to_owned(),
+            created: None,
+            region: Region::Unknown,
+            kind,
+        }
+    }
+
+    /// A window holding `rows`, with nothing observed about any of them.
+    ///
+    /// Through `set_rows`, the door the real listing comes in by, so the
+    /// narrowing is applied the way production applies it.
+    fn listing_of(
+        cx: &mut TestAppContext,
+        rows: Vec<Bucket>,
+    ) -> (gpui::Entity<CaixonhoApp>, &mut gpui::VisualTestContext) {
+        cx.update(gpui_component::init);
+        let store: Arc<dyn caixonho_core::ObjectStore> = Arc::new(StoreDouble::allows_listing());
+        let (app, cx) = cx.add_window_view(|window, cx| {
+            CaixonhoApp::new(
+                Diagnostics::without_a_log(),
+                World::scripted(store),
+                window,
+                cx,
+            )
+        });
+        app.update_in(cx, |app, window, cx| app.set_rows(rows, window, cx));
+        (app, cx)
+    }
+
+    /// Record what has been observed about entering `bucket`.
+    fn observe(app: &CaixonhoApp, bucket: &str, observation: Observation) {
+        let session = app
+            .session
+            .as_ref()
+            .expect("a scripted world has a session");
+        let credentials = session.credentials().expect("scripted credentials");
+        session.observe_list(&credentials, Scope::bucket(bucket), observation);
+    }
+
+    /// The bucket names on screen, in order.
+    fn shown_names(
+        app: &gpui::Entity<CaixonhoApp>,
+        cx: &mut gpui::VisualTestContext,
+    ) -> Vec<String> {
+        app.read_with(cx, |app, cx| {
+            app.table
+                .read(cx)
+                .delegate()
+                .shown_names()
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect()
+        })
+    }
+
+    /// The buckets the window would report for probing — which is what decides
+    /// what ever gets observed at all.
+    fn probe_targets(
+        app: &gpui::Entity<CaixonhoApp>,
+        cx: &mut gpui::VisualTestContext,
+    ) -> Vec<String> {
+        app.read_with(cx, |app, cx| {
+            let delegate = app.table.read(cx).delegate();
+            delegate
+                .targets(0..delegate.shown_of_loaded().0)
+                .into_iter()
+                .map(|target| target.scope().bucket_name().to_owned())
+                .collect()
+        })
+    }
+
+    #[gpui::test]
+    fn accessible_only_removes_the_refused(cx: &mut TestAppContext) {
+        let (app, cx) = listing_of(
+            cx,
+            vec![
+                bucket_of("can-open", BucketKind::General),
+                bucket_of("refused", BucketKind::General),
+            ],
+        );
+        app.update(cx, |app, _| {
+            observe(app, "can-open", Observation::Allowed);
+            observe(app, "refused", Observation::Denied);
+        });
+
+        app.update(cx, |app, cx| {
+            app.narrowing.accessible_only = true;
+            app.narrow_rows(cx);
+        });
+
+        assert_eq!(shown_names(&app, cx), vec!["can-open".to_owned()]);
+    }
+
+    /// The test this change exists for. A bucket nobody has asked about is not
+    /// known to be refused, and hiding it would be presenting absence of
+    /// evidence as a denial.
+    #[gpui::test]
+    fn accessible_only_keeps_a_bucket_nothing_is_known_about(cx: &mut TestAppContext) {
+        let (app, cx) = listing_of(
+            cx,
+            vec![
+                bucket_of("refused", BucketKind::General),
+                bucket_of("unanswered", BucketKind::General),
+            ],
+        );
+        app.update(cx, |app, _| observe(app, "refused", Observation::Denied));
+
+        app.update(cx, |app, cx| {
+            app.narrowing.accessible_only = true;
+            app.narrow_rows(cx);
+        });
+
+        assert_eq!(
+            shown_names(&app, cx),
+            vec!["unanswered".to_owned()],
+            "a bucket with no answer yet was hidden as though it had been refused"
+        );
+    }
+
+    /// And the half a rendering test cannot see. The viewport is built from the
+    /// *shown* rows, so a bucket the narrowing removes is never probed — which
+    /// is why `!= Denied` is not interchangeable with `== Open`. Written the
+    /// wrong way round, an unanswered bucket would be hidden, so never probed,
+    /// so never answered, so hidden for ever, with nothing on screen saying so.
+    #[gpui::test]
+    fn accessible_only_still_reports_the_unanswered_for_probing(cx: &mut TestAppContext) {
+        let (app, cx) = listing_of(
+            cx,
+            vec![
+                bucket_of("refused", BucketKind::General),
+                bucket_of("unanswered", BucketKind::General),
+            ],
+        );
+        app.update(cx, |app, _| observe(app, "refused", Observation::Denied));
+
+        app.update(cx, |app, cx| {
+            app.narrowing.accessible_only = true;
+            app.narrow_rows(cx);
+        });
+
+        assert!(
+            probe_targets(&app, cx).contains(&"unanswered".to_owned()),
+            "the narrowing stopped an unanswered bucket being probed, so its answer can \
+             never arrive and it is hidden for ever"
+        );
+    }
+
+    #[gpui::test]
+    fn narrowing_by_kind_and_by_name_compose(cx: &mut TestAppContext) {
+        let (app, cx) = listing_of(
+            cx,
+            vec![
+                bucket_of("vault-one--x-s3", BucketKind::Directory),
+                bucket_of("vault-two", BucketKind::General),
+                bucket_of("other--x-s3", BucketKind::Directory),
+            ],
+        );
+
+        app.update(cx, |app, cx| {
+            app.narrowing.kind = KindChoice::Directory;
+            app.narrow_rows(cx);
+        });
+        assert_eq!(
+            shown_names(&app, cx),
+            vec!["vault-one--x-s3".to_owned(), "other--x-s3".to_owned()]
+        );
+
+        app.update(cx, |app, cx| {
+            app.narrowing.name = "vault".to_owned();
+            app.narrow_rows(cx);
+        });
+        assert_eq!(
+            shown_names(&app, cx),
+            vec!["vault-one--x-s3".to_owned()],
+            "the two narrowings should compose, not replace one another"
+        );
+
+        // Clearing one leaves the other in force.
+        app.update(cx, |app, cx| {
+            app.narrowing.kind = KindChoice::Any;
+            app.narrow_rows(cx);
+        });
+        assert_eq!(
+            shown_names(&app, cx),
+            vec!["vault-one--x-s3".to_owned(), "vault-two".to_owned()]
+        );
+    }
+
+    #[gpui::test]
+    fn a_name_narrowing_ignores_case(cx: &mut TestAppContext) {
+        let (app, cx) = listing_of(cx, vec![bucket_of("Reports-2026", BucketKind::General)]);
+
+        app.update(cx, |app, cx| {
+            app.narrowing.name = "reports".to_owned();
+            app.narrow_rows(cx);
+        });
+
+        assert_eq!(shown_names(&app, cx), vec!["Reports-2026".to_owned()]);
+    }
+
+    #[gpui::test]
+    fn an_account_with_buckets_all_narrowed_away_is_not_an_empty_account(cx: &mut TestAppContext) {
+        let (app, cx) = listing_of(cx, vec![bucket_of("reports", BucketKind::General)]);
+
+        app.update(cx, |app, cx| {
+            app.narrowing.name = "nothing-matches-this".to_owned();
+            app.narrow_rows(cx);
+        });
+
+        app.read_with(cx, |app, cx| {
+            let delegate = app.table.read(cx).delegate();
+            assert!(
+                delegate.hidden_by_narrowing(),
+                "an account whose buckets are all narrowed away must not read as one that \
+                 holds none — the only cure for the second is knowing which control emptied it"
+            );
+            assert_eq!(delegate.shown_of_loaded(), (0, 1));
+        });
+    }
+
+    #[gpui::test]
+    fn narrowings_do_not_follow_the_user_to_another_connection(cx: &mut TestAppContext) {
+        let (app, cx) = with_two_connections(cx);
+
+        app.update_in(cx, |app, window, cx| {
+            app.select_profile(0, window, cx);
+            app.narrowing.kind = KindChoice::Directory;
+            app.narrowing.name = "reports".to_owned();
+            app.narrowing.accessible_only = true;
+            app.narrow_rows(cx);
+        });
+        cx.run_until_parked();
+
+        app.update_in(cx, |app, window, cx| app.select_profile(1, window, cx));
+        cx.run_until_parked();
+
+        app.read_with(cx, |app, _| {
+            assert_eq!(
+                app.narrowing,
+                Narrowing::default(),
+                "a narrowing set on one account followed the user to the next, which is how \
+                 someone comes to believe a bucket has gone missing"
+            );
+        });
+    }
+
+    // ---- A folder you can make (XONHO-0024) ----
+
+    #[gpui::test]
+    fn asking_for_a_folder_on_a_directory_bucket_never_reaches_the_service(
+        cx: &mut TestAppContext,
+    ) {
+        let (app, cx) = looking_at(cx, "vault");
+        // The bucket the window is inside is a directory bucket, as the
+        // account listing already says.
+        app.update(cx, |app, cx| {
+            app.table.update(cx, |state, _| {
+                let delegate = state.delegate_mut();
+                delegate.rows = vec![bucket_of("vault", BucketKind::Directory)];
+                delegate.shown = vec![0];
+            });
+        });
+
+        app.update_in(cx, |app, window, cx| {
+            app.new_folder_here(window, cx);
+            app.confirm_new_folder(cx);
+        });
+        cx.run_until_parked();
+
+        app.read_with(cx, |app, _| {
+            assert!(
+                matches!(
+                    app.making_folder.as_ref().expect("a strip is up").phase,
+                    FolderPhase::NotOnADirectoryBucket
+                ),
+                "a directory bucket must be refused from the kind already in the listing"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn a_folder_is_named_before_anything_is_sent(cx: &mut TestAppContext) {
+        let (app, cx) = looking_at(cx, "reports");
+
+        app.update_in(cx, |app, window, cx| app.new_folder_here(window, cx));
+
+        app.read_with(cx, |app, _| {
+            assert!(
+                matches!(
+                    app.making_folder.as_ref().expect("a strip is up").phase,
+                    FolderPhase::Naming
+                ),
+                "the button should open a name prompt, not create anything"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn a_name_that_cannot_be_a_folder_is_said_rather_than_sent(cx: &mut TestAppContext) {
+        let (app, cx) = looking_at(cx, "reports");
+
+        app.update_in(cx, |app, window, cx| {
+            app.new_folder_here(window, cx);
+            app.folder_name.update(cx, |state, cx| {
+                state.set_value("reports/august", window, cx);
+            });
+            app.confirm_new_folder(cx);
+        });
+        cx.run_until_parked();
+
+        app.read_with(cx, |app, _| {
+            assert!(matches!(
+                app.making_folder.as_ref().expect("a strip is up").phase,
+                FolderPhase::BadName(_)
+            ));
+        });
+    }
+
+    /// `XONHO-0019`'s discipline, on the newest verb: an answer that lands
+    /// after the user has switched accounts must not be announced over the one
+    /// they are looking at.
+    #[gpui::test]
+    fn a_folder_made_into_an_account_the_user_left_is_not_announced(cx: &mut TestAppContext) {
+        let (app, cx) = looking_at(cx, "reports");
+        app.update_in(cx, |app, window, cx| app.new_folder_here(window, cx));
+
+        app.update(cx, |app, _| {
+            let making = app.making_folder.as_mut().expect("a strip is up");
+            making.connection = ConnectionId(app.next_connection + 99);
+        });
+        app.update_in(cx, |app, window, cx| {
+            app.folder_settled(
+                caixonho_core::session::FolderOutcome::Made {
+                    key: "august/".to_owned(),
+                },
+                window,
+                cx,
+            );
+        });
+
+        app.read_with(cx, |app, _| {
+            assert!(
+                app.making_folder.is_none(),
+                "a folder made into an account the user has left was announced over the one \
+                 they are now looking at"
+            );
+        });
     }
 }

@@ -62,6 +62,7 @@ pub(crate) mod connections;
 pub mod credentials;
 pub mod diagnostics;
 pub mod error;
+pub mod folder;
 pub(crate) mod listing;
 pub mod outcome;
 pub mod preview;

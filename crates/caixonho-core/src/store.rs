@@ -131,6 +131,23 @@ pub trait ObjectStore: Send + Sync {
         path: &std::path::Path,
         if_absent: IfAbsent,
     ) -> Result<PutOutcome>;
+
+    /// Write the zero-byte marker that makes `key` a folder (`XONHO-0024`).
+    ///
+    /// Its own method rather than a `put_object` with an empty file, and the
+    /// reason is not tidiness: `put_object` takes a path because it streams a
+    /// file the user chose, and handing it a temporary empty file to make a
+    /// folder would put a filesystem in the middle of an operation that has
+    /// nothing to do with one.
+    ///
+    /// `key` must already end in `/` — [`crate::folder::key_for`] is the one
+    /// place that decides what a folder key looks like.
+    ///
+    /// Only a general purpose bucket may be given this. A directory bucket
+    /// removes a directory as soon as it is empty, so the marker would be gone
+    /// before the next listing; that refusal is decided above this, from the
+    /// kind already in the listing, so no request is spent learning it.
+    async fn create_folder(&self, bucket: &str, key: &str) -> Result<()>;
 }
 
 /// The first stretch of one object, with the size of the whole.
@@ -247,6 +264,10 @@ pub mod double {
         /// assert the *right* marker was removed rather than merely that
         /// something was.
         removed_markers: std::sync::Mutex<Vec<String>>,
+        /// Every folder key `create_folder` was asked for, so a test can
+        /// assert both *what* was made and — the harder half — that a
+        /// directory bucket's refusal spent no request at all.
+        folders_made: std::sync::Mutex<Vec<(String, String)>>,
         /// How many object reads were served, so a test can assert a path
         /// that promises not to fetch really fetched nothing.
         gets: std::sync::atomic::AtomicU32,
@@ -314,6 +335,7 @@ pub mod double {
                 writes: Writes::Accepts,
                 removals: Removals::Unversioned,
                 removed_markers: std::sync::Mutex::new(Vec::new()),
+                folders_made: std::sync::Mutex::new(Vec::new()),
                 gets: std::sync::atomic::AtomicU32::new(0),
             }
         }
@@ -474,6 +496,19 @@ pub mod double {
             self.gets.load(std::sync::atomic::Ordering::SeqCst)
         }
 
+        /// Every `(bucket, key)` a folder was asked to be made at.
+        ///
+        /// Empty is the assertion that matters most: a directory bucket's
+        /// refusal must be decided from the kind already in the listing, so it
+        /// spends no request — and only this can tell "refused without asking"
+        /// apart from "asked and was refused".
+        pub fn folders_made(&self) -> Vec<(String, String)> {
+            self.folders_made
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        }
+
         /// The version ids `remove_marker` has been called with.
         pub fn markers_removed(&self) -> Vec<String> {
             self.removed_markers
@@ -533,6 +568,7 @@ pub mod double {
                 writes: Writes::Accepts,
                 removals: Removals::Unversioned,
                 removed_markers: std::sync::Mutex::new(Vec::new()),
+                folders_made: std::sync::Mutex::new(Vec::new()),
                 gets: std::sync::atomic::AtomicU32::new(0),
             }
         }
@@ -605,6 +641,19 @@ pub mod double {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(version_id.to_owned());
             Ok(())
+        }
+
+        /// Folder markers answer from the same scripted `Writes` a file write
+        /// does, minus the conditional branches: a folder has no keep-both.
+        async fn create_folder(&self, bucket: &str, key: &str) -> Result<()> {
+            self.folders_made
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((bucket.to_owned(), key.to_owned()));
+            match &self.writes {
+                Writes::Refused(make) => Err(make()),
+                _ => Ok(()),
+            }
         }
 
         /// Writes answer from the scripted `Writes`. The double reads the

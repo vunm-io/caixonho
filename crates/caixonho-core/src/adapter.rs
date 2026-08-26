@@ -576,6 +576,39 @@ impl ObjectStore for S3ObjectStore {
         }
     }
 
+    async fn create_folder(&self, bucket: &str, key: &str) -> Result<()> {
+        let region = self.region_learned_for(bucket);
+        let client = match &region {
+            Some(region) => self.client_for(region),
+            None => self.client.clone(),
+        };
+
+        // No `if_none_match`: a folder that already exists is a name collision
+        // the caller refuses by name, not a file to step aside from. Putting
+        // the marker twice writes the same zero bytes over the same key, which
+        // is why this needs no guard rather than having one omitted.
+        match client
+            .put_object()
+            .bucket(bucket)
+            .key(key)
+            .body(aws_sdk_s3::primitives::ByteStream::from_static(b""))
+            .send()
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(error) => {
+                let endpoint = match &region {
+                    Some(region) => self.endpoint_for(region),
+                    None => self.endpoint.clone(),
+                };
+                Err(classify(
+                    &SdkFailure::from_sdk(&error),
+                    &self.call("s3:PutObject", &endpoint, Some(bucket)),
+                ))
+            }
+        }
+    }
+
     async fn put_object(
         &self,
         bucket: &str,
