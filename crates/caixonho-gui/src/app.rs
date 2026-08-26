@@ -656,7 +656,7 @@ impl CaixonhoApp {
             });
             cx.spawn(async move |this, cx| {
                 while arrivals.recv_async().await.is_ok() {
-                    if this.update(cx, |_, cx| cx.notify()).is_err() {
+                    if this.update(cx, |app, cx| app.probe_settled(cx)).is_err() {
                         break; // The window is gone.
                     }
                 }
@@ -2044,6 +2044,29 @@ impl CaixonhoApp {
     /// No request is made: the service can filter a listing by region, but only
     /// for a request sent to an endpoint in that same region, which would cost
     /// a client per region to narrow a list already in hand.
+    /// A probe answered, so what the listing admits may have changed.
+    ///
+    /// Redrawing is not enough. Four of the five narrowings read data that
+    /// cannot change while the user sits still; the accessibility one reads an
+    /// *observation*, and observations arrive later than the click that turned
+    /// it on. Without re-narrowing here, switching to an account and turning
+    /// "Accessible only" on straight away leaves every refused bucket listed
+    /// for ever, wearing its own **No access** badge — the filter frozen at the
+    /// moment nothing had been answered yet.
+    ///
+    /// Found by the owner on 2026-08-26, on the first screen they tried it on.
+    /// `XONHO-0025` planned a test for exactly this and shipped without one.
+    ///
+    /// Only when that narrowing is on: it is the only one an answer can move,
+    /// and re-narrowing on every probe otherwise would be work for nothing.
+    fn probe_settled(&mut self, cx: &mut Context<Self>) {
+        if self.narrowing.accessible_only {
+            self.narrow_rows(cx);
+        } else {
+            cx.notify();
+        }
+    }
+
     fn narrow_rows(&mut self, cx: &mut Context<Self>) {
         let narrowing = self.narrowing.clone();
         self.table.update(cx, |state, cx| {
@@ -5926,6 +5949,70 @@ mod tests {
             probe_targets(&app, cx).contains(&"unanswered".to_owned()),
             "the narrowing stopped an unanswered bucket being probed, so its answer can \
              never arrive and it is hidden for ever"
+        );
+    }
+
+    /// The test `XONHO-0025` planned and did not write, which is why the
+    /// defect it describes reached the owner's screen.
+    ///
+    /// Turning the narrowing on before anything has been answered must not
+    /// freeze it there: the answers arrive afterwards, and the list has to
+    /// follow them.
+    #[gpui::test]
+    fn a_denial_that_settles_while_the_narrowing_is_on_removes_its_row(cx: &mut TestAppContext) {
+        let (app, cx) = listing_of(
+            cx,
+            vec![
+                bucket_of("can-open", BucketKind::General),
+                bucket_of("refused", BucketKind::General),
+            ],
+        );
+
+        // On before anything is known — the owner's exact sequence.
+        app.update(cx, |app, cx| {
+            app.narrowing.accessible_only = true;
+            app.narrow_rows(cx);
+        });
+        assert_eq!(
+            shown_names(&app, cx),
+            vec!["can-open".to_owned(), "refused".to_owned()],
+            "nothing is answered yet, so nothing may be hidden"
+        );
+
+        // The answers arrive.
+        app.update(cx, |app, _| {
+            observe(app, "can-open", Observation::Allowed);
+            observe(app, "refused", Observation::Denied);
+        });
+        app.update(cx, |app, cx| app.probe_settled(cx));
+
+        assert_eq!(
+            shown_names(&app, cx),
+            vec!["can-open".to_owned()],
+            "the denial settled and the row stayed, so the filter is frozen at the moment \
+             nothing had been answered"
+        );
+    }
+
+    /// And the other half: with the narrowing off, a settling probe must not
+    /// quietly re-run every narrowing behind the user's back.
+    #[gpui::test]
+    fn a_settling_probe_changes_nothing_when_the_narrowing_is_off(cx: &mut TestAppContext) {
+        let (app, cx) = listing_of(
+            cx,
+            vec![
+                bucket_of("can-open", BucketKind::General),
+                bucket_of("refused", BucketKind::General),
+            ],
+        );
+        app.update(cx, |app, _| observe(app, "refused", Observation::Denied));
+
+        app.update(cx, |app, cx| app.probe_settled(cx));
+
+        assert_eq!(
+            shown_names(&app, cx),
+            vec!["can-open".to_owned(), "refused".to_owned()],
+            "a refused bucket is still a bucket, and nobody asked for it to be hidden"
         );
     }
 
