@@ -305,7 +305,7 @@ own name into the current location. Letting the user type where it lands is a
 smaller change than any pending-folder model and gives the owner's account the
 organising power they were actually asking for.
 
-**Issued as `XONHO-0026` on 2026-08-26, and it should not have waited.**
+**Built as `XONHO-0026` on 2026-08-26, and it should not have waited.**
 Leaving it as a note made `XONHO-0024` half a feature on the only account its
 owner uses daily: that change tells them to upload into the path they want,
 and `Upload…` gave them no way to say a path. The owner found it by trying to

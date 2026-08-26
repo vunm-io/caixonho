@@ -20,6 +20,60 @@
 
 use crate::types::Prefix;
 
+/// Why a typed destination cannot name an object (`XONHO-0026`).
+///
+/// Beside the folder rules rather than in a module of its own: these are the
+/// same question about a different shape, and two homes would drift on the
+/// rules they share.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BadObjectKey {
+    /// Nothing, or nothing but whitespace.
+    Empty,
+    /// Ends in `/`, so it names a folder. This operation writes an object.
+    NamesAFolder,
+    /// Begins with `/`. S3 permits it, and it makes an object inside a folder
+    /// whose name is the empty string — legal, never intended, and rendered
+    /// strangely by every tool that meets it.
+    LeadingSeparator,
+}
+
+impl std::fmt::Display for BadObjectKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => f.write_str("a destination is needed"),
+            Self::NamesAFolder => {
+                f.write_str("a destination ending in `/` names a folder — give the file a name too")
+            }
+            Self::LeadingSeparator => {
+                f.write_str("a destination cannot start with `/` — it is relative to the bucket")
+            }
+        }
+    }
+}
+
+/// Whether `key` may name the object an upload writes.
+///
+/// Returns the key itself on success, trimmed, so callers cannot accidentally
+/// send the untrimmed one — the same shape as [`key_for`], for the same
+/// reason.
+///
+/// A `/` in the *middle* is fine and is the whole point: it is how a folder
+/// comes into being on a directory bucket, where the service creates the
+/// directories as part of the write.
+pub fn object_key(key: &str) -> Result<String, BadObjectKey> {
+    let key = key.trim();
+    if key.is_empty() {
+        return Err(BadObjectKey::Empty);
+    }
+    if key.ends_with('/') {
+        return Err(BadObjectKey::NamesAFolder);
+    }
+    if key.starts_with('/') {
+        return Err(BadObjectKey::LeadingSeparator);
+    }
+    Ok(key.to_owned())
+}
+
 /// Why a name cannot become a folder.
 ///
 /// Each variant is a sentence a person can act on, which is the whole reason
@@ -70,6 +124,41 @@ mod tests {
     //! standing" and "An empty folder is not offered where it cannot exist".
 
     use super::*;
+
+    #[test]
+    fn a_plain_name_is_a_destination() {
+        assert_eq!(object_key("report.csv"), Ok("report.csv".to_owned()));
+    }
+
+    #[test]
+    fn a_destination_may_carry_a_path_and_that_is_the_point() {
+        // On a directory bucket this is the *only* way to make a folder: the
+        // service creates the directories as part of the write.
+        assert_eq!(
+            object_key("uploads/2026/report.csv"),
+            Ok("uploads/2026/report.csv".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_destination_that_is_nothing_is_refused() {
+        assert_eq!(object_key("   "), Err(BadObjectKey::Empty));
+    }
+
+    #[test]
+    fn a_destination_ending_in_a_separator_names_a_folder_not_an_object() {
+        assert_eq!(object_key("uploads/"), Err(BadObjectKey::NamesAFolder));
+    }
+
+    #[test]
+    fn a_destination_starting_at_the_root_is_refused_rather_than_trimmed() {
+        // Trimming would send a key the user did not type, and the spec says
+        // what is shown is what is sent.
+        assert_eq!(
+            object_key("/uploads/report.csv"),
+            Err(BadObjectKey::LeadingSeparator)
+        );
+    }
 
     #[test]
     fn a_folder_at_the_root_of_a_bucket_has_no_leading_separator() {

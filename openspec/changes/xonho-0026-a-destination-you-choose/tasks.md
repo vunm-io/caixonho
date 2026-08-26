@@ -7,7 +7,13 @@
 
 ## 1. What a destination may be
 
-- [ ] 1.1 `object_key` beside `folder::key_for` [dispatch: main]
+- [x] 1.1 `object_key` beside `folder::key_for` [dispatch: main]
+      - Done in `main` (2026-08-26), red first, five tests. Three refusals,
+        each with its own sentence.
+      - The leading-`/` refusal is the one that was argued and is worth
+        re-reading before anyone "helpfully" trims it: trimming would send a
+        key the user did not type, and this change's own spec says what is
+        shown is what is sent.
   - Paths: `crates/caixonho-core/src/folder.rs`
   - Done criteria: a pure function deciding whether a typed destination may
     name an object. Red first. Tests: empty; ends in `/`; starts with `/`; a
@@ -20,7 +26,19 @@
 
 ## 2. The window
 
-- [ ] 2.1 The destination is shown, defaulted, and editable [dispatch: main]
+- [x] 2.1 The destination is shown, defaulted, and editable [dispatch: main]
+      - Done in `main` (2026-08-26). `ChoosingDestination` is its own state
+        rather than a `TransferPhase`, and not for tidiness: a `Transfer`
+        holds a `Cancel` for a request that is already running, and nothing is
+        running yet — making one here would mean inventing a cancel for a
+        request that does not exist.
+      - It carries **no `connection`**, unlike `Deletion` and `MakingFolder`.
+        Those guard a *late answer* against a switched account
+        (`XONHO-0019`); nothing has been sent here, so there is nothing late
+        to guard, and `end_location` already drops it. Clippy found the unread
+        field before the review did — the same shape as `XONHO-0008`'s unread
+        `size`, and this time it really was surplus rather than a requirement
+        going unmet.
   - Paths: `crates/caixonho-gui/src/app.rs`
   - Done criteria: choosing a file puts the upload strip into a phase that
     shows the destination, pre-filled with `<prefix><file name>` — the exact
@@ -29,7 +47,25 @@
     destination is what gets sent.
   - Verification: `cargo test -p caixonho-gui`
 
-- [ ] 2.2 What is shown is what is sent [dispatch: main]
+- [x] 2.2 What is shown is what is sent [dispatch: main]
+      - Done in `main` (2026-08-26); the `format!` at the old `app.rs:1150`
+        is gone, not left beside the field.
+      - **Ablated as the task demanded**: recomposing the key from the
+        location and the file's basename turns
+        `what_is_shown_is_what_is_sent` red — and also the refusal test,
+        because a recomposed key is never refused.
+      - **A limit found while writing it, and named rather than hidden.** The
+        first version asserted on the *store* — the far side of the port,
+        which is where the claim really lives. It could not work: the session
+        runs uploads on its own tokio runtime, which a window test never
+        drives, so a store-side assertion would have been empty whatever
+        happened. **An assertion that cannot fail is worse than none, because
+        it reads as proof.** It now asserts at the window's own seam, where
+        `start_upload` hands the same string to `spawn_upload` and to the
+        transfer it records, synchronously.
+      - A `puts_asked` recorder was added to `StoreDouble` for that first
+        version and **removed again** when it turned out unusable, rather than
+        left as API for later.
   - Paths: `crates/caixonho-gui/src/app.rs`
   - Done criteria: the key handed to core is read **from the field**, and
     `app.rs:1150`'s `format!` is gone rather than left beside it. Test: edit
@@ -40,8 +76,14 @@
     a version that keeps re-deriving the name.
   - Verification: `cargo test -p caixonho-gui`
 
-- [ ] 2.3 A refused destination costs a sentence, not a request
+- [x] 2.3 A refused destination costs a sentence, not a request
       [dispatch: main]
+      - Done in `main` (2026-08-26). The assertion that bites is
+        `transfer.is_none()`, and it is **not** a phase check: `start_upload`
+        records the transfer in the same breath as it spawns the request, so
+        no transfer means nothing was asked for. The store-side count the task
+        asked for would have been vacuous here for 2.2's reason, and a comment
+        in the test says so where the next reader will meet it.
   - Paths: `crates/caixonho-gui/src/app.rs`
   - Done criteria: each refusal shows its own reason and **nothing reaches
     the store** — asserted on the double's call count, not only on the phase.
@@ -49,7 +91,15 @@
     "refused without asking" apart from "asked and was refused".
   - Verification: `cargo test -p caixonho-gui`
 
-- [ ] 2.4 The screenshot harness covers the new phase [dispatch: main]
+- [x] 2.4 The screenshot harness covers the new phase [dispatch: main]
+      - Done in `main` (2026-08-26): `bucket-15-upload-destination` and
+        `bucket-16-upload-destination-refused`, pixel-distinct, driven through
+        the field rather than by setting state behind it.
+      - **Looked at beside their neighbours**, which is the part the task
+        insisted on. The strip reads like `transfer_line` — label, field,
+        reason, actions right — rather than like the card `XONHO-0024` first
+        shipped. The refusal sits beside the field it is about, so the fix is
+        where the mistake is.
   - Paths: `crates/caixonho-gui/src/app.rs`
   - Done criteria: the destination phase and a refused destination each get a
     frame, pixel-distinct, and **driven through the controls** — set the
@@ -63,8 +113,10 @@
 
 ## 3. Close-out
 
-- [ ] 3.1 `cargo fmt --all`, `cargo clippy --workspace --all-targets --
+- [x] 3.1 `cargo fmt --all`, `cargo clippy --workspace --all-targets --
       -D warnings`, `cargo test --workspace` green [dispatch: main]
+      - Done in `main` (2026-08-26): fmt and clippy exit 0, 364 core + 80
+        window green (8 + 1 ignored).
   - Verification: the commands themselves
 
 - [ ] 3.2 CI green on both targets, run id recorded here [dispatch: main]
@@ -79,7 +131,11 @@
     general purpose bucket, and one refused destination.
   - Verification: what was seen, quoted
 
-- [ ] 3.4 Reader-facing documents [dispatch: main]
+- [x] 3.4 Reader-facing documents [dispatch: main]
+      - Done in `main` (2026-08-26). §4.4's upload row **stays partial** —
+        one file, no folders, no queue — and now says the destination is
+        chosen. A roadmap M2 row. The parked note reads *built* rather than
+        *issued*. Counts by the script: unmoved.
   - Paths: `docs/requirements-status.md`, `docs/roadmap.md`,
     `docs/planned-changes.md`
   - Done criteria: §4.4's upload row says the destination is chosen; a
@@ -87,7 +143,27 @@
     gets its outcome written under it. **Counts by the script.**
   - Verification: the script's totals match the tables
 
-- [ ] 3.5 Close-out review per `AGENTS.md` [dispatch: main]
+- [x] 3.5 Close-out review per `AGENTS.md` [dispatch: main]
+      - Run 2026-08-26, before the live check.
+      - **Q1: no departures.** The design said no bucket-kind branch and there
+        is none — the feature that needed the kind is the one that cannot
+        work.
+      - **Q2, read the wide way, and `XONHO-0024`'s own text was the point.**
+        That change tells the user to upload into the path they want. It was
+        written when they could not, and it is true now. Re-read and left as
+        it stands, which is the outcome this change was for. §4.4's row stays
+        partial and names what is still missing; roadmap row added.
+      - **Q3:** `puts_asked` was written and deleted the same hour;
+        `ChoosingDestination::connection` was written and deleted. Nothing
+        added that production does not call.
+      - **Q4, and the honest answer is a limit rather than a gap.** The claim
+        "what is shown is what is sent" is asserted one side of the port,
+        because the other side is unreachable from a window test. Named in
+        2.2, in the test's own doc comment, and here. What no test covers at
+        all: that writing into a path really creates the directories on a
+        *directory bucket*. That is documentation so far, and it is 3.3 —
+        which is also `XONHO-0024`'s live check by proxy.
+      - **Q5:** nothing discovered and left in a transcript.
   - Done criteria: the five questions answered here, question 2 read the wide
     way — **including `XONHO-0024`'s own text**, which tells the user to
     upload into a path and was written when they could not. Question 4 asked

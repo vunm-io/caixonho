@@ -69,6 +69,12 @@ pub(crate) struct CaixonhoApp {
     /// The one deletion being confirmed, in flight, or just settled
     /// (`XONHO-0021`).
     deletion: Option<Deletion>,
+    /// The upload waiting on a destination, if one is (`XONHO-0026`).
+    choosing_destination: Option<ChoosingDestination>,
+    /// Where the object will land. Its own input rather than a `String` on the
+    /// state, for `folder_name`'s reason: the control is what the user types
+    /// into, and two places holding one answer is how they come to disagree.
+    destination: Entity<InputState>,
     /// The folder being made, if one is (`XONHO-0024`).
     making_folder: Option<MakingFolder>,
     /// Where a folder's outcome arrives, off the runtime.
@@ -276,6 +282,26 @@ enum DeletePhase {
     Restored,
     /// A delete or undo failed. `during_undo` picks the words.
     Failed { error: Error, during_undo: bool },
+}
+
+/// A file has been chosen and is waiting on where to land (`XONHO-0026`).
+///
+/// Its own state rather than a `TransferPhase`, and not for tidiness: a
+/// `Transfer` holds a `Cancel` for an upload that is already running, and
+/// nothing is running yet. Making one here would mean inventing a cancel for
+/// a request that does not exist.
+struct ChoosingDestination {
+    // No `connection`, unlike `Deletion` and `MakingFolder`. Those carry one
+    // because an *answer* arrives later and must not be reported over an
+    // account the user has left (`XONHO-0019`). Nothing has been sent here, so
+    // there is no late answer to guard — and `end_location` already drops this
+    // on any switch. A field nobody reads is how a guarantee comes to look
+    // enforced when it is not.
+    bucket: String,
+    /// The local file, held until there is somewhere to send it.
+    source: std::path::PathBuf,
+    /// Why the last attempt was refused, when it was. Nothing was sent.
+    refused: Option<caixonho_core::folder::BadObjectKey>,
 }
 
 /// Making a folder, from naming it to what became of it (`XONHO-0024`).
@@ -551,6 +577,7 @@ impl CaixonhoApp {
         .detach();
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter by name"));
         let folder_name = cx.new(|cx| InputState::new(window, cx).placeholder("Folder name"));
+        let destination = cx.new(|cx| InputState::new(window, cx).placeholder("bucket/path/name"));
         cx.subscribe(&filter, |app, state, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 app.narrowing.name = state.read(cx).value().to_string();
@@ -739,6 +766,8 @@ impl CaixonhoApp {
             transfer: None,
             transfers,
             deletion: None,
+            choosing_destination: None,
+            destination,
             making_folder: None,
             folder_name,
             folder_inbox: folders,
@@ -1175,18 +1204,68 @@ impl CaixonhoApp {
             else {
                 return;
             };
-            let key = format!("{}{name}", location.prefix.as_str());
-            let _ = this.update_in(cx, |app, _, cx| {
-                app.start_upload(
-                    location.bucket.clone(),
-                    key,
-                    path,
-                    caixonho_core::transfer::Collision::Ask,
-                    cx,
-                );
+            // The destination is *offered*, not decided. This is exactly the
+            // string this line used to send without asking, and it is now
+            // what the field starts at (`XONHO-0026`).
+            let proposed = format!("{}{name}", location.prefix.as_str());
+            let _ = this.update_in(cx, |app, window, cx| {
+                app.offer_destination(location.bucket.clone(), path, proposed, window, cx);
             });
         })
         .detach();
+    }
+
+    /// Put the chosen file's destination on screen, filled in and editable.
+    fn offer_destination(
+        &mut self,
+        bucket: String,
+        source: std::path::PathBuf,
+        proposed: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.destination.update(cx, |state, cx| {
+            state.set_value(proposed, window, cx);
+        });
+        self.choosing_destination = Some(ChoosingDestination {
+            bucket,
+            source,
+            refused: None,
+        });
+        cx.notify();
+    }
+
+    /// Send it, to whatever the field says.
+    fn confirm_destination(&mut self, cx: &mut Context<Self>) {
+        let Some(choosing) = self.choosing_destination.as_ref() else {
+            return;
+        };
+        // Read from the control, never recomposed from the location and the
+        // file name — that recomposition is the whole thing this change
+        // removes, and doing it here would put it back where no reader would
+        // look for it.
+        let typed = self.destination.read(cx).value().to_string();
+        let key = match caixonho_core::folder::object_key(&typed) {
+            Ok(key) => key,
+            Err(bad) => {
+                // Nothing is sent. A mistake costs a sentence, not a request
+                // and an unexplained failure.
+                if let Some(choosing) = self.choosing_destination.as_mut() {
+                    choosing.refused = Some(bad);
+                }
+                cx.notify();
+                return;
+            }
+        };
+        let (bucket, source) = (choosing.bucket.clone(), choosing.source.clone());
+        self.choosing_destination = None;
+        self.start_upload(
+            bucket,
+            key,
+            source,
+            caixonho_core::transfer::Collision::Ask,
+            cx,
+        );
     }
 
     /// Start one upload and hold it as the window's transfer.
@@ -1582,6 +1661,9 @@ impl CaixonhoApp {
         // about one too (`XONHO-0008`).
         self.deletion = None;
         self.preview = None;
+        // A destination is a key at a location; leaving takes it along
+        // (`XONHO-0026`), exactly as the deletion strip goes.
+        self.choosing_destination = None;
         self.listing = Listing::Idle;
         self.more = None;
         self.fetching = false;
@@ -2835,9 +2917,57 @@ impl CaixonhoApp {
             // state with nowhere to be and drew nothing at all — the same
             // family of bug as the `h_flex` one in `design-language.md`.
             .child(v_flex().flex_1().min_h_0().child(body))
+            .children(self.destination_line(cx))
             .children(self.transfer_line(cx))
             .children(self.deletion_line(cx))
             .children(self.folder_line(cx))
+    }
+
+    /// Where the chosen file will land (`XONHO-0026`).
+    ///
+    /// A strip in the same voice as its neighbours — text left, actions right,
+    /// full width. It is a phase rather than a permanent control: it is here
+    /// only while an upload is waiting on a destination.
+    fn destination_line(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        let choosing = self.choosing_destination.as_ref()?;
+
+        Some(
+            h_flex()
+                .debug_selector(|| "destination-strip".into())
+                .w_full()
+                .gap(space::TIGHT)
+                .items_center()
+                .child(div().text_sm().child("Upload to:"))
+                .child(div().w(px(380.)).child(Input::new(&self.destination)))
+                // The refusal sits beside the field it is about, so the fix is
+                // where the mistake is.
+                .children(choosing.refused.map(|bad| {
+                    div()
+                        .debug_selector(|| "destination-refused".into())
+                        .text_sm()
+                        .text_color(cx.theme().danger)
+                        .child(bad.to_string())
+                }))
+                .child(div().flex_1())
+                .child(
+                    div().debug_selector(|| "destination-send".into()).child(
+                        Button::new("destination-send")
+                            .label("Send")
+                            .primary()
+                            .on_click(cx.listener(|app, _, _, cx| app.confirm_destination(cx))),
+                    ),
+                )
+                .child(
+                    Button::new("destination-cancel")
+                        .label("Cancel")
+                        .ghost()
+                        .on_click(cx.listener(|app, _, _, cx| {
+                            app.choosing_destination = None;
+                            cx.notify();
+                        })),
+                )
+                .into_any_element(),
+        )
     }
 
     /// Making a folder, from naming it to what became of it (`XONHO-0024`).
@@ -5176,6 +5306,45 @@ mod tests {
             },
         ));
 
+        // Choosing where an upload lands (`XONHO-0026`). Driven through the
+        // control, and the refused frame is the one to judge: the reason has
+        // to sit beside the field it is about.
+        written.push(shoot(
+            "bucket-15-upload-destination",
+            Arc::new(StoreDouble::allows_listing()),
+            |app, window, cx| {
+                inside(app, cx);
+                app.listing = Listing::Loaded;
+                app.offer_destination(
+                    "reports".to_owned(),
+                    std::path::PathBuf::from("/tmp/summary.csv"),
+                    "daily/summary.csv".to_owned(),
+                    window,
+                    cx,
+                );
+            },
+        ));
+
+        written.push(shoot(
+            "bucket-16-upload-destination-refused",
+            Arc::new(StoreDouble::allows_listing()),
+            |app, window, cx| {
+                inside(app, cx);
+                app.listing = Listing::Loaded;
+                app.offer_destination(
+                    "reports".to_owned(),
+                    std::path::PathBuf::from("/tmp/summary.csv"),
+                    "daily/summary.csv".to_owned(),
+                    window,
+                    cx,
+                );
+                app.destination.update(cx, |state, cx| {
+                    state.set_value("uploads/", window, cx);
+                });
+                app.confirm_destination(cx);
+            },
+        ));
+
         // Making a folder (`XONHO-0024`). The second of these is the one to
         // judge hardest: nothing has failed, the user did nothing wrong, and
         // the words have to carry that or someone goes looking for a broken
@@ -5744,6 +5913,173 @@ mod tests {
                 app.deletion.is_some(),
                 "the deletion strip is refreshed by re-reading its own location, and losing \
                  it there would take the Undo with it"
+            );
+        });
+    }
+
+    // ---- A destination you choose (XONHO-0026) ----
+
+    /// A window inside `bucket`, over a store a test can read back.
+    fn uploading_from<'a>(
+        cx: &'a mut TestAppContext,
+        bucket: &str,
+    ) -> (gpui::Entity<CaixonhoApp>, &'a mut gpui::VisualTestContext) {
+        cx.update(gpui_component::init);
+        let store: Arc<dyn caixonho_core::ObjectStore> = Arc::new(StoreDouble::allows_listing());
+        let looking = Location::at(bucket.to_owned(), CorePrefix::parse("daily/"));
+        let (app, cx) = cx.add_window_view(|window, cx| {
+            CaixonhoApp::new(
+                Diagnostics::without_a_log(),
+                World::scripted(store),
+                window,
+                cx,
+            )
+        });
+        app.update(cx, |app, cx| {
+            app.position = Some(Position {
+                connection: app.outcome.active(),
+                at: looking,
+            });
+            cx.notify();
+        });
+        (app, cx)
+    }
+
+    /// A real local file, so the upload has something to read.
+    fn a_local_file(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join("caixonho-destination");
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let path = dir.join(name);
+        std::fs::write(&path, b"contents").expect("a temp file");
+        path
+    }
+
+    #[gpui::test]
+    fn the_destination_offered_is_where_the_user_is_standing(cx: &mut TestAppContext) {
+        let (app, cx) = uploading_from(cx, "reports");
+        let file = a_local_file("summary.csv");
+
+        app.update_in(cx, |app, window, cx| {
+            app.offer_destination(
+                "reports".to_owned(),
+                file,
+                "daily/summary.csv".to_owned(),
+                window,
+                cx,
+            );
+        });
+
+        app.read_with(cx, |app, cx| {
+            assert!(app.choosing_destination.is_some());
+            assert_eq!(
+                app.destination.read(cx).value().to_string(),
+                "daily/summary.csv",
+                "the default should be exactly what was sent without asking before this change"
+            );
+        });
+    }
+
+    /// The claim of this change: the key handed to the session is the one the
+    /// field showed, with no part of it recomposed.
+    ///
+    /// Asserted at the window's own seam and **not** on the store, and that is
+    /// a limit worth naming rather than hiding. The session runs uploads on
+    /// its own tokio runtime, which a window test never drives — so a
+    /// store-side assertion here would be empty whatever happened, and an
+    /// assertion that cannot fail is worse than none because it reads as
+    /// proof. `start_upload` hands the same string to `spawn_upload` and to
+    /// the transfer it records, synchronously; core's own tests carry it from
+    /// there to the service.
+    #[gpui::test]
+    fn what_is_shown_is_what_is_sent(cx: &mut TestAppContext) {
+        let (app, cx) = uploading_from(cx, "reports");
+        let file = a_local_file("summary.csv");
+
+        app.update_in(cx, |app, window, cx| {
+            app.offer_destination(
+                "reports".to_owned(),
+                file,
+                "daily/summary.csv".to_owned(),
+                window,
+                cx,
+            );
+            // Shares no part with the default — different prefix *and*
+            // different file name. A test that only changed the prefix would
+            // pass a version still re-deriving the name from the local file.
+            app.destination.update(cx, |state, cx| {
+                state.set_value("uploads/2026/renamed.txt", window, cx);
+            });
+            app.confirm_destination(cx);
+        });
+
+        app.read_with(cx, |app, _| {
+            let transfer = app.transfer.as_ref().expect("an upload was started");
+            assert_eq!(
+                (transfer.bucket.as_str(), transfer.key.as_str()),
+                ("reports", "uploads/2026/renamed.txt"),
+                "the key sent was not the key on screen"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn a_destination_that_cannot_be_a_key_costs_a_sentence_not_a_request(cx: &mut TestAppContext) {
+        // `transfer.is_none()` is the assertion that bites, and it is not a
+        // phase check: `start_upload` records the transfer in the same breath
+        // as it spawns the request, so no transfer means nothing was asked
+        // for. A store-side count would be vacuous here — see
+        // `what_is_shown_is_what_is_sent`.
+        let (app, cx) = uploading_from(cx, "reports");
+        let file = a_local_file("summary.csv");
+
+        for bad in ["", "   ", "uploads/", "/uploads/summary.csv"] {
+            app.update_in(cx, |app, window, cx| {
+                app.offer_destination(
+                    "reports".to_owned(),
+                    file.clone(),
+                    "daily/summary.csv".to_owned(),
+                    window,
+                    cx,
+                );
+                app.destination.update(cx, |state, cx| {
+                    state.set_value(bad, window, cx);
+                });
+                app.confirm_destination(cx);
+            });
+            cx.run_until_parked();
+
+            app.read_with(cx, |app, _| {
+                assert!(
+                    app.choosing_destination
+                        .as_ref()
+                        .is_some_and(|choosing| choosing.refused.is_some()),
+                    "`{bad}` should have been refused with a reason"
+                );
+                assert!(app.transfer.is_none(), "`{bad}` started an upload");
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn leaving_the_location_drops_a_destination_nobody_confirmed(cx: &mut TestAppContext) {
+        let (app, cx) = uploading_from(cx, "reports");
+        let file = a_local_file("summary.csv");
+
+        app.update_in(cx, |app, window, cx| {
+            app.offer_destination(
+                "reports".to_owned(),
+                file,
+                "daily/summary.csv".to_owned(),
+                window,
+                cx,
+            );
+        });
+        app.update(cx, |app, cx| app.leave_bucket(cx));
+
+        app.read_with(cx, |app, _| {
+            assert!(
+                app.choosing_destination.is_none(),
+                "a destination is a key at a location, and the location is gone"
             );
         });
     }
