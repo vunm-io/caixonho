@@ -222,6 +222,37 @@ a listing alone, in the tenths. **If the second click is still seconds, the
 identity cache is not where the time goes and this design is wrong about the
 cause** — which is the more valuable outcome of the two.
 
+### The CI actions were still on Node 20 (2026-08-26)
+
+Every run carried four warnings: *"Node.js 20 is deprecated. The following
+actions target Node.js 20 but are being forced to run on Node.js 24"*, naming
+`actions/checkout@v4` and `actions/upload-artifact@v4`. Warnings, not
+failures — but a failure the day GitHub finishes retiring the runtime, and
+that day would land at whatever moment a build was actually needed.
+
+Checked rather than assumed, since two of the four actions were **not** in the
+warning: `Swatinem/rust-cache@v2` already declares `node24` and
+`EmbarkStudios/cargo-deny-action@v2` runs in Docker. Only the two named were
+behind.
+
+Both were bumped `v4` → `v7`, three majors, so the release notes of each step
+were read rather than trusting the jump:
+
+- `checkout` **v5** node24 (runner ≥ `v2.327.1`), **v6** credentials to a
+  separate file, **v7** blocks checking out a fork PR on `pull_request_target`
+  and `workflow_run` — triggers this workflow does not use;
+- `upload-artifact` **v5**/**v6** node24 and the same runner floor, **v7**
+  adds an opt-in `archive: false` for unzipped single-file uploads, which is
+  not set here so nothing changes.
+
+GitHub-hosted runners are well past the floor and there are no self-hosted
+ones, so the only real question was the `checkout` v7 tightening, and it does
+not apply.
+
+Recorded here rather than in a change's tasks because `XONHO-0017` — whose
+territory this is — was archived on 2026-08-24, and a finding that lives only
+in a commit message is a finding nobody will find.
+
 ### The way out of a preview does not look like one (2026-08-26)
 
 The owner, previewing an object: *"how do I turn this off — clicking the
