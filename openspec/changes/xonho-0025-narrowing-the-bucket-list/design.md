@@ -27,28 +27,46 @@ what draws the **No access** badge today. Core is untouched.
 
 ## Decisions
 
-### The no-access narrowing hides observed denials, and nothing else
+### Show accessible buckets by removing the refused, not by keeping the known-open
 
-`capability-awareness` says a scope nobody has observed reads *unknown* and
-"never as denied: absence of evidence is not a denial", and separately that
-only an authorization denial may be presented as one — an expired session, a
-wrong region or an unreachable network each keep their own cause.
+The control is *show only what I can access*, and it is written as
+`access != Denied` rather than `access == Open`. Those two look like the same
+sentence and one of them cannot work here.
 
-So the predicate is *observed denied*, not *not observed allowed*. Written
-that way round on purpose: the second is one keystroke away and would hide
-every bucket on a slow account until its probes landed, which is the moment
-the user most wants to see the list.
+Access is not a fact the listing carries; it is an observation, and it has
+four states — `Open`, `Denied`, `Probing`, `Unobserved`
+(`views/buckets.rs:189`). Observations arrive because the window reports which
+rows are on screen and the scheduler probes them. **That report is built from
+the filtered list**: `targets()` maps over `self.shown`, the index list the
+filter produced (`views/buckets.rs:150`).
 
-The visible consequence is that turning the narrowing on may hide nothing at
-first and more later, as probes settle. That is honest — the list is
-reflecting what is known — but it means rows can leave under the cursor, so
-the count is what tells the user something moved.
+So `access == Open` closes a loop on itself. A bucket whose answer has not
+arrived is not `Open`, so it is filtered out, so it is not in `shown`, so it
+is never reported on screen, so it is never probed, so its answer never
+arrives. A bucket the user can open would vanish on the first paint and never
+return — and nothing on screen would say why. The filter would be starving the
+evidence it runs on.
 
-### Named for what it does
+`access != Denied` has no such loop: an unanswered bucket stays listed, stays
+probed, and leaves only when an answer says it should. Once every row has an
+answer the two predicates agree exactly, which is why this is the same feature
+and not a lesser one.
 
-**Hide no-access**, not *Only accessible*. The second names a set the
-application cannot compute, and a control whose name overstates its
-knowledge is the same defect as a badge that overstates it.
+Which answers count is the second half. Only an observed **authorization
+denial** removes a bucket. An expired session, a wrong region, an unreachable
+network and a trust failure each keep their own cause and are not denials
+(`capability-awareness`), so none of them may quietly delete a row.
+
+### What the user sees while it settles
+
+The list starts complete and shrinks as denials land, rather than starting
+empty and filling. Rows can therefore leave under the cursor — which is why
+the count ("showing N of M") is part of this change and not decoration: it is
+the only thing that says something moved.
+
+The alternative — freeze the set when the toggle is flipped — trades a moving
+list for a stale one, and on an account still being probed the stale one would
+be wrong for longer.
 
 ### Where the configuration lives — and the answer is "nowhere, yet"
 
@@ -97,9 +115,11 @@ to disagree with the rows.
   mitigation, and the empty state names the narrowing rather than the
   account. An account that holds nothing and an account whose buckets are all
   hidden must not read the same.
-- **[Rows leave as probes settle]** → named above. The alternative — freezing
-  the filter until it is re-toggled — trades a moving list for a stale one,
-  and a stale list is the worse lie.
+- **[Rows leave as probes settle]** → named above; the count is what says so.
+- **[The `!= Denied` predicate is one keystroke from the broken one]** → and
+  the broken one fails *silently and permanently*, which is the worst
+  combination available. It gets an ablation in the tasks rather than a
+  comment, so the guard is a red test and not a hope.
 - **[Nothing is remembered, so the toggles are set again each session]** →
   deliberate, and cheap. The durable version is a change of its own with a
   home already chosen for it.

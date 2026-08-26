@@ -34,19 +34,25 @@ both.
 - **THEN** the listing says the account's buckets were hidden by the
   narrowing — distinct from an account that holds none
 
-### Requirement: A bucket is only hidden as denied when a denial was observed
+### Requirement: Showing only accessible buckets removes the refused, never the unanswered
 
-The system SHALL hide a bucket under the no-access narrowing only where an
-authorization denial has actually been observed for it, and SHALL keep
-showing every bucket whose access is unknown — so that a narrowing never
-presents absence of evidence as a denial (`capability-awareness`, "Only a
-denial may be presented as a denial").
+The system SHALL narrow to the buckets the user can use by removing those for
+which an authorization denial has been observed, and SHALL keep listing every
+bucket whose access has not yet been answered — so that a narrowing never
+presents absence of evidence as a denial, and never hides a bucket in a way
+that prevents the evidence about it from ever being gathered.
 
 #### Scenario: A bucket that has not been probed yet
 
-- **WHEN** the no-access narrowing is on and a bucket's access is still
-  unknown
-- **THEN** that bucket is still listed
+- **WHEN** the narrowing is on and a bucket's access is still unanswered —
+  unobserved, or with a probe in flight
+- **THEN** that bucket is still listed, and remains eligible to be probed
+
+#### Scenario: The narrowing does not starve its own evidence
+
+- **WHEN** the narrowing is on and buckets remain whose access is unanswered
+- **THEN** those buckets are still reported as on screen, so their access is
+  still probed and can still be answered
 
 #### Scenario: A bucket denied for a reason that is not authorization
 
@@ -56,6 +62,5 @@ denial may be presented as a denial").
 
 #### Scenario: A denial observed while the user is looking
 
-- **WHEN** the no-access narrowing is on and a bucket's probe settles as
-  denied
+- **WHEN** the narrowing is on and a bucket's probe settles as denied
 - **THEN** the listing reflects it, and the count changes with it

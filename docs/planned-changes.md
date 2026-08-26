@@ -44,7 +44,7 @@ branch nobody can land.
 | `XONHO-0022` | Reading a stored secret once per run instead of once per connection open | §4.1 | M1 |
 | `XONHO-0023` | Keeping a connection open instead of rebuilding it on every click | §4.1 | M1 |
 | `XONHO-0024` | Making a folder — a marker on a general purpose bucket, an honest refusal on a directory one | §4.5 | M3 |
-| `XONHO-0025` | Narrowing the bucket list by kind, name, and observed denial | §4.2 | M1 |
+| `XONHO-0025` | Narrowing the bucket list by kind, name, and whether you can use it | §4.2 | M1 |
 
 `XONHO-0008` depends on `XONHO-0007`: a preview is the same download path
 asking for the first N KB instead of the whole object.

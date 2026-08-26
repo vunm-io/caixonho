@@ -14,8 +14,8 @@ selector is the shape; this adds the narrowings that were missing.
 
 ## What Changes
 
-- **Hide what is known to be denied.** A toggle that removes the rows whose
-  access has been *observed* as denied.
+- **Show only the buckets you can use.** A toggle that leaves the accessible
+  ones and takes the refused ones away.
 - **Filter by bucket kind** — all, directory buckets, general purpose. Today
   "All directory buckets" is a **badge** the window shows when every row
   happens to be one; it is not a control and nothing can be chosen with it.
@@ -26,17 +26,27 @@ selector is the shape; this adds the narrowings that were missing.
 
 ### The thing this must not get wrong
 
-Hiding by access is not hiding by a fact. `capability-awareness` is explicit
-that **absence of evidence is not a denial** — a bucket whose probe has not
-settled reads *unknown*, not *denied*, and only a real authorization denial
-may be presented as one.
+"Show only accessible" is the goal, and it is reached by **taking the refused
+ones away** rather than by keeping only the ones already known to be open.
+The two sound identical and one of them is a trap.
 
-So the toggle hides **buckets observed to be denied** and never unknown ones.
-The difference is not pedantry: a filter that hid unknowns would hide buckets
-the user can actually open, on exactly the accounts where probing is slowest.
-The control is named for what it does — *hide no-access* — rather than
-*only accessible*, because the second promises knowledge the app does not
-have.
+The window probes what is on screen. `targets()` reads from the *filtered*
+index list (`views/buckets.rs:150`), so a bucket the filter removes is never
+reported as visible and therefore **never probed**. Keep only the buckets
+observed open, and every bucket whose answer has not arrived is hidden — which
+stops it being probed — which means its answer never arrives. A bucket the
+user can perfectly well open would disappear on the first paint and never come
+back. The filter would be starving the evidence it runs on.
+
+So a bucket stays listed until an answer says otherwise, and the answer that
+removes it is an observed authorization denial — not a wrong region, not an
+expired session, not an unreachable network, each of which keeps its own cause
+(`capability-awareness`: "absence of evidence is not a denial", "only a denial
+may be presented as a denial").
+
+The end state is exactly what was asked for: once every row has an answer, what
+is left is the buckets you can use. What differs is only the seconds before
+that, and in those seconds the list is complete rather than empty.
 
 ### What is deliberately absent
 

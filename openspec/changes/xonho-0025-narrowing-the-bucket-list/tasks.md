@@ -15,22 +15,27 @@
     clearing one leaves the other in force.
   - Verification: `cargo test -p caixonho-gui`
 
-- [ ] 1.2 The no-access predicate is *observed denied* [dispatch: main]
+- [ ] 1.2 Accessible-only is `!= Denied`, never `== Open` [dispatch: main]
   - Paths: `crates/caixonho-gui/src/app.rs`
-  - Done criteria: written as "hide where a denial was observed", never as
-    "hide where allowed was not observed". Tests, and these are the ones that
-    matter:
-    - a bucket whose capability is **unknown** is still shown with the
-      narrowing on;
+  - Done criteria: the predicate removes observed denials and keeps everything
+    unanswered. Tests, and the first two are the ones this task exists for:
+    - a bucket whose access is **`Unobserved`** is still shown;
+    - a bucket whose probe is **in flight** is still shown;
+    - **the unanswered ones are still reported as visible**, i.e. they still
+      reach `targets()` and can still be probed — asserted on the submitted
+      viewport, not on the rendered rows. This is the one that catches the
+      self-starving version, and rendering alone would not catch it;
     - a bucket observed **denied** is hidden;
-    - a bucket whose read failed with an expired session / unreachable
-      network / wrong region is **still shown**, because none of those is a
-      denial (`capability-awareness`);
-    - a probe settling to denied while the narrowing is on removes the row
-      and moves the count.
-  - **Ablate it**: rewrite the predicate the wrong way round and confirm the
-    unknown test goes red. If it does not, the test is not guarding the
-    thing this task exists for.
+    - a bucket whose read failed with an expired session / unreachable network
+      / wrong region is **still shown**, because none of those is a denial
+      (`capability-awareness`);
+    - a probe settling to denied while the narrowing is on removes the row and
+      moves the count.
+  - **Ablate it**: change the predicate to `== Open` and confirm the
+    `Unobserved` test *and* the viewport test both go red. If only the render
+    test goes red, the suite is not guarding the failure that matters — the
+    broken version fails silently and permanently, which is why it gets an
+    ablation rather than a comment.
   - Verification: `cargo test -p caixonho-gui`
 
 ## 2. The controls
@@ -77,10 +82,11 @@
 - [ ] 3.3 Live: the work account, which is what prompted this
       [dispatch: main]
   - Done criteria: on the owner's machine, open the account that lists eleven
-    buckets and can open three. Turn on hide-no-access and confirm **three
-    remain, not fewer** — fewer would mean an unknown was hidden, which is
-    the defect this change is written to avoid. Then narrow by kind and by
-    name. What was seen, written here.
+    buckets and can open three. Turn the narrowing on **immediately, before
+    the probes have settled** — that is the case that catches the self-starving
+    version — and confirm the list settles at **three, not fewer and not
+    zero**. Then reopen the account with it already on, which is how it will
+    actually be used. Then narrow by kind and by name. What was seen, here.
   - Verification: the counts, quoted
 
 - [ ] 3.4 Reader-facing documents [dispatch: main]
