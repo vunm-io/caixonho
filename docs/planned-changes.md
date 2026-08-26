@@ -43,6 +43,8 @@ branch nobody can land.
 | `XONHO-0021` | Deleting one object deliberately, with the undo the service already offers | §4.5 | M3 |
 | `XONHO-0022` | Reading a stored secret once per run instead of once per connection open | §4.1 | M1 |
 | `XONHO-0023` | Keeping a connection open instead of rebuilding it on every click | §4.1 | M1 |
+| `XONHO-0024` | Making a folder — a marker on a general purpose bucket, an honest refusal on a directory one | §4.5 | M3 |
+| `XONHO-0025` | Narrowing the bucket list by kind, name, and observed denial | §4.2 | M1 |
 
 `XONHO-0008` depends on `XONHO-0007`: a preview is the same download path
 asking for the first N KB instead of the whole object.
@@ -217,6 +219,68 @@ The expectation on record, so the sitting can falsify it: later clicks cost
 a listing alone, in the tenths. **If the second click is still seconds, the
 identity cache is not where the time goes and this design is wrong about the
 cause** — which is the more valuable outcome of the two.
+
+### Where a per-connection preference would live (2026-08-26)
+
+The owner asked, while asking for a bucket filter, whether that configuration
+belongs in the connection's own config — the way IntelliJ keeps a data
+source's schema selection with the data source. The answer turned out to be
+decided by a fact rather than by taste, and it is worth keeping because
+anyone would reach for the same wrong shelf.
+
+**Half the connections have no configuration to put it in.** A connection is
+either a profile *discovered* in `~/.aws` or a credential *stored* by this
+application, and the list is the two chained together (`app.rs:1429`). The
+profiles this project's owner uses daily are all of the first kind: nothing
+is written about them anywhere, so there is no record to hang a preference
+on.
+
+Two more reasons, either of which would be enough on its own:
+
+- The stored-connection file holds the non-secret half of a **credential**.
+  A UI toggle that rewrites it gives a cosmetic act the blast radius of a
+  credential edit.
+- A kind filter and a name filter are changed several times a minute. They
+  are view state, not a saved selection, and `XONHO-0025` therefore persists
+  nothing at all.
+
+**Where the durable one goes when it is built.** The IntelliJ analogy does
+hold for one thing the owner asked for — *which buckets I work with*, chosen
+once and remembered. That is `[S]` in the brief (*Favorites / pinned buckets
+and prefixes; recent locations*) and it needs its own home: a per-connection
+**view preferences** store keyed by connection name, separate from the
+connection file — so it covers discovered profiles and stored credentials
+alike, and so a preference can never corrupt a credential.
+
+Not built. Written down so the proposal that builds it starts here instead of
+rediscovering the first paragraph late.
+
+### An empty folder cannot exist on a directory bucket (2026-08-26)
+
+Checked against AWS's documentation while planning `XONHO-0024`, before any
+design was written, because the owner's daily account is entirely directory
+buckets:
+
+> Directories are created during `PutObject` or `CreateMultiPartUpload`
+> operations and automatically removed when they become empty after
+> `DeleteObject` or `AbortMultiPartUpload` operations.
+
+Its own worked example is blunter: deleting the last object in a directory
+leaves it empty and causes it "to be deleted immediately".
+
+So the `[M]` requirement — *Create "folder" (zero-byte marker)* — is
+implementable on a general purpose bucket and **not** on a directory bucket,
+and the naive build would have been broken on the one account that matters
+most to this project's owner. `XONHO-0024` therefore carries two requirements
+rather than one.
+
+The more useful observation is what it implies: on a directory bucket the
+feature that does the job is not "create folder" at all, it is **choosing the
+destination key when uploading**. `XONHO-0020` uploads under the local file's
+own name into the current location. Letting the user type where it lands is a
+smaller change than any pending-folder model and gives the owner's account the
+organising power they were actually asking for. Not issued yet; named so it
+is not rediscovered.
 
 ### The superseded note (2026-08-23), kept
 
