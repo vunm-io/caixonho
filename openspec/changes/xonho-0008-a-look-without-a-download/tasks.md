@@ -206,3 +206,41 @@
   - Done criteria: the five questions answered and recorded here, question
     2 read the wide way.
   - Verification: the recorded findings
+
+- [x] 6.4 Leaving a preview: the breadcrumb had no effect [dispatch: main]
+      - **Found live by the owner, 2026-08-26, and it shipped with this
+        change.** Previewing an object at a bucket's root, clicking the bucket
+        in the breadcrumb did *nothing at all* — no error, no movement, no
+        sign anything had been clicked.
+      - The cause was one function serving two meanings. `go_to` cleared the
+        preview only when the location **changed**, a carve-out written for
+        `XONHO-0021`'s deletion strip, which genuinely must survive the
+        re-read it triggers. The bucket crumb walks to the location you are
+        already at, so it took the re-read branch — and left the preview
+        standing over the listing it had just refreshed.
+      - **This change tested the wrong half of it.** A test here asserted "a
+        re-read is not a departure", which is true and still is; nothing
+        asserted what a *navigation* to the current location should do. The
+        behaviour was deliberate and guarded, and the defect lived in the gap
+        between the two meanings rather than in either of them.
+      - Fixed by naming both: `go_to` is the door the user's clicks come
+        through and always ends a preview — asking for a location, even the
+        one you are standing in, is asking to see what is *in* it. The three
+        internal refreshes (a deletion's outcome ×2, a made folder) now call
+        `re_read_location`, which is the old behaviour unchanged. The existing
+        test moved to that name, because it is what the assertion was always
+        about; its wording is kept verbatim.
+      - Ablated: dropping the clear from `go_to` turns the new test red and
+        leaves the re-read test green.
+      - **Still open, and it is the owner's other half of the report:** they
+        also said there was "no back or close button". There *is* a `Back` at
+        the left of the second row — but it is ghost text sitting directly
+        under a breadcrumb of ghost text, so it reads as another crumb rather
+        than as the way out. Not fixed here; recorded in
+        `docs/planned-changes.md` because a discoverability fix is a design
+        decision, not a bug fix.
+  - Paths: `crates/caixonho-gui/src/app.rs`
+  - Done criteria: the bucket crumb, and every other navigation, ends a
+    preview; the deletion strip's re-read still does not.
+  - Verification: `cargo test -p caixonho-gui`
+

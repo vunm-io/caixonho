@@ -118,7 +118,10 @@
         window green (8 + 1 ignored).
   - Verification: the commands themselves
 
-- [ ] 3.2 CI green on both targets, run id recorded here [dispatch: main]
+- [x] 3.2 CI green on both targets, run id recorded here [dispatch: main]
+      - Run `32924996318` on `e714ad8`: `build (windows-latest)`,
+        `build (macos-latest)`, `dependency audit` and `rustfmt` all success.
+        Both changes landed in that one commit — see its message for why.
   - Verification: `gh run list --limit 1 --repo vunm-io/caixonho`
 
 - [ ] 3.3 Live: a folder on each kind of bucket [dispatch: main]

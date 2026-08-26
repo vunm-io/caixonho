@@ -813,7 +813,35 @@ impl CaixonhoApp {
     ///
     /// Everything shown about position is derived from the location this sets,
     /// so there is nowhere else to keep in step.
+    /// Go where the user asked to go.
+    ///
+    /// Distinct from [`Self::re_read_location`], and the distinction is the
+    /// fix for a defect the owner found on 2026-08-26: previewing an object at
+    /// a bucket's root, clicking the bucket in the breadcrumb did **nothing at
+    /// all**. One function was serving two meanings. A re-read keeps a preview
+    /// — that is deliberate and `XONHO-0008` tested it — and the bucket crumb
+    /// walks to the location you are already at, so it took the re-read branch
+    /// and left the preview standing over the listing it had just refreshed.
+    ///
+    /// So the two meanings get two names. Asking for a location, even the one
+    /// you are already at, is asking to *see what is in it*: a preview stands
+    /// in the listing's place rather than beside it, so it ends here.
     fn go_to(&mut self, location: Location, window: &mut Window, cx: &mut Context<Self>) {
+        self.preview = None;
+        self.re_read_location(location, window, cx);
+    }
+
+    /// Read this location again without treating it as somewhere new.
+    ///
+    /// What a deletion's outcome and a made folder both need: the listing is
+    /// stale and has to be refetched, but the strip reporting *why* belongs to
+    /// this location and must survive the refetch it triggered.
+    fn re_read_location(
+        &mut self,
+        location: Location,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // Walking somewhere else takes the deletion strip along — its key
         // belongs to the location it was deleted at. A re-read of the *same*
         // location keeps it, because that re-read is how the strip's own
@@ -1118,7 +1146,7 @@ impl CaixonhoApp {
         if matches!(making.phase, FolderPhase::Made { .. })
             && let Some(location) = self.location().cloned()
         {
-            self.go_to(location, window, cx);
+            self.re_read_location(location, window, cx);
         }
         cx.notify();
     }
@@ -1380,7 +1408,7 @@ impl CaixonhoApp {
                 deletion.phase = DeletePhase::Gone { marker };
                 // The row leaves because the service says so: re-read.
                 if let Some(location) = self.location().cloned() {
-                    self.go_to(location, window, cx);
+                    self.re_read_location(location, window, cx);
                 }
             }
             DeleteEvent::Settled(DeleteOutcome::Failed(error)) => {
@@ -1392,7 +1420,7 @@ impl CaixonhoApp {
             DeleteEvent::UndoSettled(UndoOutcome::Restored) => {
                 deletion.phase = DeletePhase::Restored;
                 if let Some(location) = self.location().cloned() {
-                    self.go_to(location, window, cx);
+                    self.re_read_location(location, window, cx);
                 }
             }
             DeleteEvent::UndoSettled(UndoOutcome::Failed(error)) => {
@@ -4627,7 +4655,12 @@ mod tests {
         app.update_in(cx, |app, window, cx| {
             let here = app.location().cloned().expect("looking at a bucket");
             app.preview = Some(a_preview(PreviewPhase::Binary));
-            app.go_to(here, window, cx);
+            // Through `re_read_location`, which is what this assertion was
+            // always about: a deletion's outcome refetching its own listing
+            // must not yank the screen away. It read `go_to` because the two
+            // meanings shared one function until 2026-08-26 — and that
+            // sharing is what made the bucket crumb do nothing.
+            app.re_read_location(here, window, cx);
             assert!(app.preview.is_some(), "a re-read is not a departure");
 
             app.go_to(Location::bucket("logs"), window, cx);
@@ -5646,6 +5679,71 @@ mod tests {
                 app.making_folder.is_none(),
                 "a folder made into an account the user has left was announced over the one \
                  they are now looking at"
+            );
+        });
+    }
+
+    // ---- Leaving a preview (XONHO-0008, found live 2026-08-26) ----
+
+    /// The owner's report: previewing an object at a bucket's root, clicking
+    /// the bucket in the breadcrumb did nothing at all.
+    ///
+    /// `go_to` cleared the preview only when the location *changed*, and the
+    /// bucket crumb goes to the location you are already at — so the preview
+    /// survived, `render` kept choosing `preview_surface`, and the click had
+    /// no visible effect. The carve-out was written for the deletion strip
+    /// (`XONHO-0021`), which does need to survive a re-read of the same
+    /// location; the preview was swept in with it and never needed it.
+    #[gpui::test]
+    fn walking_to_the_location_you_are_already_at_still_leaves_the_preview(
+        cx: &mut TestAppContext,
+    ) {
+        let (app, cx) = looking_at(cx, "reports");
+        app.update(cx, |app, _| {
+            app.preview = Some(Preview {
+                connection: app.outcome.active(),
+                key: "images.jpeg".to_owned(),
+                phase: PreviewPhase::Loading,
+            });
+        });
+
+        // Exactly what the bucket crumb does.
+        app.update_in(cx, |app, window, cx| {
+            app.go_to(Location::bucket("reports".to_owned()), window, cx);
+        });
+
+        app.read_with(cx, |app, _| {
+            assert!(
+                app.preview.is_none(),
+                "clicking the bucket you are already inside left the preview up, so the \
+                 click did nothing a user could see"
+            );
+        });
+    }
+
+    /// And the guarantee it must not break: a re-read of the same location is
+    /// how the deletion strip refreshes its own listing, so that strip stays.
+    #[gpui::test]
+    fn a_re_read_of_the_same_location_keeps_the_deletion_strip(cx: &mut TestAppContext) {
+        let (app, cx) = looking_at(cx, "reports");
+        app.update(cx, |app, _| {
+            app.deletion = Some(Deletion {
+                connection: app.outcome.active(),
+                bucket: "reports".to_owned(),
+                key: "daily/summary.csv".to_owned(),
+                phase: DeletePhase::Gone { marker: None },
+            });
+        });
+
+        app.update_in(cx, |app, window, cx| {
+            app.go_to(Location::bucket("reports".to_owned()), window, cx);
+        });
+
+        app.read_with(cx, |app, _| {
+            assert!(
+                app.deletion.is_some(),
+                "the deletion strip is refreshed by re-reading its own location, and losing \
+                 it there would take the Undo with it"
             );
         });
     }

@@ -220,6 +220,28 @@ a listing alone, in the tenths. **If the second click is still seconds, the
 identity cache is not where the time goes and this design is wrong about the
 cause** — which is the more valuable outcome of the two.
 
+### The way out of a preview does not look like one (2026-08-26)
+
+The owner, previewing an object: *"how do I turn this off — clicking the
+bucket name does nothing, and there is no back or close button"*.
+
+Half of that was a defect and is fixed (`XONHO-0008` task 6.4: the breadcrumb
+really did nothing). The other half is not a defect and is not fixed. There
+**is** a `Back` button, at the left of the row under the breadcrumb — and it
+is ghost text sitting directly beneath a breadcrumb made of ghost text, so it
+reads as one more crumb in the trail rather than as the way out of a screen.
+Two rows of identically-styled words, one of which is a mode switch.
+
+Worth knowing before someone "fixes" it by making Back louder: the same shape
+appears wherever this window puts a mode over the listing, so the question is
+not about this button. It is whether a screen that *replaces* the listing
+should announce itself — a title, a border, an explicit close — the way a
+screen that sits *beside* it need not. `docs/design-language.md` has nothing
+to say about that yet, and it is the document that should.
+
+Not issued. Recorded so the first person to touch the preview's chrome starts
+from the question rather than from the button.
+
 ### Where a per-connection preference would live (2026-08-26)
 
 The owner asked, while asking for a bucket filter, whether that configuration

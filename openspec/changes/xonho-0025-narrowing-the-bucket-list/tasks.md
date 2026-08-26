@@ -140,7 +140,10 @@
         only by a test — removed rather than kept, per `AGENTS.md` Q3.
   - Verification: the commands themselves
 
-- [ ] 3.2 CI green on both targets, run id recorded here [dispatch: main]
+- [x] 3.2 CI green on both targets, run id recorded here [dispatch: main]
+      - Run `32924996318` on `e714ad8`: `build (windows-latest)`,
+        `build (macos-latest)`, `dependency audit` and `rustfmt` all success.
+        Both changes landed in that one commit — see its message for why.
   - Verification: `gh run list --limit 1 --repo vunm-io/caixonho`
 
 - [ ] 3.3 Live: the work account, which is what prompted this
