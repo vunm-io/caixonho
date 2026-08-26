@@ -575,7 +575,14 @@ impl CaixonhoApp {
             },
         )
         .detach();
-        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter by name"));
+        // "Search", not "Filter", and the word is chosen rather than casual.
+        // The brief makes the UI say which of the two is happening, because a
+        // filter covers *loaded* rows and a search covers everything — and on
+        // an object listing, which is paginated and lazy, that gap is real.
+        // The account listing has no gap: `list_buckets` drains its paginator
+        // before returning, so every bucket is already in hand. Calling this a
+        // filter would imply something unfetched that does not exist.
+        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Search buckets"));
         let folder_name = cx.new(|cx| InputState::new(window, cx).placeholder("Folder name"));
         let destination = cx.new(|cx| InputState::new(window, cx).placeholder("bucket/path/name"));
         cx.subscribe(&filter, |app, state, event: &InputEvent, cx| {

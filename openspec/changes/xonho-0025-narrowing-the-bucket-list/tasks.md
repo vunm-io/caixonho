@@ -211,3 +211,23 @@
     what the viewport reports for probing, which decides what gets probed at
     all.
   - Verification: the recorded findings
+
+- [x] 2.5 It is a search box, so it says search [dispatch: main]
+      - Raised by the owner on 2026-08-26: the name control *"looks more like
+        a search box"*. It does, and checking why turned an impression into a
+        measurement.
+      - `list_buckets` drains its paginator before returning
+        (`adapter.rs:795`), so the account listing has **every** bucket in
+        hand. The brief's filter/search distinction — a filter covers loaded
+        rows, a search covers everything, and the UI must say which — is real
+        for the *object* listing, which is paginated and lazy
+        (`XONHO-0006`). On this list there is no gap for it to describe.
+      - So "Filter by name" was the less honest word, not the more careful
+        one: it implies something unfetched that does not exist. Now "Search
+        buckets".
+      - Worth carrying forward: when the object listing gets its name control,
+        that one **is** a filter over loaded rows and must say so — which is
+        the half of §4.2 this change deliberately left unbuilt.
+  - Paths: `crates/caixonho-gui/src/app.rs`
+  - Verification: `cargo test -p caixonho-gui`
+
