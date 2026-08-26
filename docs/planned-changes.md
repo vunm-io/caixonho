@@ -45,6 +45,8 @@ branch nobody can land.
 | `XONHO-0023` | Keeping a connection open instead of rebuilding it on every click | §4.1 | M1 |
 | `XONHO-0024` | Making a folder — a marker on a general purpose bucket, an honest refusal on a directory one | §4.5 | M3 |
 | `XONHO-0025` | Narrowing the bucket list by kind, name, and whether you can use it | §4.2 | M1 |
+| `XONHO-0026` | Choosing where an upload lands, instead of deriving it from where you stand | §4.4 | M2 |
+| `XONHO-0027` | Choosing once which buckets a connection shows, and remembering it | §4.2 | M1 |
 
 `XONHO-0008` depends on `XONHO-0007`: a preview is the same download path
 asking for the first N KB instead of the whole object.
@@ -274,8 +276,8 @@ and prefixes; recent locations*) and it needs its own home: a per-connection
 connection file — so it covers discovered profiles and stored credentials
 alike, and so a preference can never corrupt a credential.
 
-Not built. Written down so the proposal that builds it starts here instead of
-rediscovering the first paragraph late.
+**Issued as `XONHO-0027` on 2026-08-26**, and it starts from this paragraph
+rather than rediscovering it — which is what writing it down was for.
 
 ### An empty folder cannot exist on a directory bucket (2026-08-26)
 
@@ -301,8 +303,14 @@ feature that does the job is not "create folder" at all, it is **choosing the
 destination key when uploading**. `XONHO-0020` uploads under the local file's
 own name into the current location. Letting the user type where it lands is a
 smaller change than any pending-folder model and gives the owner's account the
-organising power they were actually asking for. Not issued yet; named so it
-is not rediscovered.
+organising power they were actually asking for.
+
+**Issued as `XONHO-0026` on 2026-08-26, and it should not have waited.**
+Leaving it as a note made `XONHO-0024` half a feature on the only account its
+owner uses daily: that change tells them to upload into the path they want,
+and `Upload…` gave them no way to say a path. The owner found it by trying to
+use the application. A note that names the gap and does not close it is still
+a gap.
 
 ### The superseded note (2026-08-23), kept
 
