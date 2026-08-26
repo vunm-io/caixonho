@@ -19,6 +19,7 @@ use crate::credentials::{CredentialSecret, Keyring, Remembering, SecretStore, St
 use crate::diagnostics;
 use crate::error::{Error, Result};
 use crate::outcome::{Outcome, TaggedOutcome};
+use crate::preferences::PreferencesFile;
 use crate::preview::{self, PreviewOutcome};
 use crate::probe::{ProbeScheduler, ProbeSink, ProbeTarget};
 use crate::profiles::ConfigPaths;
@@ -80,6 +81,13 @@ pub struct Session {
     /// about them. Shared, and read when a scheduler is installed, so
     /// registering once covers every connection opened afterwards.
     settled: Arc<Mutex<Option<ProbeSink>>>,
+    /// Where a connection's display choices are kept (`XONHO-0027`).
+    ///
+    /// Separate from `connections` on purpose: that file holds the non-secret
+    /// half of a *credential*, and a cosmetic choice must never rewrite it.
+    /// Behind an `Arc<dyn _>` for the same reason the others are — a test puts
+    /// a double where the platform's config directory goes.
+    preferences: Arc<dyn PreferencesFile>,
     /// The connections this run has already built, by the source that built
     /// them (`XONHO-0023`).
     ///
@@ -125,6 +133,7 @@ impl Session {
             // whether the counting sits inside or outside the memory.
             secrets: Arc::new(Remembering::new(Keyring)),
             connections: Arc::new(ConfigDirectory),
+            preferences: Arc::new(crate::preferences::PreferencesDirectory),
             capabilities: Arc::new(Mutex::new(CapabilityStore::new())),
             scheduler: Arc::default(),
             store: Arc::default(),
@@ -142,6 +151,33 @@ impl Session {
     pub(crate) fn with_secret_store(mut self, secrets: Arc<dyn SecretStore>) -> Self {
         self.secrets = secrets;
         self
+    }
+
+    /// The same session, keeping display choices somewhere else.
+    ///
+    /// Test-only, for [`Self::with_connection_file`]'s reason.
+    #[cfg(test)]
+    pub(crate) fn with_preferences_file(mut self, preferences: Arc<dyn PreferencesFile>) -> Self {
+        self.preferences = preferences;
+        self
+    }
+
+    /// Which buckets `connection` has chosen to show, if it has chosen.
+    ///
+    /// `None` means every bucket. A missing, unreadable or malformed file says
+    /// the same — a display preference may never fail a listing.
+    pub fn chosen_buckets(&self, connection: &str) -> Option<Vec<String>> {
+        crate::preferences::chosen_buckets(self.preferences.as_ref(), connection)
+    }
+
+    /// Record which buckets `connection` shows.
+    pub fn choose_buckets(&self, connection: &str, buckets: Vec<String>) -> Result<()> {
+        crate::preferences::choose_buckets(self.preferences.as_ref(), connection, buckets)
+    }
+
+    /// Forget `connection`'s choice, so it shows everything again.
+    pub fn clear_bucket_choice(&self, connection: &str) -> Result<()> {
+        crate::preferences::clear_choice(self.preferences.as_ref(), connection)
     }
 
     /// The same session, remembering connections somewhere else.
@@ -1306,6 +1342,7 @@ mod tests {
     use crate::credentials;
     use crate::credentials::double::SecretStoreDouble;
     use crate::error::{ConnectionsProblem, CredentialStoreProblem, Error};
+    use crate::preferences::double::PreferencesFileDouble;
     use crate::probe::double::{HeldProbes, settle, until};
     use crate::store::double::StoreDouble;
     use crate::types::Region;
@@ -2918,5 +2955,53 @@ mod tests {
                 iam_action: "s3:PutObject"
             })
         ));
+    }
+
+    // ---- A bucket list you choose once (XONHO-0027) ----
+
+    /// The seam the window actually uses: a choice written and read back
+    /// through a `Session`.
+    ///
+    /// The free functions in `preferences` have their own tests; this is the
+    /// one that says the session is wired to them at all. It exists because
+    /// `with_preferences_file` was written and nothing called it — which is
+    /// how a port comes to look connected when it is not.
+    #[tokio::test]
+    async fn a_bucket_choice_round_trips_through_a_session() {
+        let fixture = Fixture::new("bucket-choice");
+        let session = fixture
+            .session("work")
+            .with_preferences_file(Arc::new(PreferencesFileDouble::empty()));
+
+        assert_eq!(session.chosen_buckets("work"), None, "nothing chosen yet");
+
+        session
+            .choose_buckets("work", vec!["reports".to_owned()])
+            .expect("the double accepts it");
+
+        assert_eq!(
+            session.chosen_buckets("work"),
+            Some(vec!["reports".to_owned()])
+        );
+        assert_eq!(
+            session.chosen_buckets("other"),
+            None,
+            "a choice made for one connection was read for another"
+        );
+
+        session.clear_bucket_choice("work").expect("accepted");
+        assert_eq!(session.chosen_buckets("work"), None);
+    }
+
+    /// A display preference may never fail a listing: an unreadable file reads
+    /// as "no choice", not as an error the user has to deal with.
+    #[tokio::test]
+    async fn a_preferences_file_that_will_not_read_shows_everything() {
+        let fixture = Fixture::new("bucket-choice-unreadable");
+        let session = fixture
+            .session("work")
+            .with_preferences_file(Arc::new(PreferencesFileDouble::unreadable()));
+
+        assert_eq!(session.chosen_buckets("work"), None);
     }
 }

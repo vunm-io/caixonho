@@ -69,6 +69,12 @@ pub(crate) struct CaixonhoApp {
     /// The one deletion being confirmed, in flight, or just settled
     /// (`XONHO-0021`).
     deletion: Option<Deletion>,
+    /// The buckets ticked in the chooser, while it is open (`XONHO-0027`).
+    ///
+    /// `None` when the chooser is closed. Held apart from
+    /// `narrowing.chosen` so that abandoning the chooser changes nothing —
+    /// a picker that edited the live choice would apply half a decision.
+    choosing_buckets: Option<Vec<String>>,
     /// The upload waiting on a destination, if one is (`XONHO-0026`).
     choosing_destination: Option<ChoosingDestination>,
     /// Where the object will land. Its own input rather than a `String` on the
@@ -773,6 +779,7 @@ impl CaixonhoApp {
             transfer: None,
             transfers,
             deletion: None,
+            choosing_buckets: None,
             choosing_destination: None,
             destination,
             making_folder: None,
@@ -820,6 +827,13 @@ impl CaixonhoApp {
         // could not survive anyway, since the regions on offer are derived
         // from whichever listing arrives.
         self.clear_narrowing(window, cx);
+        // The remembered choice is the exception, and the only one: the other
+        // four narrowings are *reset* here and this one is *loaded*
+        // (`XONHO-0027`).
+        self.narrowing.chosen = self
+            .session
+            .as_ref()
+            .and_then(|session| session.chosen_buckets(source.name()));
         // Clears the previous profile's rows and error before anything of the
         // new one's arrives.
         self.outcome.switch_to(id);
@@ -2009,7 +2023,14 @@ impl CaixonhoApp {
     /// filter whose text box still holds a word is a screen disagreeing with
     /// itself about what is in force.
     fn clear_narrowing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.narrowing = Narrowing::default();
+        // The remembered choice is not a narrowing the user set this session,
+        // so it is not one this clears. `select_profile` loads the next
+        // connection's straight after.
+        let chosen = self.narrowing.chosen.take();
+        self.narrowing = Narrowing {
+            chosen,
+            ..Narrowing::default()
+        };
         self.kind_select.update(cx, |select, cx| {
             select.set_selected_index(Some(IndexPath::new(0)), window, cx);
         });
@@ -2072,6 +2093,11 @@ impl CaixonhoApp {
         // narrowing including the new ones. A second count up here was written
         // and then deleted: two controls saying almost the same thing is how a
         // screen starts lying about which of them is in force.
+        //
+        // The chosen-subset line below is not that count. It answers a
+        // different question — *why* is this list short — which the status bar
+        // does not and cannot.
+        let (_, loaded) = self.table.read(cx).delegate().shown_of_loaded();
 
         // Filled when it is on, ghosted when it is not — the same way every
         // other toggle in this window says so. A label that changed with the
@@ -2088,7 +2114,7 @@ impl CaixonhoApp {
             accessible_only.ghost()
         };
 
-        h_flex()
+        let controls = h_flex()
             .gap_2()
             .pb_2()
             .items_center()
@@ -2106,6 +2132,9 @@ impl CaixonhoApp {
             .child(
                 div()
                     .w(px(200.))
+                    // Or the row's other children squeeze it as controls are
+                    // added — which is what `XONHO-0027` did to it before this.
+                    .flex_shrink_0()
                     .child(Input::new(&self.filter).cleanable(true)),
             )
             .child(
@@ -2113,6 +2142,18 @@ impl CaixonhoApp {
                     .debug_selector(|| "accessible-only".into())
                     .child(accessible_only),
             )
+            .child(
+                div().debug_selector(|| "choose-buckets".into()).child(
+                    Button::new("choose-buckets")
+                        .label("Choose buckets…")
+                        .ghost()
+                        .on_click(cx.listener(|app, _, _, cx| app.start_choosing_buckets(cx))),
+                ),
+            )
+            // A choice made in another session is indistinguishable from a
+            // bug unless the screen says so: the account has eleven buckets
+            // and two are listed, with nothing on screen explaining why
+            // (`XONHO-0027`). Showing all does **not** discard the choice.
             .children(all_directory.then(|| {
                 div()
                     .debug_selector(|| "all-directory".into())
@@ -2122,6 +2163,49 @@ impl CaixonhoApp {
                         cx.theme().primary,
                     ))
             }))
+            .into_any_element();
+
+        // A choice made in another session is indistinguishable from a bug
+        // unless the screen says so: the account has eleven buckets and two
+        // are listed, with nothing on screen explaining why (`XONHO-0027`).
+        //
+        // Its own row, under the controls, because it is a *statement about
+        // the list* rather than a control — and because a seventh thing on
+        // that row squeezed the search field down to a few characters.
+        let in_force = self.narrowing.chosen.as_ref().map(|chosen| {
+            h_flex()
+                .w_full()
+                .pb_2()
+                .debug_selector(|| "chosen-subset".into())
+                .gap(space::TIGHT)
+                .items_center()
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(if self.narrowing.showing_all {
+                            format!("Showing all {loaded} — {} chosen", chosen.len())
+                        } else {
+                            format!(
+                                "Showing {} chosen of {loaded} in this account",
+                                chosen.len()
+                            )
+                        }),
+                )
+                .child(if self.narrowing.showing_all {
+                    Button::new("back-to-chosen")
+                        .label("Back to my buckets")
+                        .ghost()
+                        .on_click(cx.listener(|app, _, _, cx| app.back_to_chosen_buckets(cx)))
+                } else {
+                    Button::new("show-all-buckets")
+                        .label("Show all")
+                        .ghost()
+                        .on_click(cx.listener(|app, _, _, cx| app.show_all_buckets(cx)))
+                })
+        });
+
+        v_flex().w_full().child(controls).children(in_force)
     }
 
     /// One button per profile, the active one filled in.
@@ -2930,6 +3014,156 @@ impl CaixonhoApp {
             .children(self.folder_line(cx))
     }
 
+    /// Which buckets this connection shows, chosen from its own listing.
+    ///
+    /// A strip, in the voice its neighbours use — one row, text left, actions
+    /// right. The buckets themselves are ticked in a wrapping row rather than
+    /// a modal: the account listing is behind it, and a dialog over the list
+    /// you are choosing from hides the thing you are choosing.
+    fn bucket_chooser(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        let choosing = self.choosing_buckets.as_ref()?;
+        let all = self.table.read(cx).delegate().all_names();
+
+        Some(
+            v_flex()
+                .debug_selector(|| "bucket-chooser".into())
+                .w_full()
+                .gap(space::TIGHT)
+                .child(
+                    h_flex()
+                        .w_full()
+                        .items_center()
+                        .gap(space::TIGHT)
+                        .child(div().text_sm().child(format!(
+                            "Showing {} of {} buckets on this connection",
+                            choosing.len(),
+                            all.len()
+                        )))
+                        .child(div().flex_1())
+                        .child(
+                            div().debug_selector(|| "chooser-keep".into()).child(
+                                Button::new("chooser-keep")
+                                    .label("Keep these")
+                                    .primary()
+                                    .on_click(
+                                        cx.listener(|app, _, _, cx| app.confirm_chosen_buckets(cx)),
+                                    ),
+                            ),
+                        )
+                        .child(
+                            Button::new("chooser-forget")
+                                .label("Show every bucket")
+                                .ghost()
+                                .on_click(
+                                    cx.listener(|app, _, _, cx| app.forget_bucket_choice(cx)),
+                                ),
+                        )
+                        .child(
+                            Button::new("chooser-cancel")
+                                .label("Cancel")
+                                .ghost()
+                                .on_click(cx.listener(|app, _, _, cx| {
+                                    app.choosing_buckets = None;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .child(h_flex().w_full().flex_wrap().gap(space::TIGHT).children(
+                    all.into_iter().enumerate().map(|(index, name)| {
+                        let ticked = choosing.contains(&name);
+                        let button = Button::new(("chosen-bucket", index))
+                            .label(name.clone())
+                            .on_click(
+                                cx.listener(move |app, _, _, cx| app.toggle_chosen(&name, cx)),
+                            );
+                        if ticked {
+                            button.primary()
+                        } else {
+                            button.outline()
+                        }
+                    }),
+                ))
+                .into_any_element(),
+        )
+    }
+
+    /// Open the chooser, ticked to whatever is in force now (`XONHO-0027`).
+    fn start_choosing_buckets(&mut self, cx: &mut Context<Self>) {
+        let all = self.table.read(cx).delegate().all_names();
+        // No choice recorded means everything is showing, so everything starts
+        // ticked. Opening the picker must not look like a fresh empty choice.
+        self.choosing_buckets = Some(self.narrowing.chosen.clone().unwrap_or(all));
+        cx.notify();
+    }
+
+    /// Tick or untick one bucket in the open chooser.
+    fn toggle_chosen(&mut self, bucket: &str, cx: &mut Context<Self>) {
+        let Some(choosing) = self.choosing_buckets.as_mut() else {
+            return;
+        };
+        match choosing.iter().position(|name| name == bucket) {
+            Some(at) => {
+                choosing.remove(at);
+            }
+            None => choosing.push(bucket.to_owned()),
+        }
+        cx.notify();
+    }
+
+    /// Keep what is ticked, and remember it for this connection.
+    fn confirm_chosen_buckets(&mut self, cx: &mut Context<Self>) {
+        let Some(chosen) = self.choosing_buckets.take() else {
+            return;
+        };
+        if let (Some(session), Some(name)) = (self.session.as_ref(), self.active_connection_name())
+        {
+            // A choice that could not be written is still applied for this
+            // run: refusing to narrow because a display preference would not
+            // persist would be the file's problem becoming the user's.
+            let _ = session.choose_buckets(&name, chosen.clone());
+        }
+        self.narrowing.chosen = Some(chosen);
+        self.narrowing.showing_all = false;
+        self.narrow_rows(cx);
+    }
+
+    /// Show every bucket again, **without** discarding the choice.
+    ///
+    /// Two different acts, and keeping them apart is a requirement rather than
+    /// a nicety: someone checking whether a bucket still exists has not
+    /// decided to stop using their choice.
+    fn show_all_buckets(&mut self, cx: &mut Context<Self>) {
+        self.narrowing.showing_all = true;
+        self.narrow_rows(cx);
+    }
+
+    /// Put the choice back in force.
+    fn back_to_chosen_buckets(&mut self, cx: &mut Context<Self>) {
+        self.narrowing.showing_all = false;
+        self.narrow_rows(cx);
+    }
+
+    /// Forget the choice for good.
+    fn forget_bucket_choice(&mut self, cx: &mut Context<Self>) {
+        if let (Some(session), Some(name)) = (self.session.as_ref(), self.active_connection_name())
+        {
+            let _ = session.clear_bucket_choice(&name);
+        }
+        self.narrowing.chosen = None;
+        self.narrowing.showing_all = false;
+        self.choosing_buckets = None;
+        self.narrow_rows(cx);
+    }
+
+    /// What the active connection is called — the key a choice is filed under.
+    fn active_connection_name(&self) -> Option<String> {
+        let index = self.active_profile?;
+        self.connections()
+            .into_iter()
+            .nth(index)
+            .map(|(_, source)| source.name().to_owned())
+    }
+
     /// Where the chosen file will land (`XONHO-0026`).
     ///
     /// A strip in the same voice as its neighbours — text left, actions right,
@@ -3586,6 +3820,11 @@ impl CaixonhoApp {
                 v_flex()
                     .size_full()
                     .child(self.region_picker(cx))
+                    // Under the controls it belongs to, and on the *account*
+                    // screen — it was first wired into the strip row beneath a
+                    // bucket's contents, where it could never appear, and the
+                    // harness's distinctness assertion is what said so.
+                    .children(self.bucket_chooser(cx))
                     .children(
                         listing
                             .refused
@@ -5092,6 +5331,39 @@ mod tests {
             },
         ));
 
+        // The chosen subset, and the chooser. The first has to read as
+        // "someone chose this" and not as "your account is small"
+        // (`XONHO-0027`), which is why it is shot next to 04b.
+        written.push(shoot(
+            "account-04c-chosen-subset",
+            Arc::new(StoreDouble::allows_listing()),
+            |app, _, cx| {
+                settled(app, cx);
+                app.narrowing.chosen = Some(vec!["reports".to_owned()]);
+                app.narrow_rows(cx);
+            },
+        ));
+
+        written.push(shoot(
+            "account-04d-chosen-subset-showing-all",
+            Arc::new(StoreDouble::allows_listing()),
+            |app, _, cx| {
+                settled(app, cx);
+                app.narrowing.chosen = Some(vec!["reports".to_owned()]);
+                app.show_all_buckets(cx);
+            },
+        ));
+
+        written.push(shoot(
+            "account-04e-choosing-buckets",
+            Arc::new(StoreDouble::allows_listing()),
+            |app, _, cx| {
+                settled(app, cx);
+                app.start_choosing_buckets(cx);
+                app.toggle_chosen("logs", cx);
+            },
+        ));
+
         written.push(shoot(
             "account-04b-narrowed-to-nothing",
             Arc::new(StoreDouble::allows_listing()),
@@ -6087,6 +6359,227 @@ mod tests {
             assert!(
                 app.choosing_destination.is_none(),
                 "a destination is a key at a location, and the location is gone"
+            );
+        });
+    }
+
+    // ---- A bucket list you choose once (XONHO-0027) ----
+
+    #[gpui::test]
+    fn a_chosen_subset_is_what_gets_listed(cx: &mut TestAppContext) {
+        let (app, cx) = listing_of(
+            cx,
+            vec![
+                bucket_of("reports", BucketKind::General),
+                bucket_of("logs", BucketKind::General),
+                bucket_of("archive", BucketKind::General),
+            ],
+        );
+
+        app.update(cx, |app, cx| {
+            app.narrowing.chosen = Some(vec!["reports".into(), "archive".into()]);
+            app.narrow_rows(cx);
+        });
+
+        assert_eq!(
+            shown_names(&app, cx),
+            vec!["reports".to_owned(), "archive".to_owned()]
+        );
+    }
+
+    #[gpui::test]
+    fn a_connection_nobody_chose_for_shows_everything(cx: &mut TestAppContext) {
+        let (app, cx) = listing_of(
+            cx,
+            vec![
+                bucket_of("reports", BucketKind::General),
+                bucket_of("logs", BucketKind::General),
+            ],
+        );
+
+        app.read_with(cx, |app, _| assert!(app.narrowing.chosen.is_none()));
+        assert_eq!(
+            shown_names(&app, cx),
+            vec!["reports".to_owned(), "logs".to_owned()]
+        );
+    }
+
+    /// "I chose nothing" and "I have not chosen" are different statements, and
+    /// collapsing them would make an empty choice silently show every bucket —
+    /// the one outcome a person reads as the feature being broken.
+    #[gpui::test]
+    fn choosing_nothing_is_not_the_same_as_not_choosing(cx: &mut TestAppContext) {
+        let (app, cx) = listing_of(cx, vec![bucket_of("reports", BucketKind::General)]);
+
+        app.update(cx, |app, cx| {
+            app.narrowing.chosen = Some(Vec::new());
+            app.narrow_rows(cx);
+        });
+
+        assert!(shown_names(&app, cx).is_empty());
+    }
+
+    /// A wish about names. The account is the authority on which of them
+    /// exist, and a bucket absent for one session must not be forgotten.
+    #[gpui::test]
+    fn a_chosen_bucket_the_account_no_longer_has_is_passed_over(cx: &mut TestAppContext) {
+        let (app, cx) = listing_of(cx, vec![bucket_of("reports", BucketKind::General)]);
+
+        app.update(cx, |app, cx| {
+            app.narrowing.chosen = Some(vec!["reports".into(), "deleted-elsewhere".into()]);
+            app.narrow_rows(cx);
+        });
+
+        assert_eq!(shown_names(&app, cx), vec!["reports".to_owned()]);
+        app.read_with(cx, |app, _| {
+            assert_eq!(
+                app.narrowing.chosen.as_deref(),
+                Some(["reports".to_owned(), "deleted-elsewhere".to_owned()].as_slice()),
+                "the choice was pruned to what the account happens to hold today"
+            );
+        });
+    }
+
+    /// Showing all is not forgetting. Someone checking whether a bucket still
+    /// exists has not decided to stop using their choice.
+    #[gpui::test]
+    fn showing_every_bucket_does_not_discard_the_choice(cx: &mut TestAppContext) {
+        let (app, cx) = listing_of(
+            cx,
+            vec![
+                bucket_of("reports", BucketKind::General),
+                bucket_of("logs", BucketKind::General),
+            ],
+        );
+
+        app.update(cx, |app, cx| {
+            app.narrowing.chosen = Some(vec!["reports".into()]);
+            app.narrow_rows(cx);
+            app.show_all_buckets(cx);
+        });
+
+        assert_eq!(
+            shown_names(&app, cx),
+            vec!["reports".to_owned(), "logs".to_owned()],
+            "showing all should list everything"
+        );
+        app.read_with(cx, |app, _| {
+            assert_eq!(
+                app.narrowing.chosen.as_deref(),
+                Some(["reports".to_owned()].as_slice()),
+                "the choice was given up rather than set aside, so there is nothing to return to"
+            );
+        });
+
+        // And the way back exists, which is the half the first version of this
+        // test did not check and the implementation therefore did not have.
+        app.update(cx, |app, cx| app.back_to_chosen_buckets(cx));
+        assert_eq!(shown_names(&app, cx), vec!["reports".to_owned()]);
+    }
+
+    /// Opening the chooser with no choice recorded must tick everything —
+    /// otherwise the picker opens looking like a fresh empty choice.
+    #[gpui::test]
+    fn the_chooser_opens_ticked_to_what_is_showing(cx: &mut TestAppContext) {
+        let (app, cx) = listing_of(
+            cx,
+            vec![
+                bucket_of("reports", BucketKind::General),
+                bucket_of("logs", BucketKind::General),
+            ],
+        );
+
+        app.update(cx, |app, cx| app.start_choosing_buckets(cx));
+
+        app.read_with(cx, |app, _| {
+            assert_eq!(
+                app.choosing_buckets.as_deref(),
+                Some(["reports".to_owned(), "logs".to_owned()].as_slice())
+            );
+        });
+    }
+
+    /// Abandoning the chooser changes nothing. A picker that edited the live
+    /// choice as you ticked would apply half a decision.
+    #[gpui::test]
+    fn cancelling_the_chooser_leaves_the_choice_alone(cx: &mut TestAppContext) {
+        let (app, cx) = listing_of(
+            cx,
+            vec![
+                bucket_of("reports", BucketKind::General),
+                bucket_of("logs", BucketKind::General),
+            ],
+        );
+
+        app.update(cx, |app, cx| {
+            app.narrowing.chosen = Some(vec!["reports".into()]);
+            app.narrow_rows(cx);
+            app.start_choosing_buckets(cx);
+            app.toggle_chosen("logs", cx);
+            app.choosing_buckets = None;
+        });
+
+        app.read_with(cx, |app, _| {
+            assert_eq!(
+                app.narrowing.chosen.as_deref(),
+                Some(["reports".to_owned()].as_slice()),
+                "ticking in an abandoned chooser changed the live choice"
+            );
+        });
+    }
+
+    /// The three short lists must read as three different things. This is the
+    /// requirement `XONHO-0027`'s design calls the one most likely to do harm:
+    /// a choice made weeks ago is otherwise indistinguishable from a bug.
+    #[gpui::test]
+    fn an_empty_account_a_narrowed_one_and_a_chosen_one_are_three_states(cx: &mut TestAppContext) {
+        // 1. An account that holds nothing.
+        let (empty, cx) = listing_of(cx, Vec::new());
+        empty.read_with(cx, |app, cx| {
+            let delegate = app.table.read(cx).delegate();
+            assert_eq!(delegate.shown_of_loaded(), (0, 0));
+            assert!(
+                !delegate.hidden_by_narrowing(),
+                "an account holding nothing is not an account narrowed to nothing"
+            );
+            assert!(app.narrowing.chosen.is_none());
+        });
+
+        // 2. An account narrowed to nothing.
+        let (narrowed, cx) = listing_of(cx, vec![bucket_of("reports", BucketKind::General)]);
+        narrowed.update(cx, |app, cx| {
+            app.narrowing.name = "matches-nothing".to_owned();
+            app.narrow_rows(cx);
+        });
+        narrowed.read_with(cx, |app, cx| {
+            assert!(app.table.read(cx).delegate().hidden_by_narrowing());
+            assert!(
+                app.narrowing.chosen.is_none(),
+                "a narrowed account must not claim a remembered choice is in force"
+            );
+        });
+
+        // 3. An account reduced by a remembered choice — short, but not empty,
+        //    and it says so.
+        let (chosen, cx) = listing_of(
+            cx,
+            vec![
+                bucket_of("reports", BucketKind::General),
+                bucket_of("logs", BucketKind::General),
+            ],
+        );
+        chosen.update(cx, |app, cx| {
+            app.narrowing.chosen = Some(vec!["reports".into()]);
+            app.narrow_rows(cx);
+        });
+        chosen.read_with(cx, |app, cx| {
+            assert!(
+                !app.table.read(cx).delegate().hidden_by_narrowing(),
+                "a chosen subset is not 'everything is hidden'"
+            );
+            assert!(
+                app.narrowing.chosen.is_some(),
+                "the screen has nothing to say the list is a chosen subset with"
             );
         });
     }

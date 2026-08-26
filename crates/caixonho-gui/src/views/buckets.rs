@@ -97,6 +97,25 @@ pub(crate) struct Narrowing {
     pub(crate) name: String,
     /// Leave out the buckets an authorization denial has been observed for.
     pub(crate) accessible_only: bool,
+    /// The buckets this connection has chosen to show (`XONHO-0027`).
+    ///
+    /// `None` is *not* an empty choice: it means nobody has chosen, so
+    /// everything is listed. An empty `Some` means the user chose nothing and
+    /// meant it. Collapsing the two would make an empty choice silently show
+    /// every bucket — the one outcome a person would read as the feature
+    /// being broken.
+    ///
+    /// The odd one out among the five: the other four are *reset* when the
+    /// connection changes, and this one is *loaded*.
+    pub(crate) chosen: Option<Vec<String>>,
+    /// Set aside for a moment, without being given up.
+    ///
+    /// "Show me everything" and "forget what I chose" are different acts, and
+    /// the spec requires the choice to be *there to return to* after the
+    /// first. A single `Option` cannot say that: setting it to `None` is
+    /// indistinguishable from never having chosen, so the screen loses both
+    /// the explanation and the way back.
+    pub(crate) showing_all: bool,
 }
 
 impl Default for Narrowing {
@@ -109,6 +128,8 @@ impl Default for Narrowing {
             kind: KindChoice::Any,
             name: String::new(),
             accessible_only: false,
+            chosen: None,
+            showing_all: false,
         }
     }
 }
@@ -243,6 +264,14 @@ impl BucketsDelegate {
                     && narrowing.kind.matches(bucket)
                     && (name.is_empty() || bucket.name.to_lowercase().contains(&name))
                     && (!narrowing.accessible_only || self.access(bucket) != Access::Denied)
+                    // A chosen name the account no longer lists simply is not
+                    // here; nothing fails and the choice is left alone, because
+                    // a bucket can be absent for a session and back the next.
+                    && (narrowing.showing_all
+                        || narrowing
+                            .chosen
+                            .as_ref()
+                            .is_none_or(|chosen| chosen.contains(&bucket.name)))
             })
             .map(|(index, _)| index)
             .collect();
@@ -251,6 +280,11 @@ impl BucketsDelegate {
     /// How many buckets are shown, of how many the listing returned.
     pub(crate) fn shown_of_loaded(&self) -> (usize, usize) {
         (self.shown.len(), self.rows.len())
+    }
+
+    /// Every bucket the account listed, by name — what a chooser offers.
+    pub(crate) fn all_names(&self) -> Vec<String> {
+        self.rows.iter().map(|bucket| bucket.name.clone()).collect()
     }
 
     /// Whether the account has buckets and the narrowing is hiding all of them.

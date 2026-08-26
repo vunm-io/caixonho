@@ -65,6 +65,7 @@ pub mod error;
 pub mod folder;
 pub(crate) mod listing;
 pub mod outcome;
+mod preferences;
 pub mod preview;
 pub mod probe;
 pub mod profiles;

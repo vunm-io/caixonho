@@ -43,6 +43,8 @@ that each own a subsystem and land on their own:
 | `XONHO-0019` | A pane that cannot outlive the connection it was read on: switching connection ends the location instead of leaving the previous account's bucket named | built, awaiting live acceptance |
 | `XONHO-0022` | Asking the OS credential store once per credential per run instead of once per connection open — the keychain stopped interrupting a session of browsing | landed |
 | `XONHO-0023` | Building a connection's client once per run and reusing it, so choosing a profile again costs a listing rather than a fresh credential resolution | built, awaiting live acceptance |
+| `XONHO-0025` | Narrowing the account listing by region, kind, name and whether a bucket can be used — one pass, one count, and never hiding a bucket whose access is simply unanswered | built, awaiting live acceptance |
+| `XONHO-0027` | Choosing once which buckets a connection shows and remembering it, in a preferences file of its own — with the screen saying when a choice made in another session is in force | built, awaiting live acceptance |
 | `XONHO-0025` | Narrowing the account listing by region, kind, name and whether a bucket can be used — composing into one pass, with an empty state that says the filters did it | built, awaiting live acceptance |
 
 Three cells were corrected on 2026-08-22, all in the same direction — a row

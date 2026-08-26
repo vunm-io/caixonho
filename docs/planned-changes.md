@@ -307,8 +307,11 @@ and prefixes; recent locations*) and it needs its own home: a per-connection
 connection file — so it covers discovered profiles and stored credentials
 alike, and so a preference can never corrupt a credential.
 
-**Issued as `XONHO-0027` on 2026-08-26**, and it starts from this paragraph
-rather than rediscovering it — which is what writing it down was for.
+**Built as `XONHO-0027` on 2026-08-26**, and it started from this paragraph
+rather than rediscovering it — which is what writing it down was for. The
+store is `view-preferences.toml` beside the connections file, hand-encoded
+like that file rather than pulling in `serde` and a TOML crate for a display
+preference (`XONHO-0017`'s territory).
 
 ### An empty folder cannot exist on a directory bucket (2026-08-26)
 

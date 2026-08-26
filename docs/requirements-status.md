@@ -35,7 +35,8 @@ gap is named. **none** — not started.
 | Virtualized table, 100k+ rows at ~60fps | partial | Virtualized, measured once on a synthetic feed in M0, and now rendering real listings — but never a long one. The claim stands unmeasured |
 | Columns name, size, last modified, storage class, ETag; sortable, resizable, persisted | partial | `XONHO-0006` renders name, size and last modified, and carries storage class and ETag across the port unrendered. Nothing is sortable, resizable or persisted |
 | Breadcrumbs plus an editable path bar | done | `XONHO-0006`. The trail is read from the location rather than stored; the path bar is the mode it turns into, and is also how a bucket is opened when the account cannot be listed. `XONHO-0019`: the trail is shown only for the connection it was read on — a switch ends the location instead of leaving the previous account's bucket named. Still **done**: the requirement was built, and this repaired a defect in it rather than delivering it |
-| Client-side filter of loaded rows **and** server-side prefix search, saying which is happening | partial | `XONHO-0025`. The account listing narrows by region, bucket kind, name and whether it can be used, all composing into one pass with one count. **Still partial, and the missing half is the named one**: server-side `prefix` search is a request rather than a narrowing of loaded rows, and nothing does it yet. The accessibility narrowing removes only **observed** denials — never a bucket whose answer has not arrived, because the viewport that drives probing is built from the narrowed list, so hiding an unanswered bucket would stop it ever being answered |
+| Client-side filter of loaded rows **and** server-side prefix search, saying which is happening | partial | `XONHO-0025`. The account listing narrows by region, bucket kind, name and whether it can be used, all composing into one pass with one count. **Still partial, and the missing half is the named one**: server-side `prefix` search is a request rather than a narrowing of loaded rows, and nothing does it yet. The accessibility narrowing removes only **observed** denials — never a bucket whose answer has not arrived, because the viewport that drives probing is built from the narrowed list, so hiding an unanswered bucket would stop it ever being answered. `XONHO-0027` adds a fifth narrowing that is not a filter at all: a **chosen set of buckets, remembered per connection**, loaded on a connection change rather than reset with the others |
+| Favourites / pinned buckets and prefixes; recent locations (`[S]`) | partial | `XONHO-0027`. Which buckets a connection shows is chosen once and remembered, in a view-preferences file of its own — **not** in the connections file, because half the connections are profiles discovered in `~/.aws` with no record there to hang a setting on. Prefixes and recent locations are not done: a location belongs to a bucket and can cease to exist between sessions, which needs its own thinking |
 | Sort honesty — say when a sort covers only loaded rows | none | Nothing sorts yet, so nothing lies yet |
 
 ## §4.3 Permission awareness — M1, the headline feature
@@ -95,9 +96,11 @@ Quality of life (2 `[M]`) is not started. It is M3+ and is not late.
 
 ## The count
 
-Of the 24 `[M]` requirements in the three M1 areas: **11 done, 10 partial, 3 not
-started** — §4.1 has 2 done, 5 partial, 1 not started; §4.2 has 3, 3 and 1;
-§4.3, the headline, has 6, 2 and 1. Outside M1, §7–8 stands at 2 done, 3
+Of the 25 rows counted in the three M1 areas: **11 done, 11 partial, 3 not
+started** — §4.1 has 2 done, 5 partial, 1 not started; §4.2 has 3, 4 and 1;
+§4.3, the headline, has 6, 2 and 1. §4.2's fourth partial is an `[S]` row
+listed because a built `[S]` left unlisted makes the section read emptier than
+it is — the same rule §4.5 already follows. Outside M1, §7–8 stands at 2 done, 3
 partial and nothing unstarted; §4.4 — opened by `XONHO-0007` on
 2026-08-24 — at 1 done, 3 partial, 3 not started of its 7; and §4.5 —
 opened by `XONHO-0021` on 2026-08-25 — at 1 done, 2 partial, 2 not started
