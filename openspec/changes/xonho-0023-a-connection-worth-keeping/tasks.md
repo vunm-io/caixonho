@@ -137,7 +137,43 @@
   - Done criteria: all four jobs successful for the tip; run id here
   - Verification: `gh run list --limit 1 --repo vunm-io/caixonho`
 
-- [ ] 4.3 Live: the second click is fast [dispatch: main]
+- [x] 4.3 Live: the second click is fast [dispatch: main]
+      - **Second sitting, 2026-08-26 15:15–15:17Z, with the instrumented
+        build. The claim holds, and by more than it predicted.**
+      - Twelve selections, every one with its own `took=`:
+
+        | # | connection | | took |
+        |---|---|---|---|
+        | 1 | `vunm` | **built** | **11.84s** |
+        | 2 | `r2-caixonho` | **built** | **5.22s** |
+        | 3 | `vunm` | reused | 0.239s |
+        | 4 | `r2-caixonho` | reused | 0.466s |
+        | 5 | `vunm` | reused | 1.045s |
+        | 6 | `r2-caixonho` | reused | 0.338s |
+        | 7, 9, 11 | `vunm` | reused | **0.077, 0.082, 0.089s** |
+        | 8, 10, 12 | `r2-caixonho` | reused | 0.368, 0.443, 0.425s |
+
+      - `vunm` settles at **0.08s** against 11.84s built — **~140×**.
+        `r2-caixonho` settles at ~0.42s against 5.22s — **~12×**. The design's
+        expectation was "later ones in the tenths"; both are.
+      - **Why `r2` stays at 0.4s and `vunm` reaches 0.08s is not a failure of
+        the cache.** What is left after reuse *is the listing itself*, and
+        that is a real request to Cloudflare that must happen every time,
+        because a selection re-reads the account by design. Reuse removes
+        credential resolution; nothing can remove the round trip.
+      - The 1.045s at #5 is a single slow round trip, not a rebuild — the log
+        says `connection reused` for it.
+      - **The owner's other question — why is the first click ~20s — is
+        answered by measurement, and the answer is that none of it is this
+        application.** `op-credential-process.sh` timed directly, three runs:
+        **20.41s cold, then 4.53s and 4.33s warm.** 1Password had been locked
+        minutes earlier, so the first click paid the cold path. The AWS SDK
+        runs that subprocess; caixonho cannot make it faster, and this change
+        was never about making it faster — only about paying it **once**.
+      - **A defect this sitting exposed, and it is not this change's**: for
+        those 12–20 seconds the status bar reads *"Listing buckets…"*, which
+        is false. Nothing is being listed; the application is waiting on a
+        password manager. Parked in `docs/planned-changes.md`.
       - **First sitting, 2026-08-26: inconclusive, and the fault was the
         instrument's.** The owner reported no improvement. Two things came
         out of the log, and only one of them is about speed.
@@ -171,8 +207,10 @@
     the cause — record that, because it is the more valuable outcome.
   - Verification: the log's own timings, before and after, quoted here
 
-- [ ] 4.4 Reader-facing documents [dispatch: main]
-      - **Prose done 2026-08-26; the numbers wait on 4.3.** The §4.1 row,
+- [x] 4.4 Reader-facing documents [dispatch: main]
+      - Completed 2026-08-26 once 4.3 produced real numbers; the after-column
+        now holds them.
+      - **Prose done 2026-08-26; the numbers waited on 4.3.** The §4.1 row,
         the roadmap rows (including `XONHO-0022`'s, which was missing) and
         the outcome section under the 2026-08-25 timing note are all written.
         The after-column in that table says *awaiting the live sitting* and

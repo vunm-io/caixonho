@@ -211,16 +211,50 @@ failure or an IAM denial keeps its client, because a fresh one would fail
 identically and rebuilding would put the four seconds back — that half has
 its own test, and it is the half that would have quietly undone the change.
 
-| Connection kind | open → listed, before | after |
+| Connection kind | before | after (2026-08-26) |
 |---|---|---|
-| Stored credential | 0.06 – 0.3s | *awaiting the live sitting* |
-| Profile using `credential_process`, first click | 4.3 – 8.8s | *unchanged by design* |
-| Profile using `credential_process`, **every click after** | 4.3 – 8.8s | *awaiting the live sitting* |
+| Profile via `credential_process`, first click | 4.3 – 8.8s | 5.2 – 11.8s *(unchanged by design)* |
+| Profile via `credential_process`, **every click after** | 4.3 – 8.8s | **0.08s** (`vunm`), **0.42s** (`r2`) |
 
-The expectation on record, so the sitting can falsify it: later clicks cost
-a listing alone, in the tenths. **If the second click is still seconds, the
-identity cache is not where the time goes and this design is wrong about the
-cause** — which is the more valuable outcome of the two.
+`vunm` improved ~140×, `r2-caixonho` ~12×. The expectation on record was
+"later clicks cost a listing alone, in the tenths", and both are.
+
+**The two are different because what remains after reuse is the listing, and
+that is a real request.** `vunm` reaches 0.08s; `r2-caixonho` sits at ~0.42s
+because it is a round trip to Cloudflare. Reuse removes credential
+resolution. Nothing removes the network.
+
+### The first click is a password manager, and the screen says otherwise (2026-08-26)
+
+`XONHO-0023`'s live check answered the owner's second question by measuring
+rather than reasoning. `op-credential-process.sh`, timed directly, three runs
+back to back: **20.41s cold, 4.53s warm, 4.33s warm.**
+
+So the first click on a `credential_process` profile is that subprocess,
+essentially in full. The AWS SDK runs it; this application cannot make it
+faster and `XONHO-0023` never claimed it would — only that it would be paid
+once, which it now is.
+
+**What is a defect is what the screen says while it happens.** For those
+twelve to twenty seconds the status bar reads *"Listing buckets…"*. Nothing
+is being listed. The application is waiting on a password manager, and a
+person watching a truthful application for twenty seconds deserves to be told
+which of the two is happening — this project has a rule about exactly this
+shape of lie for filters and for sorts.
+
+Not issued. Two shapes worth weighing when it is:
+
+- **Say what is happening.** A status line that distinguishes resolving
+  credentials from listing. Small, honest, and does not make anything faster.
+- **Resolve earlier.** Begin opening the default connection at startup rather
+  than on the first click. Faster in the common case, but it runs a password
+  manager for a connection the user may never select — a side effect nobody
+  asked for, on the one path where side effects are least welcome.
+
+The first is cheap and clearly right. The second is a real trade and should
+not be made casually.
+
+
 
 ### The CI actions were still on Node 20 (2026-08-26)
 
