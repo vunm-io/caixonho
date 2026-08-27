@@ -199,7 +199,9 @@
         window green (8 + 1 ignored).
   - Verification: the commands themselves
 
-- [ ] 3.2 CI green on both targets, run id recorded here [dispatch: main]
+- [x] 3.2 CI green on both targets, run id recorded here [dispatch: main]
+      - Run `33052383544` on `ff9cd5a`: `build (windows-latest)`,
+        `build (macos-latest)`, `dependency audit` and `rustfmt` all success.
   - Verification: `gh run list --limit 1 --repo vunm-io/caixonho`
 
 - [ ] 3.3 Live: twenty files, one of them doomed [dispatch: main]
@@ -215,7 +217,26 @@
     filter works" would have passed.
   - Verification: what was seen, quoted, with the log's own lines
 
-- [ ] 3.4 Reader-facing documents [dispatch: main]
+- [x] 3.4 Reader-facing documents [dispatch: main]
+      - Done in `main` (2026-08-27). §4.4's queue row **stays partial**, and
+        now names which parts are missing and why — pause and resume declined
+        until multipart can make them honest, throughput and ETA left as
+        guesses that deserve their own thinking.
+      - The three rows that were blocked on a queue no longer say so.
+        Multipart's parts are the first thing that needs one; adaptive
+        concurrency is now precisely "choose the bound from the service's own
+        throttling" rather than "needs the queue"; drag and drop keeps its own
+        API question and loses the other half.
+      - **A correction to something said in this session**: on first reading
+        the count I took the queue row's pre-existing `partial` for a claim
+        about work that did not exist. It was not. It read *"No queue, no
+        aggregate, no pause/resume/retry — the panel is its own change"* —
+        which is exactly how a status row should hold a partial. Worth
+        recording because the opposite mistake, a note claiming more than was
+        built, is one this session really did make (`XONHO-0025` 2.6), and
+        suspicion is not the same as evidence.
+      - Counts by the script: `§4.4` unmoved at 1 done, 3 partial, 3 not
+        started — correct, because `partial` → `partial`.
   - Paths: `docs/requirements-status.md`, `docs/roadmap.md`
   - Done criteria: §4.4's queue row moves to **partial**, and says **which
     part** is missing — pause, resume, throughput and ETA — rather than
@@ -224,7 +245,41 @@
     the script.
   - Verification: the script's totals match the tables
 
-- [ ] 3.5 Close-out review per `AGENTS.md` [dispatch: main]
+- [x] 3.5 Close-out review per `AGENTS.md` [dispatch: main]
+      - Run 2026-08-27, before the live check, as with the last seven.
+      - **Q1, and it has the answer the task predicted.** This change declines
+        two things the brief's own queue line names. Pause and resume are an
+        argued amendment, not a defect: a `PutObject` is one stream, stopping
+        it *is* cancelling it, and a Pause that restarted from zero would lie
+        about the bytes already sent — honest pausing needs multipart, a
+        separate `[M]`. Throughput and ETA are deferred more weakly, as
+        arithmetic that deserves its own thinking; that is a judgement, and
+        `requirements-status.md` now records both so a reader meets them
+        without reading this file.
+      - **Q2:** §4.4's queue row keeps `partial` and says which parts are
+        missing; the three rows that were blocked on a queue stop saying so;
+        a roadmap row. And a correction to a claim made in this very session
+        is recorded in 3.4 — the row's old note was honest and I briefly said
+        otherwise.
+      - **Q3:** `Queue::forget` was added for a real caller, not for later.
+        `Standing::holds_a_slot` and `is_settled` are both used. The
+        `TransferEvent`/`Tagged` split leaves no orphan.
+      - **Q4, in the form this project settled on: what did this change do to
+        the evidence?** It made a whole class of defect *invisible to the
+        instruments that existed*. A window with one transfer could not
+        misattribute an event; now it can, and only the id prevents it — which
+        is why that is the one thing with a dedicated ablation aimed at the
+        plausible mistake (lookup by position) rather than an obvious one.
+      - What no test covers: **concurrency against a real service**. Every
+        queue test is a pure state machine with no runtime, deliberately, and
+        the numbers that matter — whether four at once throttles this account,
+        whether a real collision mid-queue behaves — live only in 3.3.
+      - Also uncovered: quitting with transfers in flight. Named absent in the
+        proposal rather than discovered later.
+      - **Q5:** nothing discovered and left in a transcript. The harness's
+        blindness to width was already parked; this change added a second
+        instance of an image catching what an assertion could not, recorded
+        in 2.5.
   - Done criteria: the five questions answered here. Question 1 has a known
     answer to write up honestly — **this change declines two things the
     brief's own line names**, and the review is where that is either an
