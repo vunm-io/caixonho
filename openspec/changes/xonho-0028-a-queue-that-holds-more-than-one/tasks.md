@@ -193,8 +193,10 @@
 
 ## 3. Close-out
 
-- [ ] 3.1 `cargo fmt --all`, `cargo clippy --workspace --all-targets --
+- [x] 3.1 `cargo fmt --all`, `cargo clippy --workspace --all-targets --
       -D warnings`, `cargo test --workspace` green [dispatch: main]
+      - Done in `main` (2026-08-27): fmt and clippy exit 0, 389 core + 93
+        window green (8 + 1 ignored).
   - Verification: the commands themselves
 
 - [ ] 3.2 CI green on both targets, run id recorded here [dispatch: main]
