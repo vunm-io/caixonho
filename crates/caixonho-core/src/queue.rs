@@ -188,6 +188,16 @@ impl<T> Queue<T> {
             .retain(|item| item.standing != Standing::Finished);
     }
 
+    /// Forget one item entirely, whatever it was doing.
+    ///
+    /// What a per-item dismiss needs, and `clear_finished` cannot do it: a
+    /// *failed* item is not finished, so clearing leaves it — correctly, it
+    /// still has a reason worth reading — but the user must be able to say
+    /// "I have read it" without retrying it.
+    pub fn forget(&mut self, id: TransferId) {
+        self.items.retain(|item| item.id != id);
+    }
+
     /// This item is waiting on a person now, and gives up its slot.
     pub fn asking(&mut self, id: TransferId) {
         self.settled(id, Standing::Asking);
@@ -453,6 +463,19 @@ mod tests {
         accept(&mut queue, &["a"]);
 
         assert_eq!(queue.ready().len(), 1);
+    }
+
+    #[test]
+    fn forgetting_one_item_leaves_the_rest() {
+        let mut queue = Queue::new(2);
+        let ids = accept(&mut queue, &["a", "b"]);
+        queue.ready();
+        queue.settled(ids[0], Standing::Failed);
+
+        queue.forget(ids[0]);
+
+        assert_eq!(queue.standing(ids[0]), None);
+        assert_eq!(queue.standing(ids[1]), Some(Standing::Running));
     }
 
     #[test]

@@ -4,6 +4,21 @@
 > are about **containment**: a failure that stays in its own item, an event
 > that reaches its own item, and a slot that a human question does not hold.
 > Each of those failing looks, on screen, like a different file's progress.
+>
+> **Routing, decided 2026-08-27 rather than defaulted.** Every remaining task
+> is `[dispatch: main]`, and the reason is not that `agy` is unavailable — it
+> is installed and is this workspace's second-priority executor for
+> external-ok work. It earns nothing *here*: tasks 2.1–2.5 all edit
+> `crates/caixonho-gui/src/app.rs` and run strictly in sequence, so handing
+> one to an external executor while this session holds the file for the other
+> four makes ownership ambiguous, which the dispatch contract exists to
+> prevent. 2.2 additionally carries the design decision `design.md` left open,
+> and 3.4/3.5 are judgment by definition. 3.1 and 3.2 are mechanical but are
+> verification this session must run anyway.
+>
+> What *would* suit `agy` in this repo, when it comes up: the archive-and-sync
+> chores that `XONHO-0020` (6.5) and `XONHO-0019` (4.4) are waiting on, which
+> are self-contained, mechanical, and touch no file this session holds.
 
 ## 1. The runner
 
@@ -79,7 +94,19 @@
 
 ## 2. The window
 
-- [ ] 2.1 The window holds a queue [dispatch: main]
+- [x] 2.1 The window holds a queue [dispatch: main]
+      - Done in `main` (2026-08-27). `TransferPhase` is **unchanged**, as the
+        task said to record either way: five phases describing one transfer's
+        end were right for one and are right for each of many.
+      - `TransferEvent` gained a wrapper rather than a field: `Tagged { id,
+        event }`. Every progress report and every settlement now names the
+        transfer it belongs to, and `apply_transfer` returns early on an id
+        the queue no longer holds.
+      - Two of the converted tests turned out to be **better** for it.
+        `a_settlement_after_dismissal_is_dropped` used to clear the single
+        slot and hope; it now queues an item, forgets it, and delivers an
+        event for that exact id — which is the guarantee stated directly
+        instead of approximated.
   - Paths: `crates/caixonho-gui/src/app.rs`
   - Done criteria: `transfer: Option<Transfer>` becomes the queue.
     `TransferPhase` is **unchanged** — five phases describing one transfer's
@@ -88,7 +115,17 @@
     transfer is.
   - Verification: `cargo test -p caixonho-gui`
 
-- [ ] 2.2 A panel, and where it lives [dispatch: main]
+- [x] 2.2 A panel, and where it lives [dispatch: main]
+      - Done in `main` (2026-08-27). **Decided: under the listing, in the
+        strip's own slot, height-capped with the rows scrolling inside.**
+      - The design set the constraint — a queue of twenty must not hide what
+        the user is browsing — and a capped box is the only shape that costs
+        the same screen for twenty as for two. The alternative considered was
+        the summary-line-that-expands, and it was declined because this window
+        has no expand-and-collapse anywhere else: inventing one for the queue
+        would make the queue the odd control rather than the busy one.
+      - Header carries `N of M transferred` and the three queue-wide actions;
+        each row keeps the phase rendering that already existed.
   - Paths: `crates/caixonho-gui/src/app.rs`
   - Done criteria: each item listed with what it is, where it is going, its
     progress and its end; the queue's own count of finished-of-total.
@@ -98,8 +135,16 @@
     uses are one row and do not stretch to twenty.
   - Verification: `cargo test -p caixonho-gui`, and looking at the frames
 
-- [ ] 2.3 Cancel one, cancel all, retry failed, clear finished
+- [x] 2.3 Cancel one, cancel all, retry failed, clear finished
       [dispatch: main]
+      - Done in `main` (2026-08-27). `Queue::forget` was added for the
+        per-item dismiss: `clear_finished` cannot do it, because a **failed**
+        item is not finished — correctly, it still has a reason worth reading
+        — but the user must be able to say "I have read it" without retrying
+        it.
+      - `cancel_queue` cancels each running transfer's own `Cancel` **and**
+        marks the queue: marking without cancelling would leave bytes moving
+        for a transfer the screen calls stopped.
   - Paths: `crates/caixonho-gui/src/app.rs`
   - Done criteria: all four. Tests: cancelling the queue stops the running
     and prevents the waiting, and both report **cancelled** rather than
@@ -107,7 +152,9 @@
     failed; retrying a failed item does not disturb one in flight.
   - Verification: `cargo test -p caixonho-gui`
 
-- [ ] 2.4 An empty queue says nothing [dispatch: main]
+- [x] 2.4 An empty queue says nothing [dispatch: main]
+      - Done in `main` (2026-08-27): `queue_panel` returns `None` on an empty
+        queue rather than an empty frame.
   - Paths: `crates/caixonho-gui/src/app.rs`
   - Done criteria: with nothing in it the panel is absent, not an empty
     frame. Small, and the kind of thing that ships as a permanent grey box.

@@ -30,6 +30,7 @@ use crate::views::credential_form::CredentialForm;
 use crate::views::failure::{guidance_for, refusal_detail, refusal_headline, unavailable_reason};
 use crate::views::format::split_zonal_name;
 use crate::views::objects::ObjectsDelegate;
+use caixonho_core::queue::{Queue, Standing, TransferId};
 
 /// Everything the window shows.
 pub(crate) struct CaixonhoApp {
@@ -62,10 +63,19 @@ pub(crate) struct CaixonhoApp {
     stored: Vec<StoredCredential>,
     /// Open while a credential is being entered.
     form: Option<CredentialForm>,
-    /// The one download in flight or just settled, if any (`XONHO-0007`).
-    transfer: Option<Transfer>,
+    /// Every transfer this run has taken on (`XONHO-0028`).
+    ///
+    /// Was `Option<Transfer>` — one, and not by policy but by type. That one
+    /// line is where every "one file at a time" came from, and three unbuilt
+    /// `[M]` rows were waiting on it rather than on themselves.
+    ///
+    /// The queue decides *which* run; this window starts what it hands back
+    /// and reports what became of them. Nothing about a single transfer
+    /// changed: `Transfer` and its five phases describe one transfer's end,
+    /// which was right for one and is right for each of many.
+    queue: Queue<Transfer>,
     /// Where a download's progress and outcome come back.
-    transfers: flume::Sender<TransferEvent>,
+    transfers: flume::Sender<Tagged>,
     /// The one deletion being confirmed, in flight, or just settled
     /// (`XONHO-0021`).
     deletion: Option<Deletion>,
@@ -184,6 +194,17 @@ enum SignInEvent {
 }
 
 /// What one transfer reports back to the window.
+/// One event, and which transfer it belongs to (`XONHO-0028`).
+///
+/// The id is not decoration. A window holding one transfer could assume any
+/// event was *the* transfer's; with a queue that assumption becomes a defect
+/// showing as one file's progress moving for another file's bytes — silently
+/// wrong, which is the worst kind available.
+struct Tagged {
+    id: TransferId,
+    event: TransferEvent,
+}
+
 enum TransferEvent {
     Progress {
         bytes: u64,
@@ -309,6 +330,31 @@ struct ChoosingDestination {
     /// Why the last attempt was refused, when it was. Nothing was sent.
     refused: Option<caixonho_core::folder::BadObjectKey>,
 }
+
+impl Transfer {
+    /// A download about to start: everything known before a request is made.
+    fn down(bucket: String, key: String, directory: std::path::PathBuf, then_open: bool) -> Self {
+        Self {
+            bucket,
+            key,
+            directory,
+            then_open,
+            direction: Direction::Down,
+            source: None,
+            bytes: 0,
+            total: None,
+            cancel: caixonho_core::transfer::Cancel::default(),
+            phase: TransferPhase::Running,
+        }
+    }
+}
+
+/// How many transfers run at once (`XONHO-0028`).
+///
+/// Four, and it is a placeholder with its successor already named: adaptive
+/// concurrency is its own `[M]`, and it exists because no fixed number can be
+/// right for every network and every account.
+const TRANSFERS_AT_ONCE: usize = 4;
 
 /// Making a folder, from naming it to what became of it (`XONHO-0024`).
 ///
@@ -696,7 +742,7 @@ impl CaixonhoApp {
 
         // Downloads report progress per chunk and one settlement; both cross
         // to the window here (`XONHO-0007`).
-        let (transfers, transferring) = flume::unbounded::<TransferEvent>();
+        let (transfers, transferring) = flume::unbounded::<Tagged>();
         cx.spawn_in(window, async move |this, cx| {
             while let Ok(event) = transferring.recv_async().await {
                 let applied = this.update_in(cx, |app, window, cx| {
@@ -710,7 +756,7 @@ impl CaixonhoApp {
                     //
                     // Through `re_read_location`, so the strip saying where it
                     // went survives the refresh that proves it.
-                    if app.apply_transfer(event, cx)
+                    if app.apply_transfer(event.id, event.event, cx)
                         && let Some(location) = app.location().cloned()
                     {
                         app.re_read_location(location, window, cx);
@@ -792,7 +838,10 @@ impl CaixonhoApp {
             connections_error,
             stored,
             form: None,
-            transfer: None,
+            // Small on purpose. `PROJECT_BRIEF.md` §4.4 names the failure a
+            // bound prevents — "many small files into one prefix" is the
+            // classic trigger for `503 SlowDown`.
+            queue: Queue::new(TRANSFERS_AT_ONCE),
             transfers,
             deletion: None,
             choosing_buckets: None,
@@ -1058,11 +1107,9 @@ impl CaixonhoApp {
             };
             let _ = this.update_in(cx, |app, _, cx| {
                 app.start_download(
-                    location.bucket.clone(),
-                    key,
-                    directory,
+                    None,
+                    Transfer::down(location.bucket.clone(), key, directory, false),
                     caixonho_core::transfer::Collision::Ask,
-                    false,
                     cx,
                 );
             });
@@ -1080,7 +1127,7 @@ impl CaixonhoApp {
         let Some(cache) = caixonho_core::transfer::open_cache_dir() else {
             // A machine with no resolvable cache directory: say so as a
             // failed transfer, because nothing was transferred.
-            self.transfer = Some(Transfer {
+            self.enqueue_settled(Transfer {
                 bucket: location.bucket.clone(),
                 key,
                 directory: std::path::PathBuf::new(),
@@ -1099,7 +1146,7 @@ impl CaixonhoApp {
             return;
         };
         if let Err(error) = std::fs::create_dir_all(&cache) {
-            self.transfer = Some(Transfer {
+            self.enqueue_settled(Transfer {
                 bucket: location.bucket.clone(),
                 key,
                 directory: cache,
@@ -1120,11 +1167,9 @@ impl CaixonhoApp {
         // by definition, and a question about clobbering a stale cached copy
         // would be the application asking permission to do its job.
         self.start_download(
-            location.bucket.clone(),
-            key,
-            cache,
+            None,
+            Transfer::down(location.bucket.clone(), key, cache, true),
             caixonho_core::transfer::Collision::Replace,
-            true,
             cx,
         );
     }
@@ -1297,6 +1342,7 @@ impl CaixonhoApp {
         let (bucket, source) = (choosing.bucket.clone(), choosing.source.clone());
         self.choosing_destination = None;
         self.start_upload(
+            None,
             bucket,
             key,
             source,
@@ -1306,8 +1352,29 @@ impl CaixonhoApp {
     }
 
     /// Start one upload and hold it as the window's transfer.
+    /// Take on a transfer that has already ended.
+    ///
+    /// Two places report a failure without ever making a request — a machine
+    /// with no cache directory, and one whose cache will not be created. They
+    /// are transfers in every way the user cares about, so they go in the
+    /// queue and are settled in the same breath.
+    fn enqueue_settled(&mut self, transfer: Transfer) {
+        let standing = match &transfer.phase {
+            TransferPhase::Failed(_) => Standing::Failed,
+            TransferPhase::Cancelled => Standing::Cancelled,
+            _ => Standing::Finished,
+        };
+        let id = self.queue.accept(transfer);
+        self.queue.settled(id, standing);
+    }
+
     fn start_upload(
         &mut self,
+        // `Some` when a collision answer re-issues a transfer already in the
+        // queue. Re-using the id keeps one file to one row: the user answered
+        // a question about *that* transfer, and it carrying on is not a
+        // second one.
+        existing: Option<TransferId>,
         bucket: String,
         key: String,
         path: std::path::PathBuf,
@@ -1319,46 +1386,58 @@ impl CaixonhoApp {
         };
         let total = std::fs::metadata(&path).ok().map(|meta| meta.len());
         let inbox = self.transfers.clone();
-        let cancel = session.spawn_upload(
-            bucket.clone(),
-            key.clone(),
-            path.clone(),
-            collision,
-            move |outcome| {
-                let _ = inbox.send(TransferEvent::UploadSettled(outcome));
-            },
-        );
-        self.transfer = Some(Transfer {
-            bucket,
-            key,
-            directory: path.parent().map(ToOwned::to_owned).unwrap_or_default(),
-            then_open: false,
-            direction: Direction::Up,
-            source: Some(path),
-            bytes: 0,
-            // Known up front and shown as a total, with no fraction: an
-            // upload reports no progress in this slice, and the size is
-            // still worth saying.
-            total,
-            cancel,
-            phase: TransferPhase::Running,
+        // Accepted before it is started, because the id has to exist before
+        // anything can be tagged with it.
+        let id = existing.unwrap_or_else(|| {
+            self.queue.accept(Transfer {
+                bucket: bucket.clone(),
+                key: key.clone(),
+                directory: path.parent().map(ToOwned::to_owned).unwrap_or_default(),
+                then_open: false,
+                direction: Direction::Up,
+                source: Some(path.clone()),
+                bytes: 0,
+                // Known up front and shown as a total, with no fraction: an
+                // upload reports no progress in this slice, and the size is
+                // still worth saying.
+                total,
+                cancel: caixonho_core::transfer::Cancel::default(),
+                phase: TransferPhase::Running,
+            })
         });
+        let cancel = session.spawn_upload(bucket, key, path, collision, move |outcome| {
+            let _ = inbox.send(Tagged {
+                id,
+                event: TransferEvent::UploadSettled(outcome),
+            });
+        });
+        if let Some(transfer) = self.queue.payload_mut(id) {
+            transfer.cancel = cancel;
+            transfer.phase = TransferPhase::Running;
+        }
+        self.queue.settled(id, Standing::Running);
         cx.notify();
     }
 
     /// Answer the taken-*key* question by sending again with the answer.
     fn answer_key_collision(
         &mut self,
+        id: TransferId,
         collision: caixonho_core::transfer::Collision,
         cx: &mut Context<Self>,
     ) {
-        let Some(transfer) = self.transfer.take() else {
+        // The answer belongs to *this* transfer. `XONHO-0028`'s spec requires
+        // it: two transfers can each be waiting on a question, and one
+        // "replace" must not silently overwrite the other's destination.
+        let Some(transfer) = self.queue.payload_mut(id) else {
             return;
         };
-        let Some(source) = transfer.source else {
+        let (bucket, key) = (transfer.bucket.clone(), transfer.key.clone());
+        let Some(source) = transfer.source.clone() else {
             return;
         };
-        self.start_upload(transfer.bucket, transfer.key, source, collision, cx);
+        self.queue.answered(id);
+        self.start_upload(Some(id), bucket, key, source, collision, cx);
     }
 
     /// Preview the selected object (`XONHO-0008` task 4.1).
@@ -1549,14 +1628,20 @@ impl CaixonhoApp {
         cx.notify();
     }
 
-    /// Start one download and hold it as the window's transfer.
+    /// Start one download, or re-issue one already queued.
+    ///
+    /// Takes the whole `Transfer` rather than five loose arguments. Clippy
+    /// noticed the argument count first, but the real smell was next door:
+    /// `start_ready` was unpacking a payload into arguments so this could pack
+    /// them back into a payload. One shape, passed along.
     fn start_download(
         &mut self,
-        bucket: String,
-        key: String,
-        directory: std::path::PathBuf,
+        // `Some` when a collision answer re-issues one already queued.
+        // Re-using the id keeps one file to one row: the user answered a
+        // question about *that* transfer, and it carrying on is not a second.
+        existing: Option<TransferId>,
+        transfer: Transfer,
         collision: caixonho_core::transfer::Collision,
-        then_open: bool,
         cx: &mut Context<Self>,
     ) {
         let Some(session) = self.session.clone() else {
@@ -1564,44 +1649,61 @@ impl CaixonhoApp {
         };
         let progress_inbox = self.transfers.clone();
         let settled_inbox = self.transfers.clone();
-        let cancel = session.spawn_download(
-            bucket.clone(),
-            key.clone(),
-            directory.clone(),
-            collision,
-            move |bytes, total| {
-                let _ = progress_inbox.send(TransferEvent::Progress { bytes, total });
-            },
-            move |outcome| {
-                let _ = settled_inbox.send(TransferEvent::Settled(outcome));
-            },
+        let (bucket, key, directory) = (
+            transfer.bucket.clone(),
+            transfer.key.clone(),
+            transfer.directory.clone(),
         );
-        self.transfer = Some(Transfer {
+        // Accepted before it is started: the id has to exist before anything
+        // can be tagged with it.
+        let id = existing.unwrap_or_else(|| self.queue.accept(transfer));
+        let cancel = session.spawn_download(
             bucket,
             key,
             directory,
-            then_open,
-            direction: Direction::Down,
-            source: None,
-            bytes: 0,
-            total: None,
-            cancel,
-            phase: TransferPhase::Running,
-        });
+            collision,
+            move |bytes, total| {
+                let _ = progress_inbox.send(Tagged {
+                    id,
+                    event: TransferEvent::Progress { bytes, total },
+                });
+            },
+            move |outcome| {
+                let _ = settled_inbox.send(Tagged {
+                    id,
+                    event: TransferEvent::Settled(outcome),
+                });
+            },
+        );
+        if let Some(held) = self.queue.payload_mut(id) {
+            held.cancel = cancel;
+            held.phase = TransferPhase::Running;
+        }
+        self.queue.settled(id, Standing::Running);
         cx.notify();
     }
 
-    /// Apply one transfer event, if a transfer is still on screen to apply
-    /// it to.
+    /// Apply one event to the transfer it names.
+    ///
     /// Returns whether an upload **landed**, so the caller can re-read the
     /// location. The caller rather than here because re-reading needs a
-    /// window, and threading one through every call site of this — including
-    /// four tests that have no business knowing about listings — would be a
-    /// lot of noise for one `if`.
-    fn apply_transfer(&mut self, event: TransferEvent, cx: &mut Context<Self>) -> bool {
+    /// window, and threading one through every call site — including tests
+    /// with no business knowing about listings — would be noise for one `if`.
+    ///
+    /// An event for an item the queue no longer holds falls through the
+    /// lookup and changes nothing. That is what the id is for: a late answer
+    /// about something the user cleared must not land on whatever now sits
+    /// where it was.
+    fn apply_transfer(
+        &mut self,
+        id: TransferId,
+        event: TransferEvent,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let mut sent = false;
-        let Some(transfer) = self.transfer.as_mut() else {
-            return false; // Dismissed while the event was in flight.
+        let mut standing = None;
+        let Some(transfer) = self.queue.payload_mut(id) else {
+            return false;
         };
         match event {
             TransferEvent::Progress { bytes, total } => {
@@ -1618,47 +1720,58 @@ impl CaixonhoApp {
                     } => {
                         transfer.bytes = bytes;
                         sent = true;
+                        standing = Some(Standing::Finished);
                         TransferPhase::Sent { key, stepped_aside }
                     }
-                    UploadOutcome::KeyTaken { key } => TransferPhase::KeyTaken { key },
+                    // A question only a person can answer, and it gives up its
+                    // slot while it waits: two of these must not stall twenty.
+                    UploadOutcome::KeyTaken { key } => {
+                        standing = Some(Standing::Asking);
+                        TransferPhase::KeyTaken { key }
+                    }
                     UploadOutcome::ConditionUnsupported { key } => {
+                        standing = Some(Standing::Asking);
                         TransferPhase::ConditionUnsupported { key }
                     }
-                    UploadOutcome::Cancelled => TransferPhase::Cancelled,
-                    UploadOutcome::Failed(error) => TransferPhase::Failed(error),
+                    UploadOutcome::Cancelled => {
+                        standing = Some(Standing::Cancelled);
+                        TransferPhase::Cancelled
+                    }
+                    UploadOutcome::Failed(error) => {
+                        standing = Some(Standing::Failed);
+                        TransferPhase::Failed(error)
+                    }
                 };
             }
             TransferEvent::Settled(outcome) => {
                 use caixonho_core::transfer::DownloadOutcome;
-                match outcome {
+                transfer.phase = match outcome {
                     DownloadOutcome::Finished {
                         name,
                         mapped,
                         bytes,
                     } => {
                         transfer.bytes = bytes;
-                        if transfer.then_open {
-                            // Handed to the platform's opener. gpui's call
-                            // reports nothing back on any platform, so the
-                            // finished line below keeps saying where the file
-                            // is (with Reveal) — the report the spec asks for
-                            // when an opener refuses, shown whether or not it
-                            // did.
-                            cx.open_with_system(&transfer.directory.join(&name));
-                        }
-                        transfer.phase = TransferPhase::Finished { name, mapped };
+                        standing = Some(Standing::Finished);
+                        TransferPhase::Finished { name, mapped }
                     }
                     DownloadOutcome::NameTaken { name } => {
-                        transfer.phase = TransferPhase::NameTaken { name };
+                        standing = Some(Standing::Asking);
+                        TransferPhase::NameTaken { name }
                     }
                     DownloadOutcome::Cancelled => {
-                        transfer.phase = TransferPhase::Cancelled;
+                        standing = Some(Standing::Cancelled);
+                        TransferPhase::Cancelled
                     }
                     DownloadOutcome::Failed(error) => {
-                        transfer.phase = TransferPhase::Failed(error);
+                        standing = Some(Standing::Failed);
+                        TransferPhase::Failed(error)
                     }
-                }
+                };
             }
+        }
+        if let Some(standing) = standing {
+            self.queue.settled(id, standing);
         }
         cx.notify();
         sent
@@ -1667,18 +1780,24 @@ impl CaixonhoApp {
     /// Answer the existing-file question by starting over with the answer.
     fn answer_collision(
         &mut self,
+        id: TransferId,
         collision: caixonho_core::transfer::Collision,
         cx: &mut Context<Self>,
     ) {
-        let Some(transfer) = self.transfer.take() else {
+        let Some(transfer) = self.queue.payload_mut(id) else {
             return;
         };
-        self.start_download(
-            transfer.bucket,
-            transfer.key,
-            transfer.directory,
-            collision,
+        let (bucket, key, directory, then_open) = (
+            transfer.bucket.clone(),
+            transfer.key.clone(),
+            transfer.directory.clone(),
             transfer.then_open,
+        );
+        self.queue.answered(id);
+        self.start_download(
+            Some(id),
+            Transfer::down(bucket, key, directory, then_open),
+            collision,
             cx,
         );
     }
@@ -3083,7 +3202,7 @@ impl CaixonhoApp {
             // family of bug as the `h_flex` one in `design-language.md`.
             .child(v_flex().flex_1().min_h_0().child(body))
             .children(self.destination_line(cx))
-            .children(self.transfer_line(cx))
+            .children(self.queue_panel(cx))
             .children(self.deletion_line(cx))
             .children(self.folder_line(cx))
     }
@@ -3558,19 +3677,156 @@ impl CaixonhoApp {
         )
     }
 
-    /// The one transfer, said under the listing it belongs to — a line, not
-    /// a panel: the queue gets a panel, one download gets a sentence
-    /// (`XONHO-0007` tasks 4.1–4.3).
-    fn transfer_line(&self, cx: &Context<Self>) -> Option<AnyElement> {
+    /// The queue, in the slot the single transfer's strip used to hold.
+    ///
+    /// **Where it lives, which `design.md` deliberately left open.** Under the
+    /// listing, in the strip's own place, with its height capped and its rows
+    /// scrolling inside it. The constraint the design set was that a queue of
+    /// twenty must not hide what the user is browsing — and a capped box costs
+    /// the same screen for twenty as for two, which is the only shape that
+    /// satisfies it without inventing an expand-and-collapse the rest of this
+    /// window has no precedent for.
+    ///
+    /// Absent entirely when there is nothing in it: an empty frame is a
+    /// permanent grey box nobody asked for.
+    fn queue_panel(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        if self.queue.is_empty() {
+            return None;
+        }
+        let (finished, total) = self.queue.progress();
+        let rows: Vec<AnyElement> = self
+            .queue
+            .items()
+            .iter()
+            .filter_map(|item| self.transfer_row(item.id, &item.payload, cx))
+            .collect();
+
+        Some(
+            v_flex()
+                .debug_selector(|| "queue-panel".into())
+                .w_full()
+                .gap(space::TIGHT)
+                .child(
+                    h_flex()
+                        .w_full()
+                        .items_center()
+                        .gap(space::TIGHT)
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(format!("{finished} of {total} transferred")),
+                        )
+                        .child(div().flex_1())
+                        .child(
+                            Button::new("queue-retry")
+                                .label("Retry failed")
+                                .ghost()
+                                .on_click(cx.listener(|app, _, _, cx| {
+                                    app.queue.retry_failed();
+                                    app.start_ready(cx);
+                                })),
+                        )
+                        .child(
+                            Button::new("queue-clear")
+                                .label("Clear finished")
+                                .ghost()
+                                .on_click(cx.listener(|app, _, _, cx| {
+                                    app.queue.clear_finished();
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Button::new("queue-cancel")
+                                .label("Cancel all")
+                                .ghost()
+                                .on_click(cx.listener(|app, _, _, cx| app.cancel_queue(cx))),
+                        ),
+                )
+                .child(
+                    v_flex()
+                        .w_full()
+                        .max_h(px(180.))
+                        .overflow_hidden()
+                        .gap(space::TIGHT)
+                        .children(rows),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// Stop everything not yet finished.
+    ///
+    /// The queue's own record first, then each running transfer's `Cancel` —
+    /// order matters only in that both must happen: marking without
+    /// cancelling leaves bytes moving for a transfer the screen calls stopped.
+    fn cancel_queue(&mut self, cx: &mut Context<Self>) {
+        for item in self.queue.items() {
+            if !matches!(
+                item.standing,
+                Standing::Finished | Standing::Failed | Standing::Cancelled
+            ) {
+                item.payload.cancel.cancel();
+            }
+        }
+        self.queue.cancel_all();
+        for item in self.queue.items() {
+            let _ = item;
+        }
+        cx.notify();
+    }
+
+    /// Start whatever the queue says may begin.
+    fn start_ready(&mut self, cx: &mut Context<Self>) {
+        for id in self.queue.ready() {
+            let Some(transfer) = self.queue.payload_mut(id) else {
+                continue;
+            };
+            let (bucket, key, directory, then_open, source) = (
+                transfer.bucket.clone(),
+                transfer.key.clone(),
+                transfer.directory.clone(),
+                transfer.then_open,
+                transfer.source.clone(),
+            );
+            match source {
+                Some(path) => self.start_upload(
+                    Some(id),
+                    bucket,
+                    key,
+                    path,
+                    caixonho_core::transfer::Collision::Ask,
+                    cx,
+                ),
+                None => self.start_download(
+                    Some(id),
+                    Transfer::down(bucket, key, directory, then_open),
+                    caixonho_core::transfer::Collision::Ask,
+                    cx,
+                ),
+            }
+        }
+    }
+
+    /// One transfer's own row: what it is doing, and what can be done to it.
+    ///
+    /// Was `transfer_line`, rendering *the* transfer. It renders *a* transfer
+    /// now and takes which one, because with a queue the phrase "the transfer"
+    /// has no referent (`XONHO-0028`).
+    fn transfer_row(
+        &self,
+        id: TransferId,
+        transfer: &Transfer,
+        cx: &Context<Self>,
+    ) -> Option<AnyElement> {
         use caixonho_core::transfer::MappingOutcome;
-        let transfer = self.transfer.as_ref()?;
 
         let dismiss = || {
-            Button::new("transfer-dismiss")
+            Button::new(("transfer-dismiss", id.0 as usize))
                 .label("Dismiss")
                 .ghost()
-                .on_click(cx.listener(|app, _, _, cx| {
-                    app.transfer = None;
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    app.queue.forget(id);
                     cx.notify();
                 }))
         };
@@ -3606,7 +3862,7 @@ impl CaixonhoApp {
                 .child(div().flex_1())
                 .child(
                     div().debug_selector(|| "transfer-cancel".into()).child(
-                        Button::new("transfer-cancel")
+                        Button::new(("transfer-cancel", id.0 as usize))
                             .label("Cancel")
                             .ghost()
                             .on_click({
@@ -3628,27 +3884,35 @@ impl CaixonhoApp {
                 )
                 .child(div().flex_1())
                 .child(
-                    Button::new("collision-replace")
+                    Button::new(("collision-replace", id.0 as usize))
                         .label("Replace")
                         .ghost()
-                        .on_click(cx.listener(|app, _, _, cx| {
-                            app.answer_collision(caixonho_core::transfer::Collision::Replace, cx)
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            app.answer_collision(
+                                id,
+                                caixonho_core::transfer::Collision::Replace,
+                                cx,
+                            )
                         })),
                 )
                 .child(
-                    Button::new("collision-keep-both")
+                    Button::new(("collision-keep-both", id.0 as usize))
                         .label("Keep both")
                         .ghost()
-                        .on_click(cx.listener(|app, _, _, cx| {
-                            app.answer_collision(caixonho_core::transfer::Collision::KeepBoth, cx)
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            app.answer_collision(
+                                id,
+                                caixonho_core::transfer::Collision::KeepBoth,
+                                cx,
+                            )
                         })),
                 )
                 .child(
-                    Button::new("collision-abandon")
+                    Button::new(("collision-abandon", id.0 as usize))
                         .label("Cancel")
                         .ghost()
-                        .on_click(cx.listener(|app, _, _, cx| {
-                            app.transfer = None;
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            app.queue.forget(id);
                             cx.notify();
                         })),
                 )
@@ -3703,33 +3967,38 @@ impl CaixonhoApp {
                     )
                     .child(div().flex_1())
                     .child(
-                        Button::new("key-replace")
+                        Button::new(("key-replace", id.0 as usize))
                             .label("Replace")
                             .ghost()
-                            .on_click(cx.listener(|app, _, _, cx| {
+                            .on_click(cx.listener(move |app, _, _, cx| {
                                 app.answer_key_collision(
+                                    id,
                                     caixonho_core::transfer::Collision::Replace,
                                     cx,
                                 )
                             })),
                     )
                     .child(
-                        Button::new("key-keep-both")
+                        Button::new(("key-keep-both", id.0 as usize))
                             .label("Keep both")
                             .ghost()
-                            .on_click(cx.listener(|app, _, _, cx| {
+                            .on_click(cx.listener(move |app, _, _, cx| {
                                 app.answer_key_collision(
+                                    id,
                                     caixonho_core::transfer::Collision::KeepBoth,
                                     cx,
                                 )
                             })),
                     )
-                    .child(Button::new("key-abandon").label("Cancel").ghost().on_click(
-                        cx.listener(|app, _, _, cx| {
-                            app.transfer = None;
-                            cx.notify();
-                        }),
-                    ))
+                    .child(
+                        Button::new(("key-abandon", id.0 as usize))
+                            .label("Cancel")
+                            .ghost()
+                            .on_click(cx.listener(move |app, _, _, cx| {
+                                app.queue.forget(id);
+                                cx.notify();
+                            })),
+                    )
                     .into_any_element()
             }
             TransferPhase::ConditionUnsupported { key } => h_flex()
@@ -3748,8 +4017,9 @@ impl CaixonhoApp {
                     Button::new("send-anyway")
                         .label("Send anyway")
                         .ghost()
-                        .on_click(cx.listener(|app, _, _, cx| {
+                        .on_click(cx.listener(move |app, _, _, cx| {
                             app.answer_key_collision(
+                                id,
                                 caixonho_core::transfer::Collision::Replace,
                                 cx,
                             )
@@ -3759,8 +4029,8 @@ impl CaixonhoApp {
                     Button::new("unsupported-abandon")
                         .label("Cancel")
                         .ghost()
-                        .on_click(cx.listener(|app, _, _, cx| {
-                            app.transfer = None;
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            app.queue.forget(id);
                             cx.notify();
                         })),
                 )
@@ -4550,19 +4820,23 @@ mod tests {
     fn a_download_reports_progress_and_then_that_it_finished(cx: &mut TestAppContext) {
         let (app, cx) = looking_at(cx, "reports");
         app.update(cx, |app, cx| {
-            app.transfer = Some(Transfer {
-                bucket: "reports".into(),
-                key: "daily/summary.csv".into(),
-                directory: std::env::temp_dir(),
-                then_open: false,
-                direction: Direction::Down,
-                source: None,
-                bytes: 0,
-                total: None,
-                cancel: caixonho_core::transfer::Cancel::default(),
-                phase: TransferPhase::Running,
-            });
+            let id = queued(
+                app,
+                Transfer {
+                    bucket: "reports".into(),
+                    key: "daily/summary.csv".into(),
+                    directory: std::env::temp_dir(),
+                    then_open: false,
+                    direction: Direction::Down,
+                    source: None,
+                    bytes: 0,
+                    total: None,
+                    cancel: caixonho_core::transfer::Cancel::default(),
+                    phase: TransferPhase::Running,
+                },
+            );
             app.apply_transfer(
+                id,
                 TransferEvent::Progress {
                     bytes: 512,
                     total: Some(1024),
@@ -4571,13 +4845,15 @@ mod tests {
             );
         });
         app.read_with(cx, |app, _| {
-            let transfer = app.transfer.as_ref().expect("still on screen");
+            let transfer = only(app);
             assert_eq!((transfer.bytes, transfer.total), (512, Some(1024)));
             assert!(matches!(transfer.phase, TransferPhase::Running));
         });
 
         app.update(cx, |app, cx| {
+            let id = only_id(app);
             app.apply_transfer(
+                id,
                 TransferEvent::Settled(caixonho_core::transfer::DownloadOutcome::Finished {
                     name: "summary.csv".into(),
                     mapped: caixonho_core::transfer::MappingOutcome::Unchanged,
@@ -4587,10 +4863,7 @@ mod tests {
             );
         });
         app.read_with(cx, |app, _| {
-            let transfer = app
-                .transfer
-                .as_ref()
-                .expect("the line stays for the report");
+            let transfer = only(app);
             match &transfer.phase {
                 TransferPhase::Finished { name, .. } => assert_eq!(name, "summary.csv"),
                 other => panic!(
@@ -4607,14 +4880,17 @@ mod tests {
     fn a_settlement_after_dismissal_is_dropped(cx: &mut TestAppContext) {
         let (app, cx) = looking_at(cx, "reports");
         app.update(cx, |app, cx| {
-            app.transfer = None;
+            let id = queued(app, an_upload(TransferPhase::Running));
+            // Dismissed, and *then* the answer arrives.
+            app.queue.forget(id);
             app.apply_transfer(
+                id,
                 TransferEvent::Settled(caixonho_core::transfer::DownloadOutcome::Cancelled),
                 cx,
             );
         });
         app.read_with(cx, |app, _| {
-            assert!(app.transfer.is_none(), "nothing came back from the dead");
+            assert!(app.queue.is_empty(), "nothing came back from the dead");
         });
     }
 
@@ -4625,30 +4901,58 @@ mod tests {
     fn answering_a_collision_reissues_the_download(cx: &mut TestAppContext) {
         let (app, cx) = looking_at(cx, "reports");
         app.update(cx, |app, cx| {
-            app.transfer = Some(Transfer {
-                bucket: "reports".into(),
-                key: "daily/summary.csv".into(),
-                directory: std::env::temp_dir(),
-                then_open: false,
-                direction: Direction::Down,
-                source: None,
-                bytes: 0,
-                total: None,
-                cancel: caixonho_core::transfer::Cancel::default(),
-                phase: TransferPhase::NameTaken {
-                    name: "summary.csv".into(),
+            let id = queued(
+                app,
+                Transfer {
+                    bucket: "reports".into(),
+                    key: "daily/summary.csv".into(),
+                    directory: std::env::temp_dir(),
+                    then_open: false,
+                    direction: Direction::Down,
+                    source: None,
+                    bytes: 0,
+                    total: None,
+                    cancel: caixonho_core::transfer::Cancel::default(),
+                    phase: TransferPhase::NameTaken {
+                        name: "summary.csv".into(),
+                    },
                 },
-            });
-            app.answer_collision(caixonho_core::transfer::Collision::KeepBoth, cx);
+            );
+            app.answer_collision(id, caixonho_core::transfer::Collision::KeepBoth, cx);
         });
         app.read_with(cx, |app, _| {
-            let transfer = app.transfer.as_ref().expect("reissued");
+            let transfer = only(app);
             assert!(matches!(transfer.phase, TransferPhase::Running));
             assert_eq!(transfer.key, "daily/summary.csv", "the same object");
         });
     }
 
     // ---- Uploading (XONHO-0020 tasks 4.1–4.2) ----
+
+    /// Put one transfer in the queue, running, and return its id.
+    ///
+    /// Every test below used to assign `app.transfer`; with a queue the same
+    /// intent is "the window has taken this on", and the id is what the
+    /// assertions and the collision answers now need.
+    fn queued(app: &mut CaixonhoApp, transfer: Transfer) -> TransferId {
+        let id = app.queue.accept(transfer);
+        app.queue.settled(id, Standing::Running);
+        id
+    }
+
+    /// The id of the one transfer a single-transfer test put in the queue.
+    fn only_id(app: &CaixonhoApp) -> TransferId {
+        app.queue.items().first().expect("one transfer queued").id
+    }
+
+    /// The one transfer a single-transfer test put in the queue.
+    fn only(app: &CaixonhoApp) -> &Transfer {
+        &app.queue
+            .items()
+            .first()
+            .expect("one transfer queued")
+            .payload
+    }
 
     fn an_upload(phase: TransferPhase) -> Transfer {
         Transfer {
@@ -4672,13 +4976,16 @@ mod tests {
     fn answering_a_taken_key_resends_the_same_file_to_the_same_key(cx: &mut TestAppContext) {
         let (app, cx) = looking_at(cx, "reports");
         app.update(cx, |app, cx| {
-            app.transfer = Some(an_upload(TransferPhase::KeyTaken {
-                key: "daily/summary.csv".into(),
-            }));
-            app.answer_key_collision(caixonho_core::transfer::Collision::KeepBoth, cx);
+            let id = queued(
+                app,
+                an_upload(TransferPhase::KeyTaken {
+                    key: "daily/summary.csv".into(),
+                }),
+            );
+            app.answer_key_collision(id, caixonho_core::transfer::Collision::KeepBoth, cx);
         });
         app.read_with(cx, |app, _| {
-            let transfer = app.transfer.as_ref().expect("reissued");
+            let transfer = only(app);
             assert!(matches!(transfer.phase, TransferPhase::Running));
             assert_eq!(transfer.key, "daily/summary.csv");
             assert_eq!(transfer.direction, Direction::Up);
@@ -4719,11 +5026,12 @@ mod tests {
 
         for (outcome, expected) in cases {
             app.update(cx, |app, cx| {
-                app.transfer = Some(an_upload(TransferPhase::Running));
-                app.apply_transfer(TransferEvent::UploadSettled(outcome), cx);
+                app.queue = Queue::new(TRANSFERS_AT_ONCE);
+                let id = queued(app, an_upload(TransferPhase::Running));
+                app.apply_transfer(id, TransferEvent::UploadSettled(outcome), cx);
             });
             app.read_with(cx, |app, _| {
-                let phase = &app.transfer.as_ref().expect("held").phase;
+                let phase = &only(app).phase;
                 assert_eq!(phase_name(phase), expected);
             });
         }
@@ -4735,8 +5043,9 @@ mod tests {
     fn stepping_aside_is_carried_into_the_phase(cx: &mut TestAppContext) {
         let (app, cx) = looking_at(cx, "reports");
         app.update(cx, |app, cx| {
-            app.transfer = Some(an_upload(TransferPhase::Running));
+            let id = queued(app, an_upload(TransferPhase::Running));
             app.apply_transfer(
+                id,
                 TransferEvent::UploadSettled(caixonho_core::transfer::UploadOutcome::Finished {
                     key: "daily/summary (2).csv".into(),
                     stepped_aside: true,
@@ -4745,14 +5054,12 @@ mod tests {
                 cx,
             );
         });
-        app.read_with(cx, |app, _| {
-            match &app.transfer.as_ref().expect("held").phase {
-                TransferPhase::Sent { key, stepped_aside } => {
-                    assert_eq!(key, "daily/summary (2).csv");
-                    assert!(stepped_aside, "the window must know to say so");
-                }
-                other => panic!("expected Sent, got {}", phase_name(other)),
+        app.read_with(cx, |app, _| match &only(app).phase {
+            TransferPhase::Sent { key, stepped_aside } => {
+                assert_eq!(key, "daily/summary (2).csv");
+                assert!(stepped_aside, "the window must know to say so");
             }
+            other => panic!("expected Sent, got {}", phase_name(other)),
         });
     }
 
@@ -5609,18 +5916,21 @@ mod tests {
             |app, _, cx| {
                 inside(app, cx);
                 app.listing = Listing::Loaded;
-                app.transfer = Some(Transfer {
-                    bucket: "reports".into(),
-                    key: "daily/totals.parquet".into(),
-                    directory: std::env::temp_dir(),
-                    then_open: false,
-                    direction: Direction::Down,
-                    source: None,
-                    bytes: 2_411_724,
-                    total: Some(4_919_233),
-                    cancel: caixonho_core::transfer::Cancel::default(),
-                    phase: TransferPhase::Running,
-                });
+                queued(
+                    app,
+                    Transfer {
+                        bucket: "reports".into(),
+                        key: "daily/totals.parquet".into(),
+                        directory: std::env::temp_dir(),
+                        then_open: false,
+                        direction: Direction::Down,
+                        source: None,
+                        bytes: 2_411_724,
+                        total: Some(4_919_233),
+                        cancel: caixonho_core::transfer::Cancel::default(),
+                        phase: TransferPhase::Running,
+                    },
+                );
             },
         ));
 
@@ -5630,20 +5940,23 @@ mod tests {
             |app, _, cx| {
                 inside(app, cx);
                 app.listing = Listing::Loaded;
-                app.transfer = Some(Transfer {
-                    bucket: "reports".into(),
-                    key: "daily/summary.csv".into(),
-                    directory: std::env::temp_dir(),
-                    then_open: false,
-                    direction: Direction::Down,
-                    source: None,
-                    bytes: 0,
-                    total: None,
-                    cancel: caixonho_core::transfer::Cancel::default(),
-                    phase: TransferPhase::NameTaken {
-                        name: "summary.csv".into(),
+                queued(
+                    app,
+                    Transfer {
+                        bucket: "reports".into(),
+                        key: "daily/summary.csv".into(),
+                        directory: std::env::temp_dir(),
+                        then_open: false,
+                        direction: Direction::Down,
+                        source: None,
+                        bytes: 0,
+                        total: None,
+                        cancel: caixonho_core::transfer::Cancel::default(),
+                        phase: TransferPhase::NameTaken {
+                            name: "summary.csv".into(),
+                        },
                     },
-                });
+                );
             },
         ));
 
@@ -5655,20 +5968,23 @@ mod tests {
             |app, _, cx| {
                 inside(app, cx);
                 app.listing = Listing::Loaded;
-                app.transfer = Some(Transfer {
-                    bucket: "reports".into(),
-                    key: "daily/summary.csv".into(),
-                    directory: std::env::temp_dir(),
-                    then_open: false,
-                    direction: Direction::Up,
-                    source: Some(std::env::temp_dir().join("summary.csv")),
-                    bytes: 0,
-                    total: Some(20_184),
-                    cancel: caixonho_core::transfer::Cancel::default(),
-                    phase: TransferPhase::KeyTaken {
+                queued(
+                    app,
+                    Transfer {
+                        bucket: "reports".into(),
                         key: "daily/summary.csv".into(),
+                        directory: std::env::temp_dir(),
+                        then_open: false,
+                        direction: Direction::Up,
+                        source: Some(std::env::temp_dir().join("summary.csv")),
+                        bytes: 0,
+                        total: Some(20_184),
+                        cancel: caixonho_core::transfer::Cancel::default(),
+                        phase: TransferPhase::KeyTaken {
+                            key: "daily/summary.csv".into(),
+                        },
                     },
-                });
+                );
             },
         ));
 
@@ -5678,20 +5994,23 @@ mod tests {
             |app, _, cx| {
                 inside(app, cx);
                 app.listing = Listing::Loaded;
-                app.transfer = Some(Transfer {
-                    bucket: "reports".into(),
-                    key: "daily/summary.csv".into(),
-                    directory: std::env::temp_dir(),
-                    then_open: false,
-                    direction: Direction::Up,
-                    source: Some(std::env::temp_dir().join("summary.csv")),
-                    bytes: 0,
-                    total: Some(20_184),
-                    cancel: caixonho_core::transfer::Cancel::default(),
-                    phase: TransferPhase::ConditionUnsupported {
+                queued(
+                    app,
+                    Transfer {
+                        bucket: "reports".into(),
                         key: "daily/summary.csv".into(),
+                        directory: std::env::temp_dir(),
+                        then_open: false,
+                        direction: Direction::Up,
+                        source: Some(std::env::temp_dir().join("summary.csv")),
+                        bytes: 0,
+                        total: Some(20_184),
+                        cancel: caixonho_core::transfer::Cancel::default(),
+                        phase: TransferPhase::ConditionUnsupported {
+                            key: "daily/summary.csv".into(),
+                        },
                     },
-                });
+                );
             },
         ));
 
@@ -6466,7 +6785,7 @@ mod tests {
         });
 
         app.read_with(cx, |app, _| {
-            let transfer = app.transfer.as_ref().expect("an upload was started");
+            let transfer = only(app);
             assert_eq!(
                 (transfer.bucket.as_str(), transfer.key.as_str()),
                 ("reports", "uploads/2026/renamed.txt"),
@@ -6508,7 +6827,7 @@ mod tests {
                         .is_some_and(|choosing| choosing.refused.is_some()),
                     "`{bad}` should have been refused with a reason"
                 );
-                assert!(app.transfer.is_none(), "`{bad}` started an upload");
+                assert!(app.queue.is_empty(), "`{bad}` started an upload");
             });
         }
     }
@@ -6806,12 +7125,13 @@ mod tests {
     fn a_finished_upload_re_reads_the_location(cx: &mut TestAppContext) {
         let (app, cx) = looking_at(cx, "reports");
         app.update(cx, |app, _| {
-            app.transfer = Some(an_upload(TransferPhase::Running));
+            queued(app, an_upload(TransferPhase::Running));
             app.listing = Listing::Loaded;
         });
 
         let refreshed = app.update_in(cx, |app, window, cx| {
             let sent = app.apply_transfer(
+                only_id(app),
                 TransferEvent::UploadSettled(caixonho_core::transfer::UploadOutcome::Finished {
                     key: "test-folder/images.jpeg".into(),
                     stepped_aside: false,
@@ -6847,14 +7167,19 @@ mod tests {
     fn a_finished_download_does_not_re_read_the_location(cx: &mut TestAppContext) {
         let (app, cx) = looking_at(cx, "reports");
         app.update(cx, |app, _| {
-            app.transfer = Some(Transfer {
-                direction: Direction::Down,
-                ..an_upload(TransferPhase::Running)
-            });
+            queued(
+                app,
+                Transfer {
+                    direction: Direction::Down,
+                    ..an_upload(TransferPhase::Running)
+                },
+            );
         });
 
         let refreshed = app.update(cx, |app, cx| {
+            let id = only_id(app);
             app.apply_transfer(
+                id,
                 TransferEvent::Settled(caixonho_core::transfer::DownloadOutcome::Finished {
                     name: "summary.csv".into(),
                     mapped: caixonho_core::transfer::MappingOutcome::Unchanged,
