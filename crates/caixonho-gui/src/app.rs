@@ -394,6 +394,22 @@ impl Transfer {
     }
 }
 
+/// Where a finished download should be handed over, if it should be.
+///
+/// Its own function because the handing itself cannot be tested: gpui's test
+/// platform answers `open_with_system` with `not implemented`
+/// (`platform/test/platform.rs:582`), so any window test that reaches that
+/// line panics. The panic is at least honest — it proves the call is real —
+/// but it means **no test can cover the last step**, so the step before it is
+/// made small, pure and covered instead.
+///
+/// The name comes from the outcome rather than the key: `mapped` may have
+/// changed it to avoid a collision, and joining the key would name a file
+/// that is not there.
+fn opens_at(transfer: &Transfer, name: &str) -> Option<std::path::PathBuf> {
+    transfer.then_open.then(|| transfer.directory.join(name))
+}
+
 /// Whether this dragged thing is something the window can take.
 ///
 /// Used by `can_drop`, by the drag-over styling and by the drop handler, so
@@ -1872,6 +1888,9 @@ impl CaixonhoApp {
         cx: &mut Context<Self>,
     ) -> bool {
         let mut sent = false;
+        // Set by a finished download that was asked to open, and acted on
+        // after the borrow ends.
+        let mut opened: Option<std::path::PathBuf> = None;
         let Some(transfer) = self.queue.payload_mut(id) else {
             return false;
         };
@@ -1911,6 +1930,12 @@ impl CaixonhoApp {
                         bytes,
                     } => {
                         transfer.bytes = bytes;
+                        // Hand it over, which is what `then_open` has always
+                        // claimed and never did. The path is the directory it
+                        // landed in plus the name it landed under — `mapped`
+                        // may have changed that name, so it is read from the
+                        // outcome rather than from the key.
+                        opened = opens_at(transfer, &name);
                         TransferPhase::Finished { name, mapped }
                     }
                     DownloadOutcome::NameTaken { name } => TransferPhase::NameTaken { name },
@@ -1929,6 +1954,9 @@ impl CaixonhoApp {
             .and_then(|item| item.payload.phase.standing())
         {
             self.queue.settled(id, standing);
+        }
+        if let Some(path) = opened {
+            cx.open_with_system(&path);
         }
         cx.notify();
         sent
@@ -4129,6 +4157,14 @@ impl CaixonhoApp {
                     // platform, so the where is always said: this line is the
                     // spec's "the file exists and the report says where it
                     // is", shown whether or not the opener obliged.
+                    //
+                    // That reasoning was sound and the sentence was still a
+                    // lie, because until 2026-08-27 **nothing called the
+                    // opener at all**. `then_open` was stored, passed around,
+                    // and read only here, to choose these words. A
+                    // justification for behaviour that did not exist, and it
+                    // read plausibly enough that nobody went looking. The
+                    // owner found it by pressing Open.
                     (true, _) => format!("Downloaded `{name}` and handed it to the system."),
                     (false, MappingOutcome::Unchanged) => format!("Downloaded `{name}`."),
                     // §4.4: every substitution is reported, not silently
@@ -7643,5 +7679,55 @@ mod tests {
             "nothing dropped is not a drop"
         );
         assert!(droppable_paths(&[folder]).is_err());
+    }
+
+    /// The bug the owner found by pressing Open: the file downloaded, the
+    /// strip said it had been handed to the system, and nothing opened.
+    ///
+    /// `then_open` was stored, passed around, and read only to choose that
+    /// sentence — a justification for behaviour that did not exist.
+    ///
+    /// This covers everything up to the handing over. The handing itself is
+    /// `cx.open_with_system`, and gpui's test platform answers it with
+    /// `not implemented`, so no window test can reach it without panicking.
+    /// Named rather than papered over.
+    #[gpui::test]
+    fn a_download_asked_to_open_names_where_to_open(_cx: &mut TestAppContext) {
+        let cache = std::env::temp_dir().join("caixonho-open-check");
+        let asked = Transfer {
+            bucket: "reports".into(),
+            key: "daily/summary.csv".into(),
+            directory: cache.clone(),
+            then_open: true,
+            direction: Direction::Down,
+            source: None,
+            bytes: 0,
+            total: None,
+            cancel: caixonho_core::transfer::Cancel::default(),
+            phase: TransferPhase::Running,
+        };
+
+        assert_eq!(
+            opens_at(&asked, "summary.csv"),
+            Some(cache.join("summary.csv")),
+            "the path handed over is where it landed under the name it landed as"
+        );
+
+        // The name comes from the outcome, not the key: a collision may have
+        // renamed it, and joining the key would name a file that is not there.
+        assert_eq!(
+            opens_at(&asked, "summary (2).csv"),
+            Some(cache.join("summary (2).csv"))
+        );
+
+        let plain = Transfer {
+            then_open: false,
+            ..asked
+        };
+        assert_eq!(
+            opens_at(&plain, "summary.csv"),
+            None,
+            "a plain download opens nothing"
+        );
     }
 }

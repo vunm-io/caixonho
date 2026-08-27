@@ -310,3 +310,38 @@
     the second question read the wide way: rows either side of this change's
     own in every status table.
   - Verification: the recorded findings
+
+- [x] 6.4 Open never opened anything [dispatch: main]
+      - **Found live by the owner on 2026-08-27, and it is the worst kind of
+        defect this project can ship: the application said something untrue
+        about itself.** They pressed `Open`, the object downloaded, the strip
+        read *"Downloaded `images.jpeg` and handed it to the system"*, and
+        nothing opened.
+      - `then_open` was set, carried through every constructor, threaded into
+        the queue by `XONHO-0028` — and read in exactly **one** place: the
+        `match` that chooses those words. Nothing in `crates/` called an
+        opener at all. Grepped, not assumed: the only open-anything call in
+        the workspace was `open_url` for the sign-in page.
+      - **The comment beside it is the part worth keeping.** It argued that
+        *"the opener's own failure is invisible to gpui on every platform, so
+        the where is always said"* — sound reasoning about a failure mode that
+        could not occur, because the opener was never invoked. It reads
+        plausibly, which is why nobody looked. The same shape as
+        `XONHO-0025`'s note claiming a test that did not exist: a confident
+        sentence is where an absence hides.
+      - Not a framework limit. `gpui` has `open_with_system(&Path)` beside the
+        `reveal_path` this window already used for **Reveal** — the button
+        next to Open worked, and Open did not.
+      - Fixed by calling it, with the path from `opens_at`: the directory it
+        landed in joined with the name from the *outcome*, because `mapped`
+        may have renamed it to avoid a collision and joining the key would
+        name a file that is not there.
+      - **No test can cover the last step**, and this is worth knowing before
+        someone tries: gpui's test platform answers `open_with_system` with
+        `not implemented` (`platform/test/platform.rs:582`), so a window test
+        reaching that line panics. The panic is at least honest — it proves
+        the call is real. `opens_at` is therefore small, pure and covered, and
+        the one line past it is not.
+  - Paths: `crates/caixonho-gui/src/app.rs`
+  - Verification: `cargo test -p caixonho-gui`
+
