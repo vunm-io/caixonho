@@ -543,6 +543,28 @@ pub(crate) fn delete_settled(bucket: &str, marker: bool, cause: Option<&crate::e
     }
 }
 
+/// What one walk under a prefix came to (`XONHO-0030`).
+///
+/// The count is logged where it is decided, for `location_settled`'s reason:
+/// a log that disagrees with the number on the confirmation is worse than no
+/// log at all — and this is the number somebody said yes to.
+pub(crate) fn walk_settled(bucket: &str, prefix: &str, tally: &crate::session::Tally) {
+    match tally {
+        crate::session::Tally::All(keys) => {
+            tracing::info!(bucket, prefix, keys = keys.len(), "walked a prefix");
+        }
+        crate::session::Tally::TooMany { at_least } => {
+            tracing::info!(bucket, prefix, at_least, "prefix too large to walk");
+        }
+        crate::session::Tally::Cancelled => {
+            tracing::info!(bucket, prefix, "walk cancelled");
+        }
+        crate::session::Tally::Failed(error) => {
+            tracing::warn!(bucket, prefix, cause = %error, "walk failed");
+        }
+    }
+}
+
 /// What one undo came to (`XONHO-0021`).
 pub(crate) fn undo_settled(bucket: &str, cause: Option<&crate::error::Error>) {
     match cause {

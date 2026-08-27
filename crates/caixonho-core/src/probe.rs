@@ -494,6 +494,14 @@ pub(crate) mod double {
         ) -> Result<crate::types::Page> {
             Ok(crate::types::Page::default())
         }
+
+        async fn list_keys_under(
+            &self,
+            _location: &crate::types::Location,
+            _cursor: Option<&crate::types::Cursor>,
+        ) -> Result<crate::types::KeyPage> {
+            Ok(crate::types::KeyPage::default())
+        }
     }
 
     /// Wait for `condition`, failing loudly rather than hanging if it never

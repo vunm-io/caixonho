@@ -14,7 +14,7 @@
 
 ## 1. Counting what a folder holds
 
-- [ ] 1.1 Count the objects under a prefix [dispatch: main]
+- [x] 1.1 Count the objects under a prefix [dispatch: main]
   - Paths: `crates/caixonho-core/src/store.rs`,
     `crates/caixonho-core/src/session.rs`
   - Done criteria: something that walks a prefix and reports how many objects

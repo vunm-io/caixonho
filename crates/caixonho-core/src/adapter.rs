@@ -30,7 +30,8 @@ use crate::listing;
 use crate::store::ObjectStore;
 use crate::store::{Deleted, IfAbsent, ObjectContent, ObjectHead, ObjectRead, PutOutcome};
 use crate::types::{
-    AccountListing, Bucket, BucketKind, Cursor, Location, Object, Page, RefusedListing, Region,
+    AccountListing, Bucket, BucketKind, Cursor, KeyPage, Location, Object, Page, RefusedListing,
+    Region,
 };
 
 /// The IAM action a bucket listing needs, named in denial messages.
@@ -326,12 +327,72 @@ impl S3ObjectStore {
         location: &Location,
         cursor: Option<&Cursor>,
         region: Option<&Region>,
+        grouping: Grouping,
     ) -> std::result::Result<ListObjectsV2Output, SdkError<ListObjectsV2Error, HttpResponse>> {
         let client = match region {
             Some(region) => self.client_for(region),
             None => self.client.clone(),
         };
-        list_objects_request(&client, location, cursor).send().await
+        list_objects_request(&client, location, cursor, grouping)
+            .send()
+            .await
+    }
+
+    /// One page of `location`, following a redirect once.
+    ///
+    /// Extracted so that the flat listing gets the *same* redirect handling
+    /// as the browsing one rather than a second copy of it — a bucket in
+    /// another region does not become a different problem because the caller
+    /// wanted keys instead of folders. Returns the region the service named,
+    /// when it named one.
+    async fn read_page_wherever_it_lives(
+        &self,
+        location: &Location,
+        cursor: Option<&Cursor>,
+        grouping: Grouping,
+    ) -> Result<(ListObjectsV2Output, Option<Region>)> {
+        // A bucket this connection has already been redirected about is
+        // addressed to its own region from the start. Discovering it once and
+        // then paying for the redirect on every page afterwards would make
+        // the discovery worth nothing.
+        let addressed_to = self.region_learned_for(&location.bucket);
+
+        match self
+            .read_page(location, cursor, addressed_to.as_ref(), grouping)
+            .await
+        {
+            Ok(answer) => Ok((answer, None)),
+            Err(error) => {
+                let failure = SdkFailure::from_sdk(&error);
+                // Asked before it is classified, because a redirect that
+                // names a region is not a failure yet — it is a call that has
+                // been told where to go.
+                let Some(region) = failure.redirect_region() else {
+                    return Err(self.read_failure(&failure, location, addressed_to.as_ref()));
+                };
+                let region = Region::Known(region.to_owned());
+
+                // Once. The reissue below is addressed to the region the
+                // service itself named, so a second redirect is the service
+                // contradicting itself, and following it again would turn a
+                // wrong region into a request that never settles.
+                let answer = self
+                    .read_page(location, cursor, Some(&region), grouping)
+                    .await
+                    .map_err(|error| {
+                        self.read_failure(&SdkFailure::from_sdk(&error), location, Some(&region))
+                    })?;
+
+                // Remembered only after a read that worked. A region that
+                // answered nothing is not knowledge worth keeping, and
+                // storing it would send every later page somewhere this
+                // connection has never successfully reached.
+                if let Region::Known(name) = &region {
+                    self.remember_region(&location.bucket, name);
+                }
+                Ok((answer, Some(region)))
+            }
+        }
     }
 
     /// What a failed read of `location`, addressed to `region`, means.
@@ -668,48 +729,9 @@ impl ObjectStore for S3ObjectStore {
     }
 
     async fn list_objects(&self, location: &Location, cursor: Option<&Cursor>) -> Result<Page> {
-        // A bucket this connection has already been redirected about is
-        // addressed to its own region from the start. Discovering it once and
-        // then paying for the redirect on every page afterwards would make
-        // the discovery worth nothing.
-        let addressed_to = self.region_learned_for(&location.bucket);
-
-        let (answer, served_from) = match self
-            .read_page(location, cursor, addressed_to.as_ref())
-            .await
-        {
-            Ok(answer) => (answer, None),
-            Err(error) => {
-                let failure = SdkFailure::from_sdk(&error);
-                // Asked before it is classified, because a redirect that
-                // names a region is not a failure yet — it is a call that has
-                // been told where to go.
-                let Some(region) = failure.redirect_region() else {
-                    return Err(self.read_failure(&failure, location, addressed_to.as_ref()));
-                };
-                let region = Region::Known(region.to_owned());
-
-                // Once. The reissue below is addressed to the region the
-                // service itself named, so a second redirect is the service
-                // contradicting itself, and following it again would turn a
-                // wrong region into a request that never settles.
-                let answer = self
-                    .read_page(location, cursor, Some(&region))
-                    .await
-                    .map_err(|error| {
-                        self.read_failure(&SdkFailure::from_sdk(&error), location, Some(&region))
-                    })?;
-
-                // Remembered only after a read that worked. A region that
-                // answered nothing is not knowledge worth keeping, and
-                // storing it would send every later page somewhere this
-                // connection has never successfully reached.
-                if let Region::Known(name) = &region {
-                    self.remember_region(&location.bucket, name);
-                }
-                (answer, Some(region))
-            }
-        };
+        let (answer, served_from) = self
+            .read_page_wherever_it_lives(location, cursor, Grouping::ByFolder)
+            .await?;
 
         // Every rule about what a listing shows is applied in `listing`, over
         // the service's own answer — the adapter's job is to hand that answer
@@ -728,6 +750,39 @@ impl ObjectStore for S3ObjectStore {
             served_from,
         ))
     }
+
+    /// Every key under the prefix, ungrouped (`XONHO-0030`).
+    ///
+    /// The same request with the delimiter left off, so the answer carries no
+    /// common prefixes and needs none of `listing`'s rules — those exist to
+    /// turn groupings into folders, and there are no groupings here.
+    ///
+    /// A key that *is* the prefix is dropped. Several tools write a folder as
+    /// a zero-length object whose key ends in the separator, and counting the
+    /// folder's own marker as something inside it would make an empty folder
+    /// report one object.
+    async fn list_keys_under(
+        &self,
+        location: &Location,
+        cursor: Option<&Cursor>,
+    ) -> Result<KeyPage> {
+        let (answer, _) = self
+            .read_page_wherever_it_lives(location, cursor, Grouping::Flat)
+            .await?;
+
+        Ok(KeyPage {
+            keys: answer
+                .contents()
+                .iter()
+                .filter_map(|object| object.key())
+                .filter(|key| *key != location.prefix.as_str())
+                .map(ToOwned::to_owned)
+                .collect(),
+            more: answer
+                .next_continuation_token()
+                .map(|token| Cursor(token.to_owned())),
+        })
+    }
 }
 
 /// The request for one page of a location's contents.
@@ -737,21 +792,36 @@ impl ObjectStore for S3ObjectStore {
 ///
 /// `delimiter` is what makes folders exist at all — without it the service
 /// returns every key beneath the prefix, however deep, and there is nothing to
-/// infer a hierarchy from.
+/// infer a hierarchy from. Both answers are wanted, from the same request:
+/// browsing needs the hierarchy, and counting or deleting a folder needs the
+/// flat pour of keys underneath it (`XONHO-0030`).
 fn list_objects_request(
     client: &Client,
     location: &Location,
     cursor: Option<&Cursor>,
+    grouping: Grouping,
 ) -> ListObjectsV2FluentBuilder {
     let request = client
         .list_objects_v2()
         .bucket(&location.bucket)
-        .delimiter("/")
         .prefix(location.prefix.as_str());
+    let request = match grouping {
+        Grouping::ByFolder => request.delimiter("/"),
+        Grouping::Flat => request,
+    };
     match cursor {
         Some(Cursor(token)) => request.continuation_token(token),
         None => request,
     }
+}
+
+/// Whether a listing asks the service to group keys into folders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Grouping {
+    /// Group by separator: the hierarchy a person browses.
+    ByFolder,
+    /// No separator: every key under the prefix, at every depth.
+    Flat,
 }
 
 /// Map one SDK object to the domain type.
@@ -1748,7 +1818,7 @@ mod tests {
         // hierarchy to infer — the listing would be one flat pour of keys.
         let here = Location::at("photos-bucket", Prefix::parse("holidays/2026"));
 
-        let request = list_objects_request(&client(), &here, None);
+        let request = list_objects_request(&client(), &here, None, Grouping::ByFolder);
 
         assert_eq!(request.get_delimiter(), &Some("/".to_owned()));
         assert_eq!(request.get_prefix(), &Some("holidays/2026/".to_owned()));
@@ -1761,11 +1831,31 @@ mod tests {
     }
 
     #[test]
+    fn counting_a_folder_asks_for_every_key_under_it_with_no_grouping_at_all() {
+        // The mirror of the test above, and the reason both exist: browsing
+        // needs the hierarchy, counting needs the flat pour. A delimiter here
+        // would return the top level and the count would be of that — which
+        // for a folder holding folders is not the number anyone would be
+        // agreeing to delete.
+        let here = Location::at("photos-bucket", Prefix::parse("holidays/2026"));
+
+        let request = list_objects_request(&client(), &here, None, Grouping::Flat);
+
+        assert_eq!(
+            request.get_delimiter(),
+            &None,
+            "a grouped listing hides everything a level down"
+        );
+        assert_eq!(request.get_prefix(), &Some("holidays/2026/".to_owned()));
+        assert_eq!(request.get_bucket(), &Some("photos-bucket".to_owned()));
+    }
+
+    #[test]
     fn continuing_a_listing_hands_the_service_its_own_token_back() {
         let here = Location::bucket("photos-bucket");
         let cursor = Cursor("opaque-token".to_owned());
 
-        let request = list_objects_request(&client(), &here, Some(&cursor));
+        let request = list_objects_request(&client(), &here, Some(&cursor), Grouping::ByFolder);
 
         assert_eq!(
             request.get_continuation_token(),

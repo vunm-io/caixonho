@@ -9,7 +9,7 @@
 
 use crate::capability::Scope;
 use crate::error::Result;
-use crate::types::{AccountListing, Cursor, Location, Page, Region};
+use crate::types::{AccountListing, Cursor, KeyPage, Location, Page, Region};
 
 /// Object-storage operations behind one object-safe async trait.
 ///
@@ -63,6 +63,25 @@ pub trait ObjectStore: Send + Sync {
     /// whole project — an empty folder and a refused one must never be the
     /// same answer.
     async fn list_objects(&self, location: &Location, cursor: Option<&Cursor>) -> Result<Page>;
+
+    /// Read one page of every key under `location`'s prefix, at every depth
+    /// (`XONHO-0030`).
+    ///
+    /// The same call as [`Self::list_objects`] with the delimiter left off,
+    /// which is the whole difference: nothing is grouped, so nothing is
+    /// hidden a level down. A folder *is* the set of keys sharing a
+    /// beginning, so this is the only listing that can say how big one is or
+    /// what deleting it would remove — reading it level by level would count
+    /// the top of the tree and call it the tree.
+    ///
+    /// Paged for [`Self::list_objects`]' reason: the caller has to be able to
+    /// tell "that is all of them" from "that is as far as I got", and a walk
+    /// that quietly stops early would report a total it does not have.
+    async fn list_keys_under(
+        &self,
+        location: &Location,
+        cursor: Option<&Cursor>,
+    ) -> Result<KeyPage>;
 
     /// Read one object's content (`XONHO-0007`).
     ///
@@ -241,7 +260,7 @@ pub mod double {
     use super::ObjectStore;
     use crate::capability::Scope;
     use crate::error::{Error, Result};
-    use crate::types::{AccountListing, Bucket, Cursor, Location, Page, Region};
+    use crate::types::{AccountListing, Bucket, Cursor, KeyPage, Location, Page, Region};
 
     /// A canned [`ObjectStore`] for tests.
     pub struct StoreDouble {
@@ -271,6 +290,15 @@ pub mod double {
         /// How many object reads were served, so a test can assert a path
         /// that promises not to fetch really fetched nothing.
         gets: std::sync::atomic::AtomicU32,
+        /// What the flat listing answers with, page by page. Empty unless a
+        /// test says otherwise. A `Vec` of pages rather than one page because
+        /// the thing worth testing about a walk is that it *continues* — a
+        /// double serving one page forever could only ever prove the first
+        /// step.
+        under: Vec<KeyPage>,
+        /// Every key deleted, in order, so a test can assert which objects a
+        /// bulk delete actually removed rather than only how many.
+        deleted: std::sync::Mutex<Vec<String>>,
     }
 
     enum Outcome {
@@ -337,6 +365,8 @@ pub mod double {
                 removed_markers: std::sync::Mutex::new(Vec::new()),
                 folders_made: std::sync::Mutex::new(Vec::new()),
                 gets: std::sync::atomic::AtomicU32::new(0),
+                under: Vec::new(),
+                deleted: std::sync::Mutex::new(Vec::new()),
             }
         }
 
@@ -345,6 +375,21 @@ pub mod double {
         pub fn listing(mut self, page: Page) -> Self {
             self.page = page;
             self
+        }
+
+        /// The pages the flat listing answers with, in order. Chained the
+        /// same way `listing` is.
+        pub fn under(mut self, pages: Vec<KeyPage>) -> Self {
+            self.under = pages;
+            self
+        }
+
+        /// Every key `delete_object` has been called with, in order.
+        pub fn deleted_keys(&self) -> Vec<String> {
+            self.deleted
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
         }
 
         /// Succeeds with an empty account.
@@ -570,6 +615,8 @@ pub mod double {
                 removed_markers: std::sync::Mutex::new(Vec::new()),
                 folders_made: std::sync::Mutex::new(Vec::new()),
                 gets: std::sync::atomic::AtomicU32::new(0),
+                under: Vec::new(),
+                deleted: std::sync::Mutex::new(Vec::new()),
             }
         }
     }
@@ -620,7 +667,11 @@ pub mod double {
             }
         }
 
-        async fn delete_object(&self, _bucket: &str, _key: &str) -> Result<super::Deleted> {
+        async fn delete_object(&self, _bucket: &str, key: &str) -> Result<super::Deleted> {
+            self.deleted
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(key.to_owned());
             Ok(match &self.removals {
                 Removals::Unversioned => super::Deleted { marker: None },
                 Removals::Versioned(marker) | Removals::MarkerRefused(marker, _) => {
@@ -769,6 +820,41 @@ pub mod double {
                 Outcome::Buckets(_) => Ok(self.page.clone()),
                 Outcome::Fail(make) => Err(make()),
             }
+        }
+
+        /// Serves the scripted pages in order, keyed by the cursor it handed
+        /// out last time. A cursor is `page-<n>`, which is opaque to the
+        /// caller exactly as the service's own token is — a walk that peeked
+        /// inside one would be relying on something the real service never
+        /// promised.
+        async fn list_keys_under(
+            &self,
+            _location: &Location,
+            cursor: Option<&Cursor>,
+        ) -> Result<KeyPage> {
+            if let Outcome::Fail(make) = &self.outcome {
+                return Err(make());
+            }
+            let index = match cursor {
+                None => 0,
+                Some(Cursor(token)) => match token.strip_prefix("page-") {
+                    Some(n) => n.parse::<usize>().unwrap_or(usize::MAX),
+                    None => usize::MAX,
+                },
+            };
+            let Some(page) = self.under.get(index) else {
+                return Ok(KeyPage::default());
+            };
+            // The token is written here rather than by the test, so a page's
+            // `more` says only *whether* there is more and this decides
+            // *where* — the split the real service has.
+            Ok(KeyPage {
+                keys: page.keys.clone(),
+                more: page
+                    .more
+                    .is_some()
+                    .then(|| Cursor(format!("page-{}", index + 1))),
+            })
         }
     }
 }

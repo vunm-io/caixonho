@@ -412,6 +412,21 @@ pub struct Page {
     pub served_from: Option<Region>,
 }
 
+/// One page of keys under a prefix, ungrouped (`XONHO-0030`).
+///
+/// The flat counterpart to [`Page`]. No folders, because no delimiter was
+/// sent: this is every key sharing the prefix, however deep. That is what
+/// "delete this folder" has to mean — a folder is exactly that set of keys,
+/// and grouping them into levels would be counting the parts of a thing
+/// instead of the thing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KeyPage {
+    /// The keys in this page, whole, from the bucket root.
+    pub keys: Vec<String>,
+    /// Where to continue, when the service says there is more.
+    pub more: Option<Cursor>,
+}
+
 impl Page {
     /// Whether the service said there is more to come.
     pub fn is_truncated(&self) -> bool {

@@ -799,6 +799,74 @@ impl Session {
         });
     }
 
+    /// Gather every key under `location`'s prefix, off the caller's thread
+    /// (`XONHO-0030`).
+    ///
+    /// One walk, not two. The count a confirmation states and the keys a
+    /// delete then removes come from the *same* pass, because two passes over
+    /// a live bucket can disagree — and a dialog that says "47 objects"
+    /// followed by a delete of a different 47 has told the user something
+    /// that was never true.
+    ///
+    /// Bounded at [`MOST_KEYS_GATHERED`]. Beyond it the walk stops and says
+    /// so, as [`Tally::TooMany`], which is deliberately not a number anybody
+    /// may present as a total. Cancelling between pages is cooperative for
+    /// [`Self::spawn_download`]'s reason: the task stays alive to log and
+    /// deliver.
+    pub fn spawn_walk_under<F>(&self, location: Location, deliver: F) -> Cancel
+    where
+        F: FnOnce(Tally) + Send + 'static,
+    {
+        let cancel = Cancel::default();
+        let handle = cancel.clone();
+        let store = self
+            .store
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+
+        self.runtime.spawn(async move {
+            let Some(store) = store else {
+                deliver(Tally::Failed(Error::MissingConfiguration {
+                    profile: None,
+                    detail: "no connection is open to read a location through".into(),
+                }));
+                return;
+            };
+
+            let mut keys: Vec<String> = Vec::new();
+            let mut cursor: Option<Cursor> = None;
+            let tally = loop {
+                if handle.is_cancelled() {
+                    break Tally::Cancelled;
+                }
+                let page = match store.list_keys_under(&location, cursor.as_ref()).await {
+                    Ok(page) => page,
+                    Err(cause) => break Tally::Failed(cause),
+                };
+                keys.extend(page.keys);
+                // Checked after extending rather than before: a page that
+                // takes the walk exactly to the bound has still been read in
+                // full, and stopping short of the token would call a complete
+                // answer incomplete.
+                if keys.len() > MOST_KEYS_GATHERED {
+                    break Tally::TooMany {
+                        at_least: keys.len(),
+                    };
+                }
+                match page.more {
+                    Some(next) => cursor = Some(next),
+                    None => break Tally::All(keys),
+                }
+            };
+
+            diagnostics::walk_settled(&location.bucket, location.prefix.as_str(), &tally);
+            deliver(tally);
+        });
+
+        cancel
+    }
+
     pub fn spawn_delete<F>(&self, bucket: String, key: String, deliver: F)
     where
         F: FnOnce(DeleteOutcome) + Send + 'static,
@@ -1162,6 +1230,44 @@ pub enum FolderOutcome {
     NotOnADirectoryBucket,
     /// Failed, with the classified cause.
     Failed(Error),
+}
+
+/// The most keys one walk will gather before giving up (`XONHO-0030`).
+///
+/// A ceiling rather than a page size. Past it the application would be asking
+/// someone to wait at a dialog while thousands of listings go by, and then
+/// deleting one object per request for minutes afterwards — so it says the
+/// folder is too large instead. That is a real refusal with a real reason,
+/// which is better than either lying about a total or appearing to hang.
+pub const MOST_KEYS_GATHERED: usize = 5_000;
+
+/// What a walk under a prefix found (`XONHO-0030`).
+#[derive(Debug)]
+pub enum Tally {
+    /// The walk reached the end. These are every key under the prefix, and
+    /// the count a confirmation may state is their number.
+    All(Vec<String>),
+    /// The walk hit [`MOST_KEYS_GATHERED`] first.
+    ///
+    /// `at_least` is what had been seen, and it is named that way on purpose:
+    /// it is **not** a total, and nothing may present it as one.
+    TooMany { at_least: usize },
+    /// The walk was asked to stop and did.
+    Cancelled,
+    /// The walk failed, with the classified cause. Nothing was counted, and
+    /// in particular nothing partial is reported as if it were the answer.
+    Failed(Error),
+}
+
+impl Tally {
+    /// The keys, when the walk finished. `None` in every other case — which
+    /// is what stops a partial or refused walk from becoming a delete list.
+    pub fn keys(&self) -> Option<&[String]> {
+        match self {
+            Self::All(keys) => Some(keys),
+            _ => None,
+        }
+    }
 }
 
 /// How one delete ended (`XONHO-0021`).
@@ -2067,6 +2173,153 @@ mod tests {
             },
         );
         told
+    }
+
+    // `XONHO-0030`, "Deleting a folder counts it first" — the walk that
+    // produces the number the confirmation states.
+
+    /// A scripted page of keys, with `more` saying only whether the walk
+    /// continues. Where it continues to is the double's business, exactly as
+    /// the continuation token is the service's.
+    fn a_page(keys: &[&str], more: bool) -> crate::types::KeyPage {
+        crate::types::KeyPage {
+            keys: keys.iter().map(|k| (*k).to_owned()).collect(),
+            more: more.then(|| Cursor("more".into())),
+        }
+    }
+
+    /// Walk `prefix` through `store` and hand back what it found.
+    ///
+    /// `name` is the fixture's own directory. Its own, per test: `Fixture`
+    /// clears the directory it is given, and tests run at the same time, so a
+    /// shared name is one test deleting another's configuration mid-run.
+    async fn walking(name: &str, store: StoreDouble, prefix: &str) -> Tally {
+        let fixture = Fixture::new(name);
+        let session = fixture.session("work");
+        let credentials = session.credentials_changed("work");
+        session.install_object_store(Arc::new(store), credentials);
+        let (tell, told) = tokio::sync::oneshot::channel();
+        session.spawn_walk_under(
+            Location::at("reports", crate::types::Prefix::parse(prefix)),
+            move |tally| {
+                let _ = tell.send(tally);
+            },
+        );
+        told.await.expect("delivered exactly once")
+    }
+
+    #[tokio::test]
+    async fn a_prefix_with_nothing_under_it_counts_zero() {
+        // Zero and refused must never be the same answer — the whole of the
+        // `object-browsing` spec's fifth requirement, applied to counting.
+        let tally = walking("walk-empty", StoreDouble::allows_listing(), "empty/").await;
+
+        match tally {
+            Tally::All(keys) => assert!(keys.is_empty(), "nothing is under it"),
+            other => panic!("expected All, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_walk_spanning_pages_reports_the_total_and_not_the_first_page() {
+        // The defect this is written against: stopping at the first page and
+        // calling its length the total. A confirmation built on that would
+        // say "2 objects" and then delete five.
+        let store = StoreDouble::allows_listing().under(vec![
+            a_page(&["a/1.txt", "a/2.txt"], true),
+            a_page(&["a/deep/3.txt", "a/deep/4.txt"], true),
+            a_page(&["a/5.txt"], false),
+        ]);
+
+        let tally = walking("walk-pages", store, "a/").await;
+
+        match tally {
+            Tally::All(keys) => {
+                assert_eq!(keys.len(), 5, "every page, not the first");
+                assert_eq!(
+                    keys.last().map(String::as_str),
+                    Some("a/5.txt"),
+                    "the walk reached the last page"
+                );
+            }
+            other => panic!("expected All, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_walk_that_hits_its_bound_says_so_rather_than_reporting_a_total() {
+        // `at_least` is not a total and nothing may present it as one. A
+        // `Tally::All` here would put a number on a confirmation that the
+        // walk never actually finished establishing.
+        let many: Vec<String> = (0..=MOST_KEYS_GATHERED)
+            .map(|n| format!("big/{n}.txt"))
+            .collect();
+        let store = StoreDouble::allows_listing().under(vec![
+            crate::types::KeyPage {
+                keys: many,
+                more: Some(Cursor("more".into())),
+            },
+            a_page(&["big/last.txt"], false),
+        ]);
+
+        let tally = walking("walk-bound", store, "big/").await;
+
+        match tally {
+            Tally::TooMany { at_least } => {
+                assert!(at_least > MOST_KEYS_GATHERED);
+                assert!(tally.keys().is_none(), "nothing may be deleted from this");
+            }
+            other => panic!("expected TooMany, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_walk_carries_its_cause_and_counts_nothing() {
+        let tally = walking(
+            "walk-refused",
+            StoreDouble::bucket_access_denied(),
+            "secret/",
+        )
+        .await;
+
+        match tally {
+            Tally::Failed(Error::AccessDenied { iam_action }) => {
+                assert_eq!(iam_action, "s3:ListBucket");
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_walk_reports_cancelled_and_not_what_it_had_so_far() {
+        // Cancelled before the first page, so the walk stops at its own
+        // check. What matters is the shape: a stopped walk never comes back
+        // as `All`, because the caller would then delete a partial answer.
+        let fixture = Fixture::new("walk-cancel");
+        let session = fixture.session("work");
+        let credentials = session.credentials_changed("work");
+        session.install_object_store(
+            Arc::new(StoreDouble::allows_listing().under(vec![
+                a_page(&["a/1.txt"], true),
+                a_page(&["a/2.txt"], false),
+            ])),
+            credentials,
+        );
+
+        let (tell, told) = tokio::sync::oneshot::channel();
+        let cancel = session.spawn_walk_under(
+            Location::at("reports", crate::types::Prefix::parse("a/")),
+            move |tally| {
+                let _ = tell.send(tally);
+            },
+        );
+        cancel.cancel();
+
+        match told.await.expect("delivered exactly once") {
+            Tally::Cancelled => {}
+            Tally::All(keys) => panic!("a cancelled walk reported {} keys as a total", keys.len()),
+            other => panic!("expected Cancelled, got {other:?}"),
+        }
     }
 
     #[tokio::test]
