@@ -287,6 +287,82 @@ Recorded here rather than in a change's tasks because `XONHO-0017` — whose
 territory this is — was archived on 2026-08-24, and a finding that lives only
 in a commit message is a finding nobody will find.
 
+### Deleting a folder, and the row actions the owner asked for (2026-08-27)
+
+Two findings from the same live check, and they turn out to be one change.
+
+**A folder cannot be deleted, and that is deliberate.** `selected_object_key`
+returns `None` for a folder row (`app.rs:1033`), so `Delete…` never lights up
+for one. S3 has no folder to delete: removing `uploads/` means listing every
+object under that prefix and deleting each — three objects or three hundred
+thousand, and nobody knows which until the listing finishes. It is
+destructive, unbounded, and not undoable part-way: fail at object 500 and the
+bucket is in a state nobody can describe. That is exactly why the brief asks
+for a confirmation **stating the object count**, and why `XONHO-0021` closed
+saying the counted confirmation belongs to bulk.
+
+On a **directory bucket** there is already a way through, and it comes from
+the same rule that made `XONHO-0024` refuse to create an empty folder: delete
+the objects and the directory goes with them, automatically. On a general
+purpose bucket it does not — `uploads/` is a real zero-byte object.
+
+**The owner's proposal, which is better than what is there now.** The toolbar
+verbs should be for a *multi-selection*; a single row should be acted on
+where it is:
+
+- **Right-click**, as Windows Explorer does. The machinery already exists —
+  the sidebar's saved connections use `item.context_menu(...)` with
+  `PopupMenuItem` (`app.rs:2406`), so this extends a pattern rather than
+  inventing one.
+- **Hover icons** on the row: an eye for preview, and so on.
+
+Worth splitting those two rather than building both alike. **Delete should be
+in the context menu only.** The owner's own decision of 2026-08-24 was that
+Open must be an explicit button and double-click must stay unbound, because a
+stray double-click must not write company bytes to disk. A delete icon sitting
+under the cursor is easier to hit by accident than a double-click.
+`XONHO-0021`'s confirmation names the exact key and would catch it — but a
+guard is not a reason to lay a trap.
+
+**And it is the real fix for a layout bug that has now been patched twice.**
+The verb row overflowed, was patched with `min_w_0`, overflowed differently,
+and was patched again with `flex_shrink_0`. Seven verbs beside a
+sixty-character directory-bucket name do not fit, and flex properties only
+decide who loses. Moving per-row actions off the toolbar shortens the row for
+good.
+
+Not issued. Multi-select and bulk delete want the transfer queue that §4.4's
+three unbuilt `[M]` rows are already waiting on, so the ordering question is
+whether the row actions go first alone.
+
+### A forgotten choice and a chosen everything are not the same (2026-08-26)
+
+Surfaced while adding `None`/`All` to `XONHO-0027`'s bucket chooser. Two acts
+produce an identical screen today:
+
+- **Forget my choice** — no choice is recorded for this connection;
+- **All**, then **Keep these** — a choice is recorded that happens to name
+  every bucket.
+
+Both list everything. They diverge **the day the account gains a bucket**: the
+forgotten connection shows it, the chosen-everything connection hides it,
+silently, and the user has no way to tell which state they are in — the screen
+says "Showing N chosen of N", which is true and useless.
+
+Not solved. Three shapes, none obviously right:
+
+- **Say which state it is.** A line distinguishing "no choice" from "all
+  chosen". Honest, and adds a sentence about a distinction most people will
+  never meet.
+- **Collapse them.** Treat a choice naming every bucket as no choice at all,
+  written back at save time. Simple, and quietly overrides someone who meant
+  it.
+- **Leave it.** The divergence is real but small, and a user who adds a bucket
+  and does not see it can open the chooser and tick it.
+
+Worth deciding before anything else reads the choice — a second reader would
+make the ambiguity twice as expensive.
+
 ### The way out of a preview does not look like one (2026-08-26)
 
 The owner, previewing an object: *"how do I turn this off — clicking the

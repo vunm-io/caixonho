@@ -66,6 +66,12 @@ if [ -n "$IDENTITY" ]; then
     # connection, because every grant is bound to the signature it was given
     # under. Seen 2026-08-26: the dialog names `codesign`, so it reads as the
     # app demanding a password at launch, which is not what is happening.
+    # An interrupted codesign leaves a `.cstemp` inside the bundle, and every
+    # later attempt then dies with "invalid or unsupported format for
+    # signature" naming that file — a message that sends you looking at the
+    # signature rather than at the leftovers. Seen 2026-08-26, after a signing
+    # run was cut off waiting for the keychain.
+    find "$APP" -name '*.cstemp' -delete 2>/dev/null || true
     if ! codesign --force --sign "$IDENTITY" "$APP"; then
         cat >&2 <<MSG
 

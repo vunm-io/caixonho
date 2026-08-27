@@ -155,8 +155,28 @@
         That run's artifacts carry everything through `XONHO-0027`.
   - Verification: `gh run list --limit 1 --repo vunm-io/caixonho`
 
-- [ ] 3.3 Live: the work account, chosen once and still chosen tomorrow
+- [x] 3.3 Live: the work account, chosen once and still chosen tomorrow
       [dispatch: main]
+      - Done on the owner's machine, 2026-08-26. Two buckets chosen from the
+        account that lists ten, **application quit entirely**, reopened, and
+        the connection selected: the two chosen are what came back.
+      - `~/Library/Application Support/caixonho/view-preferences.toml` exists,
+        holds one `[[shows]]` record for that connection naming exactly two
+        buckets, and is beside `connections.toml` rather than inside it.
+      - **This is the only evidence there is for the thing that matters
+        most.** Every test in this change uses the double, by the rule that
+        nothing may write into the developer's own configuration directory —
+        so whether the file survives a real restart on a real disk was, until
+        this sitting, asserted by nobody.
+      - **Show all** confirmed too, which is the half that was wrong first
+        time round: it lists everything and the choice is still there to
+        return to, rather than being given up.
+      - And a second connection selected straight afterwards showed **every**
+        bucket — the choice did not follow the user across.
+      - The account's bucket names are not written here: this repository is
+        public and they are a company's.
+  - Done criteria: on the owner's machine — choose from the account that
+    lists eleven buckets, **quit the application entirely**, reopen, and
   - Done criteria: on the owner's machine — choose from the account that
     lists eleven buckets, **quit the application entirely**, reopen, and
     select that connection. The chosen buckets are what is listed, and the
@@ -213,3 +233,28 @@
     decides what is **probed**. Say whether a bucket outside the choice is
     still probed, and whether that is what was intended.
   - Verification: the recorded findings
+
+- [x] 2.6 Ticking ten to keep two [dispatch: main]
+      - Asked for by the owner during the live check, 2026-08-26, and it is
+        the shape this feature exists for: their account lists ten and they
+        want two, so a picker that opens ticked-to-everything cost **eight
+        clicks of unticking** before the first useful one.
+      - `None` and `All`, placed **beside the count** rather than beside the
+        confirm actions. The split is the point: the left of that row acts on
+        what is *ticked*, the right acts on the *saved choice*. Putting
+        "select everything" next to "forget everything" in similar words is
+        how someone destroys a choice meaning to widen it.
+      - **`Show every bucket` was renamed `Forget my choice`** for the same
+        reason. It was named for its outcome, and that outcome is also what
+        `All` then `Keep these` produces — so two controls read as the same
+        act while doing different things. Named for the act now.
+      - The two really do differ, and the difference is invisible until it
+        matters: **the day the account gains a bucket**, a forgotten choice
+        shows it and a chosen-everything hides it. Parked in
+        `docs/planned-changes.md` rather than solved, because surfacing it
+        properly is a design question and this was a usability fix.
+      - The `account-04e` frame now goes through `None`, which is how someone
+        picking two of ten will actually use it.
+  - Paths: `crates/caixonho-gui/src/app.rs`
+  - Verification: `cargo test -p caixonho-gui`
+

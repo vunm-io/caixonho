@@ -699,7 +699,23 @@ impl CaixonhoApp {
         let (transfers, transferring) = flume::unbounded::<TransferEvent>();
         cx.spawn_in(window, async move |this, cx| {
             while let Ok(event) = transferring.recv_async().await {
-                let applied = this.update_in(cx, |app, _, cx| app.apply_transfer(event, cx));
+                let applied = this.update_in(cx, |app, window, cx| {
+                    // An upload nobody can see is an upload nobody believes
+                    // in — the sentence `XONHO-0024` wrote for folders, which
+                    // applies word for word here and was missing because the
+                    // upload path predates it. `XONHO-0026` made the gap
+                    // plain: send a file to `a/b/c.txt` and the folders it
+                    // implies were nowhere until the user navigated away and
+                    // came back.
+                    //
+                    // Through `re_read_location`, so the strip saying where it
+                    // went survives the refresh that proves it.
+                    if app.apply_transfer(event, cx)
+                        && let Some(location) = app.location().cloned()
+                    {
+                        app.re_read_location(location, window, cx);
+                    }
+                });
                 if applied.is_err() {
                     break; // The window is gone.
                 }
@@ -1577,9 +1593,15 @@ impl CaixonhoApp {
 
     /// Apply one transfer event, if a transfer is still on screen to apply
     /// it to.
-    fn apply_transfer(&mut self, event: TransferEvent, cx: &mut Context<Self>) {
+    /// Returns whether an upload **landed**, so the caller can re-read the
+    /// location. The caller rather than here because re-reading needs a
+    /// window, and threading one through every call site of this — including
+    /// four tests that have no business knowing about listings — would be a
+    /// lot of noise for one `if`.
+    fn apply_transfer(&mut self, event: TransferEvent, cx: &mut Context<Self>) -> bool {
+        let mut sent = false;
         let Some(transfer) = self.transfer.as_mut() else {
-            return; // Dismissed while the event was in flight.
+            return false; // Dismissed while the event was in flight.
         };
         match event {
             TransferEvent::Progress { bytes, total } => {
@@ -1595,6 +1617,7 @@ impl CaixonhoApp {
                         bytes,
                     } => {
                         transfer.bytes = bytes;
+                        sent = true;
                         TransferPhase::Sent { key, stepped_aside }
                     }
                     UploadOutcome::KeyTaken { key } => TransferPhase::KeyTaken { key },
@@ -1638,6 +1661,7 @@ impl CaixonhoApp {
             }
         }
         cx.notify();
+        sent
     }
 
     /// Answer the existing-file question by starting over with the answer.
@@ -2724,82 +2748,109 @@ impl CaixonhoApp {
                 .w_full()
                 .items_center()
                 .gap(space::TIGHT)
-                .child(div().flex_1().child(trail))
+                // The trail is the variable-width half — a directory bucket's
+                // name is sixty characters — so it is the half that shrinks.
+                //
+                // Three goes to get this row right, and each attempt taught
+                // the next:
+                //
+                // 1. Nothing: the row pushed the last verb off the edge and
+                //    "Type a location" arrived as "Type a".
+                // 2. `min_w_0` on the trail: the trail could now shrink, but
+                //    the *verbs* were still shrinkable too — so flex squeezed
+                //    them below their own labels and the text spilled out of
+                //    the buttons, interleaving "Preview" with the bucket's
+                //    name.
+                // 3. This: the verbs refuse to shrink (`flex_shrink_0` on the
+                //    group below) and the trail absorbs all of it, clipped.
+                //
+                // The lesson is the middle one. Letting one child shrink is
+                // only half an instruction; the other half is naming who must
+                // not.
+                .child(div().flex_1().min_w_0().overflow_hidden().child(trail))
                 .child(
-                    div().debug_selector(|| "preview-action".into()).child(
-                        Button::new("preview-action")
-                            .label("Preview")
-                            .ghost()
-                            .disabled(!on_object)
-                            .on_click(cx.listener(|app, _, _, cx| app.preview_selected(cx))),
-                    ),
-                )
-                .child(
-                    div().debug_selector(|| "open-action".into()).child(
-                        Button::new("open-action")
-                            .label("Open")
-                            .ghost()
-                            .disabled(!on_object)
-                            .on_click(cx.listener(|app, _, _, cx| app.open_selected(cx))),
-                    ),
-                )
-                .child(
-                    div().debug_selector(|| "download-action".into()).child(
-                        Button::new("download-action")
-                            .label("Download…")
-                            .ghost()
-                            .disabled(!on_object)
-                            .on_click(
-                                cx.listener(|app, _, window, cx| app.download_selected(window, cx)),
+                    h_flex()
+                        .flex_shrink_0()
+                        .items_center()
+                        .gap(space::TIGHT)
+                        .child(
+                            div().debug_selector(|| "preview-action".into()).child(
+                                Button::new("preview-action")
+                                    .label("Preview")
+                                    .ghost()
+                                    .disabled(!on_object)
+                                    .on_click(
+                                        cx.listener(|app, _, _, cx| app.preview_selected(cx)),
+                                    ),
                             ),
-                    ),
-                )
-                .child(
-                    div().debug_selector(|| "upload-action".into()).child(
-                        Button::new("upload-action")
-                            .label("Upload…")
-                            .ghost()
-                            // No `disabled`: unlike the other two verbs this
-                            // one acts on the location, not on a row, and a
-                            // location is what being here means.
-                            .on_click(
-                                cx.listener(|app, _, window, cx| app.upload_here(window, cx)),
+                        )
+                        .child(
+                            div().debug_selector(|| "open-action".into()).child(
+                                Button::new("open-action")
+                                    .label("Open")
+                                    .ghost()
+                                    .disabled(!on_object)
+                                    .on_click(cx.listener(|app, _, _, cx| app.open_selected(cx))),
                             ),
-                    ),
-                )
-                .child(
-                    div().debug_selector(|| "new-folder-action".into()).child(
-                        Button::new("new-folder-action")
-                            .label("New folder…")
-                            .ghost()
-                            // Acts on the location like `Upload…` does, so it
-                            // needs no selected row and carries no `disabled`.
-                            .on_click(
-                                cx.listener(|app, _, window, cx| app.new_folder_here(window, cx)),
+                        )
+                        .child(
+                            div().debug_selector(|| "download-action".into()).child(
+                                Button::new("download-action")
+                                    .label("Download…")
+                                    .ghost()
+                                    .disabled(!on_object)
+                                    .on_click(cx.listener(|app, _, window, cx| {
+                                        app.download_selected(window, cx)
+                                    })),
                             ),
-                    ),
-                )
-                .child(
-                    // Apart from the three benign verbs, and in the danger
-                    // colour: this is the one that destroys. It only opens
-                    // the confirmation — nothing deletes on this click.
-                    div().debug_selector(|| "delete-action".into()).child(
-                        Button::new("delete-action")
-                            .label("Delete…")
-                            .ghost()
-                            .danger()
-                            .disabled(!on_object)
-                            .on_click(cx.listener(|app, _, _, cx| app.delete_selected(cx))),
-                    ),
-                )
-                .child(
-                    Button::new("edit-path")
-                        .label("Type a location")
-                        .ghost()
-                        .on_click(cx.listener(|app, _, _, cx| {
-                            app.editing_path = true;
-                            cx.notify();
-                        })),
+                        )
+                        .child(
+                            div().debug_selector(|| "upload-action".into()).child(
+                                Button::new("upload-action")
+                                    .label("Upload…")
+                                    .ghost()
+                                    // No `disabled`: unlike the other two verbs this
+                                    // one acts on the location, not on a row, and a
+                                    // location is what being here means.
+                                    .on_click(cx.listener(|app, _, window, cx| {
+                                        app.upload_here(window, cx)
+                                    })),
+                            ),
+                        )
+                        .child(
+                            div().debug_selector(|| "new-folder-action".into()).child(
+                                Button::new("new-folder-action")
+                                    .label("New folder…")
+                                    .ghost()
+                                    // Acts on the location like `Upload…` does, so it
+                                    // needs no selected row and carries no `disabled`.
+                                    .on_click(cx.listener(|app, _, window, cx| {
+                                        app.new_folder_here(window, cx)
+                                    })),
+                            ),
+                        )
+                        .child(
+                            // Apart from the three benign verbs, and in the danger
+                            // colour: this is the one that destroys. It only opens
+                            // the confirmation — nothing deletes on this click.
+                            div().debug_selector(|| "delete-action".into()).child(
+                                Button::new("delete-action")
+                                    .label("Delete…")
+                                    .ghost()
+                                    .danger()
+                                    .disabled(!on_object)
+                                    .on_click(cx.listener(|app, _, _, cx| app.delete_selected(cx))),
+                            ),
+                        )
+                        .child(
+                            Button::new("edit-path")
+                                .label("Type a location")
+                                .ghost()
+                                .on_click(cx.listener(|app, _, _, cx| {
+                                    app.editing_path = true;
+                                    cx.notify();
+                                })),
+                        ),
                 )
                 .into_any_element();
         }
@@ -3062,6 +3113,21 @@ impl CaixonhoApp {
                             choosing.len(),
                             all.len()
                         )))
+                        // Beside the count, because they act on what is
+                        // *ticked* — the right-hand group acts on the saved
+                        // choice, and mixing the two would put "select
+                        // everything" next to "forget everything" wearing
+                        // similar words.
+                        .child(div().debug_selector(|| "chooser-none".into()).child(
+                            Button::new("chooser-none").label("None").ghost().on_click(
+                                cx.listener(|app, _, _, cx| app.tick_every_bucket(false, cx)),
+                            ),
+                        ))
+                        .child(
+                            Button::new("chooser-all").label("All").ghost().on_click(
+                                cx.listener(|app, _, _, cx| app.tick_every_bucket(true, cx)),
+                            ),
+                        )
                         .child(div().flex_1())
                         .child(
                             div().debug_selector(|| "chooser-keep".into()).child(
@@ -3075,7 +3141,13 @@ impl CaixonhoApp {
                         )
                         .child(
                             Button::new("chooser-forget")
-                                .label("Show every bucket")
+                                // Named for the act, not the outcome. "Show
+                                // every bucket" is what *All* then *Keep
+                                // these* also does — and the two differ the
+                                // day the account gains a bucket: a forgotten
+                                // choice shows it, a chosen-everything hides
+                                // it.
+                                .label("Forget my choice")
                                 .ghost()
                                 .on_click(
                                     cx.listener(|app, _, _, cx| app.forget_bucket_choice(cx)),
@@ -3116,6 +3188,18 @@ impl CaixonhoApp {
         // No choice recorded means everything is showing, so everything starts
         // ticked. Opening the picker must not look like a fresh empty choice.
         self.choosing_buckets = Some(self.narrowing.chosen.clone().unwrap_or(all));
+        cx.notify();
+    }
+
+    /// Tick every bucket, or none of them.
+    ///
+    /// Asked for by the owner on 2026-08-26, and the reason is the shape of
+    /// the accounts this feature exists for: theirs lists ten and they want
+    /// two, so the picker opened ticked-to-everything meant eight clicks of
+    /// *un*ticking before the first useful one.
+    fn tick_every_bucket(&mut self, ticked: bool, cx: &mut Context<Self>) {
+        let all = self.table.read(cx).delegate().all_names();
+        self.choosing_buckets = Some(if ticked { all } else { Vec::new() });
         cx.notify();
     }
 
@@ -5383,7 +5467,10 @@ mod tests {
             |app, _, cx| {
                 settled(app, cx);
                 app.start_choosing_buckets(cx);
-                app.toggle_chosen("logs", cx);
+                // Through None, which is how someone picking two out of ten
+                // will actually use it (`XONHO-0027` 2.6).
+                app.tick_every_bucket(false, cx);
+                app.toggle_chosen("reports", cx);
             },
         ));
 
@@ -6586,6 +6673,44 @@ mod tests {
         });
     }
 
+    /// Ten buckets and you want two: the picker must not cost eight clicks of
+    /// unticking before the first useful one.
+    #[gpui::test]
+    fn the_chooser_can_tick_none_and_all_at_once(cx: &mut TestAppContext) {
+        let (app, cx) = listing_of(
+            cx,
+            vec![
+                bucket_of("reports", BucketKind::General),
+                bucket_of("logs", BucketKind::General),
+                bucket_of("archive", BucketKind::General),
+            ],
+        );
+
+        app.update(cx, |app, cx| {
+            app.start_choosing_buckets(cx);
+            app.tick_every_bucket(false, cx);
+        });
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.choosing_buckets.as_deref(), Some([].as_slice()));
+            assert!(
+                app.narrowing.chosen.is_none(),
+                "ticking in the picker must not touch the live choice"
+            );
+        });
+
+        app.update(cx, |app, cx| {
+            app.tick_every_bucket(true, cx);
+            app.toggle_chosen("logs", cx);
+        });
+        app.read_with(cx, |app, _| {
+            assert_eq!(
+                app.choosing_buckets.as_deref(),
+                Some(["reports".to_owned(), "archive".to_owned()].as_slice()),
+                "All then one untick should leave everything but that one"
+            );
+        });
+    }
+
     /// Abandoning the chooser changes nothing. A picker that edited the live
     /// choice as you ticked would apply half a decision.
     #[gpui::test]
@@ -6669,5 +6794,76 @@ mod tests {
                 "the screen has nothing to say the list is a chosen subset with"
             );
         });
+    }
+
+    /// An upload nobody can see is an upload nobody believes in.
+    ///
+    /// `XONHO-0024` wrote that sentence for folders and `XONHO-0020`'s upload
+    /// path predated it, so a sent object stayed invisible until the user
+    /// navigated away and back. `XONHO-0026` made it plain: send a file to a
+    /// path that does not exist yet and the folders it implies were nowhere.
+    #[gpui::test]
+    fn a_finished_upload_re_reads_the_location(cx: &mut TestAppContext) {
+        let (app, cx) = looking_at(cx, "reports");
+        app.update(cx, |app, _| {
+            app.transfer = Some(an_upload(TransferPhase::Running));
+            app.listing = Listing::Loaded;
+        });
+
+        let refreshed = app.update_in(cx, |app, window, cx| {
+            let sent = app.apply_transfer(
+                TransferEvent::UploadSettled(caixonho_core::transfer::UploadOutcome::Finished {
+                    key: "test-folder/images.jpeg".into(),
+                    stepped_aside: false,
+                    bytes: 16,
+                }),
+                cx,
+            );
+            // The caller re-reads on this answer; asserting the answer is
+            // asserting the wiring, and the `if` that acts on it is one line
+            // beside the loop that produces it.
+            if sent && let Some(location) = app.location().cloned() {
+                app.re_read_location(location, window, cx);
+            }
+            sent
+        });
+
+        assert!(
+            refreshed,
+            "a finished upload has to ask for the listing again"
+        );
+        app.read_with(cx, |app, _| {
+            assert!(
+                matches!(app.listing, Listing::Loading),
+                "the location was not re-read, so the object stays invisible until the user \
+                 navigates away and comes back"
+            );
+        });
+    }
+
+    /// And the other direction: a *download* finishing changes nothing about
+    /// the bucket, so it must not cost a listing.
+    #[gpui::test]
+    fn a_finished_download_does_not_re_read_the_location(cx: &mut TestAppContext) {
+        let (app, cx) = looking_at(cx, "reports");
+        app.update(cx, |app, _| {
+            app.transfer = Some(Transfer {
+                direction: Direction::Down,
+                ..an_upload(TransferPhase::Running)
+            });
+        });
+
+        let refreshed = app.update(cx, |app, cx| {
+            app.apply_transfer(
+                TransferEvent::Settled(caixonho_core::transfer::DownloadOutcome::Finished {
+                    name: "summary.csv".into(),
+                    mapped: caixonho_core::transfer::MappingOutcome::Unchanged,
+                    bytes: 1024,
+                }),
+                cx,
+            )
+        });
+
+        assert!(!refreshed, "a download wrote nothing to the bucket");
     }
 }
