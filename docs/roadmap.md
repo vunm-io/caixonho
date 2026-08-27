@@ -13,7 +13,7 @@ whole thing.
 | **M1** | Read-only browser — credentials, bucket list, prefix navigation, permission awareness | **in progress** |
 | **M2** | Transfers — up and download including folders, multipart, a queue with progress, cancel and retry | **in progress** — `XONHO-0007` landed the first slice: single-object download and open-with-the-system; uploads and the queue remain |
 | **M3** | Object operations, safe subset first — create folder, delete with a counted confirmation, properties, presigned URLs | **in progress** — `XONHO-0021` landed single-object delete with the named-key confirmation and the marker-aware Undo; bulk, folders, properties and presigned URLs remain |
-| **M4** | Ship v0.1 — installers for both platforms, a README with a recording, public announcement | not started |
+| **M4** | Ship v0.1 — installers for both platforms, a README with a recording, public announcement | not started. A **beta** precedes it: unsigned CI artifacts, a README that tells the truth about what is built, and release notes that name what is not. Signing and notarization stay here |
 | **M5** | Extras — S3-compatible endpoints as a supported configuration, sync, versions | not started |
 | **M6** | Reach — Linux, then the CLI crate over the same core | not started |
 

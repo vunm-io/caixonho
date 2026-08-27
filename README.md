@@ -6,8 +6,37 @@ A fast, native, cross-platform S3 client. GPU-rendered with [GPUI](https://gpui.
 (the framework behind Zed), written in Rust, built to feel instant: cold start under
 half a second, buttery scrolling through prefixes with 100k+ objects, keyboard-first.
 
-**Status: pre-alpha, milestone M1.** The app connects, lists and browses; it
-does not yet transfer anything. Watch the repo if you want to follow along.
+**Status: beta, milestone M2.** It connects, browses, transfers, deletes and
+previews. It is not signed or notarized yet, so your operating system will
+warn you the first time — see [Running a beta build](#running-a-beta-build).
+
+## S3 Express One Zone, including Local Zones
+
+Worth stating first, because it is the part almost nothing else does.
+
+A **directory bucket** is not a general purpose bucket with a different name.
+`ListBuckets` does not return them *at all*, so an account holding only
+directory buckets looks empty to most clients. They authorize through
+`s3express:CreateSession` rather than the object permissions you would expect.
+They keep a real hierarchical namespace, so a folder exists only while
+something is in it. And they can live in an **AWS Local Zone** as well as an
+Availability Zone — `{base}--{zone-id}--x-s3`, where the zone id may be
+`usw2-az1` or a Local Zone like `apse1-han1-az1`.
+
+caixonho treats all of that as ordinary:
+
+- **Lists directory buckets beside general purpose ones**, and says so when
+  one listing was permitted and the other refused.
+- **Names `s3express:CreateSession`** when a directory bucket refuses you —
+  not the object permission it superficially resembles.
+- **Knows a directory bucket cannot hold an empty folder.** `New folder…`
+  refuses there, says why, and points at what does work, rather than writing a
+  marker the service deletes a moment later.
+- **Filters by kind**, so an account mixing both can be reduced to either.
+
+Browsed, uploaded to, downloaded from, previewed and deleted in on real
+**Local Zone** directory buckets in `apse1-han1-az1` (Hanoi) during
+development — not inferred from documentation.
 
 Working today:
 
@@ -44,6 +73,27 @@ Working today:
   given access, and one most clients treat as a dead end.
 - Never draws an empty folder and a refused one the same way, one level below
   where it already does that for buckets.
+- **Takes files by drag and drop**, or several at once through the picker.
+  Dropped files go to the folder on screen, each keeping its own name; when
+  there is more than one, the destination you are asked for is the folder they
+  share rather than a key each. A dropped *folder* is refused with a reason
+  instead of half-uploaded.
+- **Runs several transfers at once**, up to a small bound, with the rest
+  queued — each with its own progress, its own outcome, and its own collision
+  question. One failure does not stop the others, and a transfer waiting for
+  you to answer does not hold a slot. Cancel one, cancel all, retry what
+  failed, clear what finished. No pause or resume yet: a `PutObject` is one
+  stream, and a Pause that restarted from zero would lie about the bytes
+  already sent.
+- **Chooses where an upload lands.** The destination is offered filled in and
+  editable rather than derived — which is also how a folder is brought into
+  existence on a directory bucket.
+- **Makes a folder** on a general purpose bucket, as the zero-byte marker the
+  console uses.
+- **Narrows a long bucket list** by region, by kind, by name, and by whether
+  you can actually open it — and can remember which buckets a connection shows
+  so an account of eleven can be reduced to the two you use. A bucket whose
+  access is simply unknown is never hidden as though it had been refused.
 - **Sends a local file into the folder you are looking at — and never
   replaces an object without asking.** The no-clobber promise is made by the
   service, not by a check this app performs and hopes to win: the write is
@@ -115,6 +165,29 @@ honest about permissions and fast on huge buckets*:
 | v1 | Windows 11 + macOS (Apple Silicon & Intel), first-class together |
 | v2 | Linux |
 | v3 | CLI sharing the same core crate |
+
+## Running a beta build
+
+Builds come from CI, one per green run: the **Artifacts** at the bottom of any
+[Actions run](https://github.com/vunm-io/caixonho/actions). Downloading them
+needs a GitHub account — artifacts are not served anonymously, even from a
+public repository.
+
+They are **not signed or notarized**, so:
+
+- **macOS** refuses the first launch with *"Apple could not verify…"*. That
+  means unverified, not malicious. **System Settings → Privacy & Security →
+  Open Anyway.**
+- **Windows** shows SmartScreen's *"Windows protected your PC"* → **More
+  info → Run anyway**.
+
+Both warnings are doing their job, and caixonho reads AWS credentials — so
+treat clicking through them as a decision, not a formality, and only for a
+build you fetched yourself from this repository's own CI. Signed builds are
+milestone M4.
+
+The macOS artifact is a bare binary rather than an `.app`, so run it from a
+terminal. `scripts/mac-app.sh` wraps a local build into one.
 
 ## Building
 
