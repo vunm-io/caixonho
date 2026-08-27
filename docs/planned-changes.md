@@ -47,6 +47,7 @@ branch nobody can land.
 | `XONHO-0025` | Narrowing the bucket list by kind, name, and whether you can use it | §4.2 | M1 |
 | `XONHO-0026` | Choosing where an upload lands, instead of deriving it from where you stand | §4.4 | M2 |
 | `XONHO-0027` | Choosing once which buckets a connection shows, and remembering it | §4.2 | M1 |
+| `XONHO-0028` | A transfer queue: many at once, bounded, each failure contained | §4.4 | M2 |
 
 `XONHO-0008` depends on `XONHO-0007`: a preview is the same download path
 asking for the first N KB instead of the whole object.
