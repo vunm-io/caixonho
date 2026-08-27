@@ -160,7 +160,27 @@
     frame. Small, and the kind of thing that ships as a permanent grey box.
   - Verification: `cargo test -p caixonho-gui`
 
-- [ ] 2.5 The screenshot harness covers the queue [dispatch: main]
+- [x] 2.5 The screenshot harness covers the queue [dispatch: main]
+      - Done in `main` (2026-08-27): `bucket-17-queue-running` and
+        `bucket-18-queue-asking-while-others-run`, pixel-distinct.
+      - **And it earned its place immediately.** The first render showed a
+        header reading *"0 of 4 transferred"* directly above a row saying
+        *"Uploaded `daily/ledger.csv`"*. The count was wrong in the picture
+        and right in the code — the harness had set a phase without the
+        matching standing.
+      - Which is the finding, not the fix: **phase and standing were two
+        sources for one fact**, and nothing made them agree. Production set
+        both together in `apply_transfer` and would have gone on doing so
+        until someone added a third place. `TransferPhase::standing()` now
+        decides once, and `apply_transfer`, `enqueue_settled` and the harness
+        all ask it.
+      - The two axes really are different, and the method says why: `Running`
+        maps to `None`, because only the queue can tell `Waiting` from
+        `Running` — neither has reached the service, so no phase describes
+        them. Everything else is derivable and is now derived.
+      - Second time this session an image has caught something no assertion
+        did (`XONHO-0027`'s chooser was the first). The gap it cannot see is
+        still width — see the harness note in `docs/planned-changes.md`.
   - Paths: `crates/caixonho-gui/src/app.rs`
   - Done criteria: several running with one failed, everything finished, and
     a collision asked of one item while others run — each a frame, each

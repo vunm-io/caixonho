@@ -331,6 +331,33 @@ struct ChoosingDestination {
     refused: Option<caixonho_core::folder::BadObjectKey>,
 }
 
+impl TransferPhase {
+    /// What this phase means to the queue, when it means anything.
+    ///
+    /// `None` for `Running`, and that is the whole reason the two are separate
+    /// axes rather than one: a phase says what the *service* last said, and a
+    /// standing says what the *queue* thinks — and only the queue can tell
+    /// `Waiting` from `Running`, because neither has reached the service yet.
+    ///
+    /// Everything else is derivable, and derived here so it is decided once.
+    /// The screenshot harness proved they could drift by photographing a
+    /// panel whose header read "0 of 4 transferred" above a row that said
+    /// `Uploaded`. That was a harness artefact — production set both together
+    /// — but nothing *made* it so, and a fact with two sources eventually
+    /// disagrees somewhere it matters.
+    fn standing(&self) -> Option<Standing> {
+        match self {
+            Self::Running => None,
+            Self::Sent { .. } | Self::Finished { .. } => Some(Standing::Finished),
+            Self::NameTaken { .. } | Self::KeyTaken { .. } | Self::ConditionUnsupported { .. } => {
+                Some(Standing::Asking)
+            }
+            Self::Cancelled => Some(Standing::Cancelled),
+            Self::Failed(_) => Some(Standing::Failed),
+        }
+    }
+}
+
 impl Transfer {
     /// A download about to start: everything known before a request is made.
     fn down(bucket: String, key: String, directory: std::path::PathBuf, then_open: bool) -> Self {
@@ -1359,11 +1386,7 @@ impl CaixonhoApp {
     /// are transfers in every way the user cares about, so they go in the
     /// queue and are settled in the same breath.
     fn enqueue_settled(&mut self, transfer: Transfer) {
-        let standing = match &transfer.phase {
-            TransferPhase::Failed(_) => Standing::Failed,
-            TransferPhase::Cancelled => Standing::Cancelled,
-            _ => Standing::Finished,
-        };
+        let standing = transfer.phase.standing().unwrap_or(Standing::Finished);
         let id = self.queue.accept(transfer);
         self.queue.settled(id, standing);
     }
@@ -1701,7 +1724,6 @@ impl CaixonhoApp {
         cx: &mut Context<Self>,
     ) -> bool {
         let mut sent = false;
-        let mut standing = None;
         let Some(transfer) = self.queue.payload_mut(id) else {
             return false;
         };
@@ -1720,27 +1742,16 @@ impl CaixonhoApp {
                     } => {
                         transfer.bytes = bytes;
                         sent = true;
-                        standing = Some(Standing::Finished);
                         TransferPhase::Sent { key, stepped_aside }
                     }
                     // A question only a person can answer, and it gives up its
                     // slot while it waits: two of these must not stall twenty.
-                    UploadOutcome::KeyTaken { key } => {
-                        standing = Some(Standing::Asking);
-                        TransferPhase::KeyTaken { key }
-                    }
+                    UploadOutcome::KeyTaken { key } => TransferPhase::KeyTaken { key },
                     UploadOutcome::ConditionUnsupported { key } => {
-                        standing = Some(Standing::Asking);
                         TransferPhase::ConditionUnsupported { key }
                     }
-                    UploadOutcome::Cancelled => {
-                        standing = Some(Standing::Cancelled);
-                        TransferPhase::Cancelled
-                    }
-                    UploadOutcome::Failed(error) => {
-                        standing = Some(Standing::Failed);
-                        TransferPhase::Failed(error)
-                    }
+                    UploadOutcome::Cancelled => TransferPhase::Cancelled,
+                    UploadOutcome::Failed(error) => TransferPhase::Failed(error),
                 };
             }
             TransferEvent::Settled(outcome) => {
@@ -1752,25 +1763,23 @@ impl CaixonhoApp {
                         bytes,
                     } => {
                         transfer.bytes = bytes;
-                        standing = Some(Standing::Finished);
                         TransferPhase::Finished { name, mapped }
                     }
-                    DownloadOutcome::NameTaken { name } => {
-                        standing = Some(Standing::Asking);
-                        TransferPhase::NameTaken { name }
-                    }
-                    DownloadOutcome::Cancelled => {
-                        standing = Some(Standing::Cancelled);
-                        TransferPhase::Cancelled
-                    }
-                    DownloadOutcome::Failed(error) => {
-                        standing = Some(Standing::Failed);
-                        TransferPhase::Failed(error)
-                    }
+                    DownloadOutcome::NameTaken { name } => TransferPhase::NameTaken { name },
+                    DownloadOutcome::Cancelled => TransferPhase::Cancelled,
+                    DownloadOutcome::Failed(error) => TransferPhase::Failed(error),
                 };
             }
         }
-        if let Some(standing) = standing {
+        // One source, asked after the phase is set: `TransferPhase::standing`
+        // decides, here and in the harness alike.
+        if let Some(standing) = self
+            .queue
+            .items()
+            .iter()
+            .find(|item| item.id == id)
+            .and_then(|item| item.payload.phase.standing())
+        {
             self.queue.settled(id, standing);
         }
         cx.notify();
@@ -6011,6 +6020,77 @@ mod tests {
                         },
                     },
                 );
+            },
+        ));
+
+        // The queue (`XONHO-0028`). Three frames, and the third is the one
+        // to judge: a question asked of one transfer while others carry on is
+        // the state the whole design turns on.
+        let queued_run = |app: &mut CaixonhoApp, cx: &mut gpui::Context<CaixonhoApp>| {
+            inside(app, cx);
+            app.listing = Listing::Loaded;
+            for (key, phase) in [
+                ("daily/summary.csv", TransferPhase::Running),
+                (
+                    "daily/ledger.csv",
+                    TransferPhase::Sent {
+                        key: "daily/ledger.csv".to_owned(),
+                        stepped_aside: false,
+                    },
+                ),
+                (
+                    "daily/broken.csv",
+                    TransferPhase::Failed(Error::Network {
+                        detail: "the name did not resolve".into(),
+                    }),
+                ),
+            ] {
+                let id = app.queue.accept(Transfer {
+                    bucket: "reports".to_owned(),
+                    key: key.to_owned(),
+                    directory: std::path::PathBuf::from("/tmp"),
+                    then_open: false,
+                    direction: Direction::Up,
+                    source: Some(std::path::PathBuf::from("/tmp").join(key)),
+                    bytes: 4096,
+                    total: Some(16384),
+                    cancel: caixonho_core::transfer::Cancel::default(),
+                    phase,
+                });
+                if let Some(standing) = app.queue.payload_mut(id).and_then(|t| t.phase.standing()) {
+                    app.queue.settled(id, standing);
+                }
+            }
+        };
+
+        written.push(shoot(
+            "bucket-17-queue-running",
+            Arc::new(StoreDouble::allows_listing()),
+            move |app, _, cx| queued_run(app, cx),
+        ));
+
+        written.push(shoot(
+            "bucket-18-queue-asking-while-others-run",
+            Arc::new(StoreDouble::allows_listing()),
+            move |app, _, cx| {
+                queued_run(app, cx);
+                // One transfer stopped on a question, holding no slot, while
+                // the rest carry on — the state `XONHO-0028` exists for.
+                let id = app.queue.accept(Transfer {
+                    bucket: "reports".to_owned(),
+                    key: "daily/taken.csv".to_owned(),
+                    directory: std::path::PathBuf::from("/tmp"),
+                    then_open: false,
+                    direction: Direction::Up,
+                    source: Some(std::path::PathBuf::from("/tmp/taken.csv")),
+                    bytes: 0,
+                    total: Some(2048),
+                    cancel: caixonho_core::transfer::Cancel::default(),
+                    phase: TransferPhase::KeyTaken {
+                        key: "daily/taken.csv".to_owned(),
+                    },
+                });
+                app.queue.asking(id);
             },
         ));
 
