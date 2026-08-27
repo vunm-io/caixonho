@@ -65,11 +65,28 @@ jobs:
         run: cargo test --workspace
       - name: Build app (release)
         run: cargo build --release -p caixonho-gui
-      - name: Upload app binary (on-device checks)
+      # A bare Mach-O is not something macOS knows how to open. A browser
+      # download strips the executable bit, Finder finds a file it cannot
+      # identify, and a double-click opens it in TextEdit showing the raw
+      # object code — which is what the first person to try the v0.1.0-beta.1
+      # asset got. `ditto` is the macOS-correct zip: it keeps the bundle
+      # structure and the executable bit through the round trip, so what
+      # arrives is an app you drag to Applications.
+      #
+      # Not signed: this runner has no Developer ID, and the local
+      # self-signed identity would mean nothing to anyone else. Gatekeeper
+      # still asks — but "Open Anyway" is an answer to that question, where a
+      # window full of object code is not.
+      - name: Wrap in an .app (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          scripts/mac-app.sh --no-open
+          ditto -c -k --keepParent target/Caixonho.app target/Caixonho.zip
+      - name: Upload app (on-device checks)
         uses: actions/upload-artifact@v7
         with:
           name: caixonho-app-${{ matrix.os }}
           path: |
-            target/release/caixonho-gui
+            target/Caixonho.zip
             target/release/caixonho-gui.exe
           if-no-files-found: error
