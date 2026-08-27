@@ -286,3 +286,27 @@
     argued amendment or a defect. Question 4 in the form this project has
     settled on: what did this change do to the evidence?
   - Verification: the recorded findings
+
+- [x] 2.6 Cancel has to reach the ones with nothing in flight [dispatch: main]
+      - **Found live by the owner, 2026-08-27**: they pressed Cancel while a
+        collision question was up, and the question stayed. Cancel appeared to
+        do nothing at all.
+      - It was doing two of the three things needed. `cancel_queue` called
+        each transfer's `Cancel` and marked the queue — but **rows render by
+        `TransferPhase`**, and a transfer waiting on a person has no request
+        in flight, so no settlement was ever coming to change its phase. It
+        stayed `KeyTaken` and kept drawing the question. Same for one still
+        waiting for a slot: phase `Running`, drawing a progress line for
+        something that will never start.
+      - **This is the other half of the defect fixed in 2.5 the same day.**
+        That one made `Standing` derive from `TransferPhase` so the two could
+        not disagree. It never closed the reverse direction: when the *queue*
+        decides something the phase also describes, it has to say so. Deriving
+        one way felt like finishing the job.
+      - A **running** transfer is deliberately left alone — its own
+        settlement reports the cancellation, and pre-empting that would be the
+        window guessing at something the transfer is about to tell it.
+      - Ablated: dropping the phase write-back turns the new test red.
+  - Paths: `crates/caixonho-gui/src/app.rs`
+  - Verification: `cargo test -p caixonho-gui`
+

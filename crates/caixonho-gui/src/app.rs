@@ -3991,21 +3991,46 @@ impl CaixonhoApp {
 
     /// Stop everything not yet finished.
     ///
-    /// The queue's own record first, then each running transfer's `Cancel` —
-    /// order matters only in that both must happen: marking without
-    /// cancelling leaves bytes moving for a transfer the screen calls stopped.
+    /// Three things, and the third is the one that was missing.
+    ///
+    /// A **running** transfer is stopped by its `Cancel`, and its own
+    /// settlement arrives shortly after saying `Cancelled` — that closes the
+    /// loop by itself. A transfer that is **waiting for a slot** or **waiting
+    /// for a person to answer a collision** has no request in flight, so no
+    /// settlement is ever coming, and marking it in the queue changes nothing
+    /// the screen draws: rows render by *phase*, and its phase still says
+    /// `Running` or `KeyTaken`.
+    ///
+    /// That was the defect the owner found by pressing Cancel during a
+    /// collision question and watching the question stay. `XONHO-0028` made
+    /// `Standing` derive from `TransferPhase` and never closed the other
+    /// direction — when the queue decides something the phase also describes,
+    /// it has to say so.
     fn cancel_queue(&mut self, cx: &mut Context<Self>) {
-        for item in self.queue.items() {
-            if !matches!(
-                item.standing,
-                Standing::Finished | Standing::Failed | Standing::Cancelled
-            ) {
+        let stranded: Vec<TransferId> = self
+            .queue
+            .items()
+            .iter()
+            .filter(|item| {
+                !matches!(
+                    item.standing,
+                    Standing::Finished | Standing::Failed | Standing::Cancelled
+                )
+            })
+            .map(|item| {
                 item.payload.cancel.cancel();
-            }
-        }
+                (item.id, item.standing)
+            })
+            // Only these two have nothing in flight to answer for them.
+            .filter(|(_, standing)| matches!(standing, Standing::Waiting | Standing::Asking))
+            .map(|(id, _)| id)
+            .collect();
+
         self.queue.cancel_all();
-        for item in self.queue.items() {
-            let _ = item;
+        for id in stranded {
+            if let Some(transfer) = self.queue.payload_mut(id) {
+                transfer.phase = TransferPhase::Cancelled;
+            }
         }
         cx.notify();
     }
@@ -7729,5 +7754,63 @@ mod tests {
             None,
             "a plain download opens nothing"
         );
+    }
+
+    /// The owner pressed Cancel during a collision question and the question
+    /// stayed on screen.
+    ///
+    /// Rows render by *phase*. A transfer waiting on a person has no request
+    /// in flight, so no settlement will ever arrive to change its phase, and
+    /// marking it cancelled in the queue alone changes nothing anyone can
+    /// see. Same for one still waiting for a slot.
+    #[gpui::test]
+    fn cancelling_reaches_the_ones_with_nothing_in_flight(cx: &mut TestAppContext) {
+        let (app, cx) = looking_at(cx, "reports");
+
+        let (asking, waiting, running) = app.update(cx, |app, _| {
+            let asking = app.queue.accept(Transfer {
+                phase: TransferPhase::KeyTaken {
+                    key: "daily/taken.csv".into(),
+                },
+                ..an_upload(TransferPhase::Running)
+            });
+            app.queue.asking(asking);
+            let waiting = app.queue.accept(an_upload(TransferPhase::Running));
+            let running = app.queue.accept(an_upload(TransferPhase::Running));
+            app.queue.settled(running, Standing::Running);
+            (asking, waiting, running)
+        });
+
+        app.update(cx, |app, cx| app.cancel_queue(cx));
+
+        app.read_with(cx, |app, _| {
+            for (id, what) in [(asking, "asking"), (waiting, "waiting")] {
+                assert!(
+                    matches!(
+                        app.queue
+                            .items()
+                            .iter()
+                            .find(|i| i.id == id)
+                            .map(|i| &i.payload.phase),
+                        Some(TransferPhase::Cancelled)
+                    ),
+                    "the {what} transfer still draws its old row, so Cancel did nothing \
+                     anyone could see"
+                );
+            }
+            // The running one is stopped by its `Cancel`, and its own
+            // settlement says so — this window must not pre-empt that.
+            assert!(
+                matches!(
+                    app.queue
+                        .items()
+                        .iter()
+                        .find(|i| i.id == running)
+                        .map(|i| &i.payload.phase),
+                    Some(TransferPhase::Running)
+                ),
+                "a running transfer's own settlement reports the cancellation"
+            );
+        });
     }
 }
