@@ -163,6 +163,22 @@
   - Verification: `gh run list --limit 1 --repo vunm-io/caixonho`
 
 - [ ] 5.3 Live: delete on both kinds of bucket, and undo one
+      - **Half done, 2026-08-27. The unversioned half passed; the undo half
+        is still unrun and needs a bucket this account does not have handy.**
+      - On a **directory bucket**: the delete succeeded, the log recorded
+        `marker=false`, and no Undo was offered — which is what this change
+        requires rather than a defect. AWS lists **`S3 Versioning`** among the
+        features directory buckets do not support, so a delete marker can
+        never exist there and an Undo could never be honest.
+      - The owner went looking for the Undo button, which is worth recording
+        even though the behaviour is right: the strip *does* say
+        *"This bucket keeps no versions — it is gone"*, and it was not read.
+        A sentence at the bottom of the screen is a weaker answer to "where is
+        undo" than the absence of the button is a question.
+      - **What remains is the branch that matters most**: a delete on a
+        bucket with versioning **on**, where `marker=true` and the Undo has to
+        actually restore. Nothing has exercised it outside the doubles, and it
+        is the half this change is named for.
       [dispatch: main]
   - Paths: none
   - Done criteria: on a real account — a probe object deleted on an

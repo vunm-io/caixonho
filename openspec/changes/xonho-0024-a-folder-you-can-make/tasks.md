@@ -124,7 +124,20 @@
         Both changes landed in that one commit — see its message for why.
   - Verification: `gh run list --limit 1 --repo vunm-io/caixonho`
 
-- [ ] 3.3 Live: a folder on each kind of bucket [dispatch: main]
+- [x] 3.3 Live: a folder on each kind of bucket [dispatch: main]
+      - Done on the owner's machine, 2026-08-27. Both halves confirmed: a
+        folder made on a general purpose bucket, and the refusal read on a
+        directory one.
+      - **And the assumption underneath this whole change was finally
+        watched rather than read.** The close-out review named it as the
+        unverified one: *"if AWS behaves differently from its own
+        documentation, every test here is still green"*. The owner's delete
+        sitting settled it — `test-folderr-2/` held one object, the object was
+        deleted, and the next listing of that prefix returned **zero folders
+        and zero objects**. The directory went with its last file, exactly as
+        documented.
+      - So the refusal this change offers is not merely defensible from a
+        document; it is the behaviour of the bucket the owner uses daily.
   - Done criteria: on the owner's machine — make a folder on a **general
     purpose** bucket, leave the location, come back, and confirm it is still
     there; then ask for one on a **directory** bucket and read the refusal.

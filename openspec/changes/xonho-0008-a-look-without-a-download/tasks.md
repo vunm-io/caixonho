@@ -165,7 +165,11 @@
   - Done criteria: all four jobs successful for the tip; run id here
   - Verification: `gh run list --limit 1 --repo vunm-io/caixonho`
 
-- [ ] 6.3 Live: a log's first page, a photo, and the refusals
+- [x] 6.3 Live: a log's first page, a photo, and the refusals
+      - Done on the owner's machine, 2026-08-27, on a real account.
+      - Includes the way *out* of a preview, which 6.4 fixed the same week:
+        the breadcrumb had no effect while a preview was open, because
+        `go_to` was serving two meanings at once. Confirmed working.
       [dispatch: main]
   - Paths: none
   - Done criteria: on a real account — a large text log previewed with the
