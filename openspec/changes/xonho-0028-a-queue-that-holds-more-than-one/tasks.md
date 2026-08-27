@@ -7,7 +7,17 @@
 
 ## 1. The runner
 
-- [ ] 1.1 Work waits, and starts as slots free [dispatch: main]
+- [x] 1.1 Work waits, and starts as slots free [dispatch: main]
+      - Done in `main` (2026-08-27), in a new `caixonho-core::queue`.
+      - **It turned out to want no runtime at all**, and that shaped it: the
+        queue decides *which* work should run and starts nothing. `ready()`
+        returns the ids that may begin; the caller owns the spawning and
+        reports back. So thirteen tests run with no async, no tokio, no
+        doubles and no timing — a scheduler tested against a clock is a
+        scheduler that flakes.
+      - A bound of zero is raised to one. A queue that accepts work and never
+        starts it is not busy, it has silently stopped, and silence is the
+        failure that takes longest to notice.
   - Paths: `crates/caixonho-core/src/transfer.rs` or a new `queue` module
   - Done criteria: something that accepts more work than it runs, runs up to
     a bound, and starts a waiting item as a running one ends. Red first.
@@ -17,7 +27,14 @@
     real timing is a runner test that will flake.
   - Verification: `cargo test -p caixonho-core`
 
-- [ ] 1.2 Every event names its item [dispatch: main]
+- [x] 1.2 Every event names its item [dispatch: main]
+      - Done in `main` (2026-08-27). `TransferId` minted per accepted item,
+        and `settled` **ignores** an id the queue no longer holds.
+      - **Ablated as the task demanded**, and the ablation was written to be
+        the plausible mistake rather than an obvious one: looking the item up
+        by *position* instead of by id. That is what a hurried version does,
+        it works perfectly until something is cleared, and then it applies a
+        late answer to whatever moved into that slot. One test red.
   - Paths: as 1.1, `crates/caixonho-core/src/session.rs`
   - Done criteria: progress and settlement carry an item id, minted per
     accepted transfer. Tests: two items running, each event attributable;
@@ -29,14 +46,27 @@
     failure mode this whole task exists for.
   - Verification: `cargo test -p caixonho-core`
 
-- [ ] 1.3 A failure stays in its own item [dispatch: main]
+- [x] 1.3 A failure stays in its own item [dispatch: main]
+      - Done in `main` (2026-08-27): with a bound of two and five items where
+        the second fails, the other four still run and finish, and the failed
+        one keeps its standing.
   - Paths: as 1.1
   - Done criteria: one item failing leaves the others running and the waiting
     ones starting. Red first: with a bound of two and five items where the
     second fails, the other four still finish.
   - Verification: `cargo test -p caixonho-core`
 
-- [ ] 1.4 Waiting for a human is not waiting for a slot [dispatch: main]
+- [x] 1.4 Waiting for a human is not waiting for a slot [dispatch: main]
+      - Done in `main` (2026-08-27), and the design's prediction held: it
+        **fell out of the modelling** rather than needing special handling.
+        `Waiting` and `Asking` are separate states, `holds_a_slot` is true for
+        neither `Asking` nor anything settled, and the test was three lines.
+      - Ablated: making `Asking` hold a slot turns it red — which is the
+        version where two unanswered questions stall a queue of twenty.
+      - A third ablation beyond the plan, because the same class of mistake
+        lives next door: `retry_failed` sweeping cancelled items back in.
+        Red. A cancelled transfer is one the user stopped on purpose, and
+        retrying it would be the application overruling them.
   - Paths: as 1.1
   - Done criteria: an item waiting on a collision answer occupies no slot,
     and other items run past it. Test: bound of one, item A hits a collision,
