@@ -74,6 +74,26 @@ pub fn object_key(key: &str) -> Result<String, BadObjectKey> {
     Ok(key.to_owned())
 }
 
+/// Whether `folder` may be the prefix several files share (`XONHO-0029`).
+///
+/// Returns it with exactly one trailing `/`, so a caller cannot send the
+/// un-normalised one — the same shape [`object_key`] uses and for the same
+/// reason.
+///
+/// The empty string is **allowed** here and refused there, and that is the
+/// difference between the two questions: an object must be named, and "no
+/// folder" is a real answer meaning the bucket's root.
+pub fn folder_prefix(folder: &str) -> Result<String, BadObjectKey> {
+    let folder = folder.trim();
+    if folder.is_empty() {
+        return Ok(String::new());
+    }
+    if folder.starts_with('/') {
+        return Err(BadObjectKey::LeadingSeparator);
+    }
+    Ok(format!("{}/", folder.trim_end_matches('/')))
+}
+
 /// Why a name cannot become a folder.
 ///
 /// Each variant is a sentence a person can act on, which is the whole reason
@@ -124,6 +144,28 @@ mod tests {
     //! standing" and "An empty folder is not offered where it cannot exist".
 
     use super::*;
+
+    #[test]
+    fn a_folder_for_several_files_gets_exactly_one_separator() {
+        assert_eq!(folder_prefix("uploads"), Ok("uploads/".to_owned()));
+        assert_eq!(folder_prefix("uploads/"), Ok("uploads/".to_owned()));
+        assert_eq!(folder_prefix("uploads///"), Ok("uploads/".to_owned()));
+    }
+
+    #[test]
+    fn no_folder_means_the_root_and_is_a_real_answer() {
+        // Where `object_key` refuses the empty string, this accepts it: an
+        // object must be named, a folder need not be.
+        assert_eq!(folder_prefix("   "), Ok(String::new()));
+    }
+
+    #[test]
+    fn a_folder_starting_at_the_root_is_refused_like_a_key() {
+        assert_eq!(
+            folder_prefix("/uploads"),
+            Err(BadObjectKey::LeadingSeparator)
+        );
+    }
 
     #[test]
     fn a_plain_name_is_a_destination() {

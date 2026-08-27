@@ -85,6 +85,11 @@ pub(crate) struct CaixonhoApp {
     /// `narrowing.chosen` so that abandoning the chooser changes nothing —
     /// a picker that edited the live choice would apply half a decision.
     choosing_buckets: Option<Vec<String>>,
+    /// Why the last drop was refused, when it was (`XONHO-0029`).
+    ///
+    /// A drop that vanishes is indistinguishable from a broken application,
+    /// so a refusal is always said rather than merely not-done.
+    dropped_refusal: Option<SharedString>,
     /// The upload waiting on a destination, if one is (`XONHO-0026`).
     choosing_destination: Option<ChoosingDestination>,
     /// Where the object will land. Its own input rather than a `String` on the
@@ -325,10 +330,23 @@ struct ChoosingDestination {
     // on any switch. A field nobody reads is how a guarantee comes to look
     // enforced when it is not.
     bucket: String,
-    /// The local file, held until there is somewhere to send it.
-    source: std::path::PathBuf,
+    /// The local files, held until there is somewhere to send them.
+    ///
+    /// One or many, and the count is what the destination field *means*
+    /// (`XONHO-0029`): with one it is the whole key, editable down to the
+    /// file's name; with several it is the folder they share, each keeping
+    /// its own. Two meanings for one control is a real hazard, and the
+    /// mitigation is words on the strip rather than cleverness here.
+    sources: Vec<std::path::PathBuf>,
     /// Why the last attempt was refused, when it was. Nothing was sent.
     refused: Option<caixonho_core::folder::BadObjectKey>,
+}
+
+impl ChoosingDestination {
+    /// Whether the destination being asked for is a folder rather than a key.
+    fn wants_a_folder(&self) -> bool {
+        self.sources.len() > 1
+    }
 }
 
 impl TransferPhase {
@@ -374,6 +392,35 @@ impl Transfer {
             phase: TransferPhase::Running,
         }
     }
+}
+
+/// Whether this dragged thing is something the window can take.
+///
+/// Used by `can_drop`, by the drag-over styling and by the drop handler, so
+/// all three answer the same question. Anything that is not a set of external
+/// paths is not ours.
+fn droppable(dragged: &dyn std::any::Any) -> Result<(), SharedString> {
+    match dragged.downcast_ref::<gpui::ExternalPaths>() {
+        Some(paths) => droppable_paths(paths.paths()),
+        None => Err("Only files can be dropped here.".into()),
+    }
+}
+
+/// Whether these paths are files this window will upload.
+///
+/// A **folder** is refused rather than partly honoured. Three options were
+/// weighed in `design.md` and the tempting one — upload the files at its top
+/// level — is the worst available: it does part of a job, and the user cannot
+/// see which part without comparing by hand. Walking the tree is the separate
+/// `[M]` about preserving prefix structure.
+fn droppable_paths(paths: &[std::path::PathBuf]) -> Result<(), SharedString> {
+    if paths.is_empty() {
+        return Err("Nothing was dropped.".into());
+    }
+    if paths.iter().any(|path| path.is_dir()) {
+        return Err("Folders cannot be uploaded yet — drop the files inside them instead.".into());
+    }
+    Ok(())
 }
 
 /// How many transfers run at once (`XONHO-0028`).
@@ -871,6 +918,7 @@ impl CaixonhoApp {
             queue: Queue::new(TRANSFERS_AT_ONCE),
             transfers,
             deletion: None,
+            dropped_refusal: None,
             choosing_buckets: None,
             choosing_destination: None,
             destination,
@@ -1290,35 +1338,25 @@ impl CaixonhoApp {
     }
 
     fn upload_here(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(location) = self.location().cloned() else {
+        if self.location().is_none() {
             return;
-        };
+        }
         let ask = cx.prompt_for_paths(gpui::PathPromptOptions {
             files: true,
             directories: false,
-            multiple: false,
+            // Was `false`, and that one word was why `XONHO-0028`'s queue had
+            // nothing to fill it: six transfers meant six presses of this
+            // button.
+            multiple: true,
             prompt: Some("Upload".into()),
         });
         cx.spawn_in(window, async move |this, cx| {
-            let Ok(Ok(Some(mut chosen))) = ask.await else {
+            let Ok(Ok(Some(chosen))) = ask.await else {
                 return; // Cancelled dialog, or the platform refused it.
             };
-            let Some(path) = chosen.pop() else {
-                return;
-            };
-            let Some(name) = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(ToOwned::to_owned)
-            else {
-                return;
-            };
-            // The destination is *offered*, not decided. This is exactly the
-            // string this line used to send without asking, and it is now
-            // what the field starts at (`XONHO-0026`).
-            let proposed = format!("{}{name}", location.prefix.as_str());
+            // Through the same door a drop comes through.
             let _ = this.update_in(cx, |app, window, cx| {
-                app.offer_destination(location.bucket.clone(), path, proposed, window, cx);
+                app.offer_upload_of(chosen, window, cx);
             });
         })
         .detach();
@@ -1328,37 +1366,145 @@ impl CaixonhoApp {
     fn offer_destination(
         &mut self,
         bucket: String,
-        source: std::path::PathBuf,
+        sources: Vec<std::path::PathBuf>,
         proposed: String,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if sources.is_empty() {
+            return;
+        }
+        // The placeholder carries the meaning too, and is set here rather
+        // than at render because it belongs to the state. A label saying
+        // "folder" over a box hinting `bucket/path/name` is a small
+        // contradiction, and small contradictions are what a reader resolves
+        // by guessing.
+        let hint = if sources.len() > 1 {
+            "path/to/folder — blank means this one"
+        } else {
+            "bucket/path/name"
+        };
         self.destination.update(cx, |state, cx| {
+            state.set_placeholder(hint, window, cx);
             state.set_value(proposed, window, cx);
         });
         self.choosing_destination = Some(ChoosingDestination {
             bucket,
-            source,
+            sources,
             refused: None,
         });
         cx.notify();
     }
 
-    /// Send it, to whatever the field says.
+    /// What a drop does, or why it cannot.
+    ///
+    /// One place, asked three times — before the drop by `can_drop`, during
+    /// it by the styling, and after it by the handler. Three predicates that
+    /// were meant to agree is how a window comes to promise a landing it then
+    /// refuses.
+    fn take_dropped(
+        &mut self,
+        paths: &[std::path::PathBuf],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.location().is_none() {
+            // Silence here would be indistinguishable from a broken
+            // application: the user did something and nothing happened.
+            self.dropped_refusal =
+                Some("Open a bucket first — there is nowhere to put these yet.".into());
+            cx.notify();
+            return;
+        }
+        let files: Vec<std::path::PathBuf> = paths.to_vec();
+        match droppable_paths(&files) {
+            Ok(()) => {
+                self.dropped_refusal = None;
+                self.offer_upload_of(files, window, cx);
+            }
+            Err(reason) => {
+                self.dropped_refusal = Some(reason);
+                cx.notify();
+            }
+        }
+    }
+
+    /// Take on these local files, asking where they go.
+    ///
+    /// The one door both `Upload…` and a drop come through. Two doors would
+    /// become two behaviours, and a drop is meant to be the same act reached
+    /// with the hand instead of the button (`XONHO-0029`).
+    fn offer_upload_of(
+        &mut self,
+        paths: Vec<std::path::PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(location) = self.location().cloned() else {
+            return;
+        };
+        // With one file the whole key is offered, exactly as `XONHO-0026`
+        // left it. With several the folder is, because typing ten keys is
+        // not a thing anyone would do.
+        let proposed = match paths.split_first() {
+            Some((only, [])) => format!(
+                "{}{}",
+                location.prefix.as_str(),
+                only.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or_default()
+            ),
+            _ => location.prefix.as_str().to_owned(),
+        };
+        self.offer_destination(location.bucket.clone(), paths, proposed, window, cx);
+    }
+
+    /// Send them, to whatever the field says.
+    ///
+    /// One file: the field is the whole key. Several: it is the folder they
+    /// share, and each keeps its own name — which is why the two go through
+    /// different rules in `core::folder` rather than through one that tries
+    /// to be both.
     fn confirm_destination(&mut self, cx: &mut Context<Self>) {
         let Some(choosing) = self.choosing_destination.as_ref() else {
             return;
         };
         // Read from the control, never recomposed from the location and the
-        // file name — that recomposition is the whole thing this change
-        // removes, and doing it here would put it back where no reader would
-        // look for it.
+        // file name — that recomposition is the thing `XONHO-0026` removed,
+        // and doing it here would put it back where no reader would look.
         let typed = self.destination.read(cx).value().to_string();
-        let key = match caixonho_core::folder::object_key(&typed) {
-            Ok(key) => key,
+        let bucket = choosing.bucket.clone();
+        let sources = choosing.sources.clone();
+
+        let keyed: Result<Vec<(String, std::path::PathBuf)>, _> = if choosing.wants_a_folder() {
+            caixonho_core::folder::folder_prefix(&typed).and_then(|prefix| {
+                sources
+                    .into_iter()
+                    .map(|path| {
+                        let name = path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or_default();
+                        caixonho_core::folder::object_key(&format!("{prefix}{name}"))
+                            .map(|key| (key, path))
+                    })
+                    .collect()
+            })
+        } else {
+            caixonho_core::folder::object_key(&typed).map(|key| {
+                sources
+                    .into_iter()
+                    .map(|path| (key.clone(), path))
+                    .collect()
+            })
+        };
+
+        let keyed = match keyed {
+            Ok(keyed) => keyed,
             Err(bad) => {
                 // Nothing is sent. A mistake costs a sentence, not a request
-                // and an unexplained failure.
+                // and an unexplained failure — and with several files it must
+                // cost nothing *partly* sent either.
                 if let Some(choosing) = self.choosing_destination.as_mut() {
                     choosing.refused = Some(bad);
                 }
@@ -1366,16 +1512,18 @@ impl CaixonhoApp {
                 return;
             }
         };
-        let (bucket, source) = (choosing.bucket.clone(), choosing.source.clone());
+
         self.choosing_destination = None;
-        self.start_upload(
-            None,
-            bucket,
-            key,
-            source,
-            caixonho_core::transfer::Collision::Ask,
-            cx,
-        );
+        for (key, path) in keyed {
+            self.start_upload(
+                None,
+                bucket.clone(),
+                key,
+                path,
+                caixonho_core::transfer::Collision::Ask,
+                cx,
+            );
+        }
     }
 
     /// Start one upload and hold it as the window's transfer.
@@ -3203,6 +3351,30 @@ impl CaixonhoApp {
         v_flex()
             .size_full()
             .gap(space::TIGHT)
+            // Files dropped anywhere over a bucket's contents are uploaded to
+            // the location on screen (`XONHO-0029`). The target is the
+            // location rather than a row: dropping onto `reports/` to land
+            // inside it needs a hit-tested destination and an answer for
+            // dropping onto a *file*, which is a different and much larger
+            // feature.
+            //
+            // `can_drop` and the drag-over styling are decided by the *same*
+            // predicate below, because a window that shows "will land" and
+            // then refuses is worse than one that shows nothing.
+            .id("contents-drop-target")
+            .can_drop(|dragged, _, _| droppable(dragged).is_ok())
+            .drag_over::<gpui::ExternalPaths>(|style, dragged, _, cx| {
+                if droppable(dragged).is_ok() {
+                    style.bg(cx.theme().primary.opacity(0.08))
+                } else {
+                    style
+                }
+            })
+            .on_drop::<gpui::ExternalPaths>(cx.listener(
+                |app, dropped: &gpui::ExternalPaths, window, cx| {
+                    app.take_dropped(dropped.paths(), window, cx);
+                },
+            ))
             .child(self.path_bar(&location, cx))
             // `v_flex`, not a bare `div`: the states below size themselves
             // with `size_full`, which resolves against a parent that is a
@@ -3211,6 +3383,24 @@ impl CaixonhoApp {
             // family of bug as the `h_flex` one in `design-language.md`.
             .child(v_flex().flex_1().min_h_0().child(body))
             .children(self.destination_line(cx))
+            .children(self.dropped_refusal.clone().map(|reason| {
+                h_flex()
+                    .debug_selector(|| "drop-refused".into())
+                    .w_full()
+                    .gap(space::TIGHT)
+                    .items_center()
+                    .child(div().text_sm().child(reason))
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("drop-refused-dismiss")
+                            .label("Dismiss")
+                            .ghost()
+                            .on_click(cx.listener(|app, _, _, cx| {
+                                app.dropped_refusal = None;
+                                cx.notify();
+                            })),
+                    )
+            }))
             .children(self.queue_panel(cx))
             .children(self.deletion_line(cx))
             .children(self.folder_line(cx))
@@ -3413,7 +3603,14 @@ impl CaixonhoApp {
                 .w_full()
                 .gap(space::TIGHT)
                 .items_center()
-                .child(div().text_sm().child("Upload to:"))
+                // Two meanings for one field, so the label carries the
+                // difference rather than leaving it to be inferred: a key
+                // when there is one file, a folder when there are several.
+                .child(div().text_sm().child(if choosing.wants_a_folder() {
+                    format!("Upload {} files into folder:", choosing.sources.len())
+                } else {
+                    "Upload to:".to_owned()
+                }))
                 .child(div().w(px(380.)).child(Input::new(&self.destination)))
                 // The refusal sits beside the field it is about, so the fix is
                 // where the mistake is.
@@ -6105,10 +6302,42 @@ mod tests {
                 app.listing = Listing::Loaded;
                 app.offer_destination(
                     "reports".to_owned(),
-                    std::path::PathBuf::from("/tmp/summary.csv"),
+                    vec![std::path::PathBuf::from("/tmp/summary.csv")],
                     "daily/summary.csv".to_owned(),
                     window,
                     cx,
+                );
+            },
+        ));
+
+        // Several files sharing one folder, and a refused drop. The first is
+        // the frame to judge: "Upload 6 files into folder:" has to be
+        // distinguishable at a glance from "Upload to:", because the field
+        // means different things and only the words say which (`XONHO-0029`).
+        written.push(shoot(
+            "bucket-19-upload-many-into-a-folder",
+            Arc::new(StoreDouble::allows_listing()),
+            |app, window, cx| {
+                inside(app, cx);
+                app.listing = Listing::Loaded;
+                app.offer_upload_of(
+                    (1..=6)
+                        .map(|n| std::path::PathBuf::from(format!("/tmp/report-{n}.csv")))
+                        .collect(),
+                    window,
+                    cx,
+                );
+            },
+        ));
+
+        written.push(shoot(
+            "bucket-20-drop-refused",
+            Arc::new(StoreDouble::allows_listing()),
+            |app, _, cx| {
+                inside(app, cx);
+                app.listing = Listing::Loaded;
+                app.dropped_refusal = Some(
+                    "Folders cannot be uploaded yet — drop the files inside them instead.".into(),
                 );
             },
         ));
@@ -6121,7 +6350,7 @@ mod tests {
                 app.listing = Listing::Loaded;
                 app.offer_destination(
                     "reports".to_owned(),
-                    std::path::PathBuf::from("/tmp/summary.csv"),
+                    vec![std::path::PathBuf::from("/tmp/summary.csv")],
                     "daily/summary.csv".to_owned(),
                     window,
                     cx,
@@ -6814,7 +7043,7 @@ mod tests {
         app.update_in(cx, |app, window, cx| {
             app.offer_destination(
                 "reports".to_owned(),
-                file,
+                vec![file],
                 "daily/summary.csv".to_owned(),
                 window,
                 cx,
@@ -6850,7 +7079,7 @@ mod tests {
         app.update_in(cx, |app, window, cx| {
             app.offer_destination(
                 "reports".to_owned(),
-                file,
+                vec![file],
                 "daily/summary.csv".to_owned(),
                 window,
                 cx,
@@ -6888,7 +7117,7 @@ mod tests {
             app.update_in(cx, |app, window, cx| {
                 app.offer_destination(
                     "reports".to_owned(),
-                    file.clone(),
+                    vec![file.clone()],
                     "daily/summary.csv".to_owned(),
                     window,
                     cx,
@@ -6920,7 +7149,7 @@ mod tests {
         app.update_in(cx, |app, window, cx| {
             app.offer_destination(
                 "reports".to_owned(),
-                file,
+                vec![file],
                 "daily/summary.csv".to_owned(),
                 window,
                 cx,
@@ -7270,5 +7499,149 @@ mod tests {
         });
 
         assert!(!refreshed, "a download wrote nothing to the bucket");
+    }
+
+    // ---- Files dropped onto the window (XONHO-0029) ----
+
+    fn a_local(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join("caixonho-dropped");
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let path = dir.join(name);
+        std::fs::write(&path, b"x").expect("a temp file");
+        path
+    }
+
+    #[gpui::test]
+    fn several_files_share_a_folder_and_keep_their_names(cx: &mut TestAppContext) {
+        let (app, cx) = uploading_from(cx, "reports");
+        let files = vec![a_local("one.csv"), a_local("two.csv"), a_local("three.csv")];
+
+        app.update_in(cx, |app, window, cx| {
+            app.offer_upload_of(files, window, cx);
+            app.destination.update(cx, |state, cx| {
+                state.set_value("uploads/2026", window, cx);
+            });
+            app.confirm_destination(cx);
+        });
+
+        app.read_with(cx, |app, _| {
+            let keys: Vec<&str> = app
+                .queue
+                .items()
+                .iter()
+                .map(|item| item.payload.key.as_str())
+                .collect();
+            assert_eq!(
+                keys,
+                vec![
+                    "uploads/2026/one.csv",
+                    "uploads/2026/two.csv",
+                    "uploads/2026/three.csv"
+                ],
+                "each file must keep its own name under the shared folder"
+            );
+        });
+    }
+
+    /// One file is unchanged from `XONHO-0026`: the whole key, editable down
+    /// to the name.
+    #[gpui::test]
+    fn one_file_still_gets_a_whole_editable_key(cx: &mut TestAppContext) {
+        let (app, cx) = uploading_from(cx, "reports");
+
+        app.update_in(cx, |app, window, cx| {
+            app.offer_upload_of(vec![a_local("one.csv")], window, cx);
+            app.destination.update(cx, |state, cx| {
+                state.set_value("somewhere/renamed.txt", window, cx);
+            });
+            app.confirm_destination(cx);
+        });
+
+        app.read_with(cx, |app, _| {
+            assert_eq!(
+                app.queue.items()[0].payload.key,
+                "somewhere/renamed.txt",
+                "one file must still be renameable, which is what XONHO-0026 bought"
+            );
+        });
+    }
+
+    /// A refusal must cost nothing *partly* sent: with several files, one bad
+    /// folder cannot leave some of them uploaded.
+    #[gpui::test]
+    fn a_refused_folder_sends_none_of_them(cx: &mut TestAppContext) {
+        let (app, cx) = uploading_from(cx, "reports");
+        let files = vec![a_local("one.csv"), a_local("two.csv")];
+
+        app.update_in(cx, |app, window, cx| {
+            app.offer_upload_of(files, window, cx);
+            app.destination.update(cx, |state, cx| {
+                state.set_value("/rooted", window, cx);
+            });
+            app.confirm_destination(cx);
+        });
+
+        app.read_with(cx, |app, _| {
+            assert!(app.queue.is_empty(), "a refused folder sent something");
+            assert!(
+                app.choosing_destination
+                    .as_ref()
+                    .is_some_and(|c| c.refused.is_some()),
+                "and it must say why"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn a_drop_with_nowhere_to_go_says_so(cx: &mut TestAppContext) {
+        let (app, cx) = listing_of(cx, vec![bucket_of("reports", BucketKind::General)]);
+
+        app.update_in(cx, |app, window, cx| {
+            app.take_dropped(&[a_local("one.csv")], window, cx);
+        });
+
+        app.read_with(cx, |app, _| {
+            assert!(
+                app.queue.is_empty(),
+                "nothing may be uploaded with no location"
+            );
+            assert!(
+                app.dropped_refusal.is_some(),
+                "a drop that vanishes is indistinguishable from a broken application"
+            );
+        });
+    }
+
+    /// Partly honouring a dropped folder is the tempting option and the worst.
+    #[gpui::test]
+    fn a_dropped_folder_is_refused_rather_than_partly_honoured(cx: &mut TestAppContext) {
+        let (app, cx) = uploading_from(cx, "reports");
+        let folder = std::env::temp_dir().join("caixonho-dropped");
+        std::fs::create_dir_all(&folder).expect("a temp dir");
+
+        app.update_in(cx, |app, window, cx| {
+            app.take_dropped(&[folder], window, cx);
+        });
+
+        app.read_with(cx, |app, _| {
+            assert!(app.queue.is_empty());
+            assert!(app.choosing_destination.is_none(), "nor may it ask where");
+            assert!(app.dropped_refusal.is_some());
+        });
+    }
+
+    /// The three predicates that decide a drop must agree, or the window
+    /// promises a landing it then refuses.
+    #[gpui::test]
+    fn what_can_drop_admits_is_what_the_handler_takes(_cx: &mut TestAppContext) {
+        let folder = std::env::temp_dir().join("caixonho-dropped");
+        std::fs::create_dir_all(&folder).expect("a temp dir");
+
+        assert!(droppable_paths(&[a_local("one.csv")]).is_ok());
+        assert!(
+            droppable_paths(&[]).is_err(),
+            "nothing dropped is not a drop"
+        );
+        assert!(droppable_paths(&[folder]).is_err());
     }
 }
