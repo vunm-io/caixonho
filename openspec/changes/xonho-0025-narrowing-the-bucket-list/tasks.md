@@ -155,7 +155,20 @@
         Both changes landed in that one commit — see its message for why.
   - Verification: `gh run list --limit 1 --repo vunm-io/caixonho`
 
-- [ ] 3.3 Live: the work account, which is what prompted this
+- [x] 3.3 Live: the work account, which is what prompted this
+      - **Failed on the first attempt, 2026-08-26, and that failure is the
+        change's most useful outcome.** Turning the narrowing on immediately
+        after switching — the sequence this task specifies, chosen because it
+        is the one that catches a frozen filter — left every refused bucket
+        listed, each wearing its own **No access** badge. See 2.6 for the
+        cause and for the task note that claimed a test it never had.
+      - **Passed on 2026-08-27** with the fix in place: the refused buckets
+        leave as their answers arrive, and the account settles at the ones it
+        can open. Kind and name narrowing confirmed in the same sitting.
+      - What this task got right and is worth reusing: it named the *timing*
+        rather than the outcome. "Turn it on before the probes have settled"
+        is what made the defect reachable; "check the filter works" would have
+        passed on a settled account and shipped the bug.
       [dispatch: main]
   - Done criteria: on the owner's machine, open the account that lists eleven
     buckets and can open three. Turn the narrowing on **immediately, before

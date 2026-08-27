@@ -287,6 +287,35 @@ Recorded here rather than in a change's tasks because `XONHO-0017` — whose
 territory this is — was archived on 2026-08-24, and a finding that lives only
 in a commit message is a finding nobody will find.
 
+### The screenshot harness photographs states, not widths (2026-08-27)
+
+Four defects were found by the owner in one morning of live checking, and two
+of them — a verb clipped off the end of a row, and a bucket name drawn on top
+of the buttons beside it — were **layout failures at a narrower window than
+the harness uses**.
+
+`every_state_is_written_for_judgement` captures every state this application
+can be in, asserts they are pixel-distinct, and had nothing to say about
+either. It renders at one fixed size. Every state it photographs is a state of
+the *data*; none is a state of the *window*.
+
+That is not a flaw in what it does — it caught a chooser wired into a pane it
+could never appear in, on the same morning, which no amount of resizing would
+have found. It is a gap beside it: the two kinds of defect need two kinds of
+capture, and only one exists.
+
+Worth considering, cheapest first:
+
+- **A second width.** Shoot two or three of the busiest screens at a narrow
+  size as well. Cheap, and would have caught both of this morning's.
+- **A bounds assertion.** `XONHO-0009` already added `debug_bounds` and used
+  it to prove a message body stays inside its panel. The same shape applies:
+  assert the last verb's right edge sits inside the row. Narrower than a
+  screenshot and it fails with a number rather than needing an eye.
+
+The second is the better instrument and the first is the better net. Neither
+is built.
+
 ### Deleting a folder, and the row actions the owner asked for (2026-08-27)
 
 Two findings from the same live check, and they turn out to be one change.

@@ -127,7 +127,25 @@
         **run** on Windows — see the M0b note in `docs/roadmap.md`.
   - Verification: `gh run list --limit 1 --repo vunm-io/caixonho`
 
-- [ ] 3.3 Live: a folder made the way `XONHO-0024` says to [dispatch: main]
+- [x] 3.3 Live: a folder made the way `XONHO-0024` says to [dispatch: main]
+      - Done on the owner's machine, 2026-08-27, on a **directory bucket**: a
+        file sent to a typed destination whose folder did not exist, and both
+        the object and the folder were there.
+      - **So `XONHO-0024`'s advice is now true.** That change tells the user a
+        directory bucket keeps a folder only while something is in it and to
+        upload into the path they want instead; until this landed, the
+        application could not take its own advice. This sitting closes that
+        loop, which is what the task was written to do.
+      - **It failed the first time, and not for a reason in this change.** The
+        object was written and the folder existed at the service — but the
+        listing on screen was not re-read, so neither appeared until the user
+        navigated away and back. That is `XONHO-0020`'s upload path, which
+        predates `XONHO-0024`'s "a folder nobody can see is a folder nobody
+        believes in" and never learned it. Fixed and tested there.
+      - The lesson for this task's wording: it asked whether the folders "are
+        there", and the owner reasonably read that as *on screen*. A live
+        check that means "at the service" and a live check that means "in
+        front of the user" are different checks, and this one needed both.
   - Done criteria: on the owner's machine, on a **directory bucket**, upload
     a file to a typed destination two levels deep that does not exist yet.
     Expected: it lands, and the folders are there. **This is the check that
