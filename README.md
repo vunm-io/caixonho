@@ -168,10 +168,12 @@ honest about permissions and fast on huge buckets*:
 
 ## Running a beta build
 
-Builds come from CI, one per green run: the **Artifacts** at the bottom of any
-[Actions run](https://github.com/vunm-io/caixonho/actions). Downloading them
-needs a GitHub account — artifacts are not served anonymously, even from a
-public repository.
+Tagged builds are attached to each
+[release](https://github.com/vunm-io/caixonho/releases) and download without a
+GitHub account. Newer ones appear as **Artifacts** on every green
+[Actions run](https://github.com/vunm-io/caixonho/actions), and those *do* need
+an account — artifacts are not served anonymously even from a public
+repository.
 
 They are **not signed or notarized**, so:
 
