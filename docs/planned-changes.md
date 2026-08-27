@@ -49,6 +49,7 @@ branch nobody can land.
 | `XONHO-0027` | Choosing once which buckets a connection shows, and remembering it | §4.2 | M1 |
 | `XONHO-0028` | A transfer queue: many at once, bounded, each failure contained | §4.4 | M2 |
 | `XONHO-0029` | Files dropped onto the window, and a picker that takes more than one | §4.4 | M2 |
+| `XONHO-0030` | Right-click a row, select several, and delete in bulk with a counted confirmation | §4.5 | M3 |
 
 `XONHO-0008` depends on `XONHO-0007`: a preview is the same download path
 asking for the first N KB instead of the whole object.
@@ -362,9 +363,9 @@ sixty-character directory-bucket name do not fit, and flex properties only
 decide who loses. Moving per-row actions off the toolbar shortens the row for
 good.
 
-Not issued. Multi-select and bulk delete want the transfer queue that §4.4's
-three unbuilt `[M]` rows are already waiting on, so the ordering question is
-whether the row actions go first alone.
+**Issued as `XONHO-0030` on 2026-08-27.** The ordering question answered
+itself: `XONHO-0028` built the queue, so bulk delete stopped needing its own
+progress machinery and became the same machine with a different verb.
 
 ### A forgotten choice and a chosen everything are not the same (2026-08-26)
 
