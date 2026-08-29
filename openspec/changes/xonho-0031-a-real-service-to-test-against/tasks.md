@@ -121,12 +121,19 @@
 
 ## 4. What this does and does not buy
 
-- [ ] 4.1 A test per exclusion, that fails when the reason stops holding
+- [x] 4.1 A test per exclusion, that fails when the reason stops holding
       [dispatch: main]
   - Done criteria: named tests recording that this service has no versioning
     (so no Undo), no IAM (so no denials), and no directory buckets. Where the
     reason is observable — a delete answering with no version id — assert it.
   - A comment becomes folklore the day the dependency changes. A test does not.
+  - **Three, and one of them was found rather than anticipated.** Versioning
+    (a delete answers with no marker) and denials (a listing of a bucket
+    nobody granted is not refused) were both in the plan. The third was not:
+    `s3s-fs` stores a folder marker as a *directory* (`s3.rs:895`) and derives
+    common prefixes only from *files* (`s3.rs:1712`), so an empty folder is
+    invisible to it — which means `XONHO-0024`'s own scenario cannot be proven
+    here. Found by a test failing, and kept as a test rather than deleted.
   - Verification: the tests, and the names reading as the exclusions
 
 - [ ] 4.2 Re-state the roadmap honestly [dispatch: main]
@@ -139,9 +146,14 @@
     mode, not understating.
   - Verification: the table read against the tests that exist
 
-- [ ] 4.3 Say what it costs [dispatch: main]
-  - Done criteria: the suite's wall-clock before and after, recorded here.
-    Twenty whole-stack flows at a second each is a minute nobody chose.
+- [x] 4.3 Say what it costs [dispatch: main]
+  - **Measured.** The two new binaries cost **0.74s + 0.72s**; the whole
+    workspace suite runs in **~13.6s** wall-clock including compilation, and
+    the test phases total under 4s. Seventeen whole-stack flows for one and a
+    half seconds, because the service is in-process and the tree is tiny.
+  - The one to watch is `a_walk_past_one_page…`, which seeds 1001 objects on
+    the filesystem. It is the slowest at ~0.8s and it is the price of that
+    test being honest rather than passing on a single page.
   - Verification: `cargo test --workspace` timings
 
 ## 5. Close-out

@@ -1,5 +1,14 @@
 //! A real S3 service the tests start themselves (`XONHO-0031`).
 //!
+//! `dead_code` is allowed for one reason and it is a real one: a shared test
+//! module is compiled **into each integration binary separately**, and each of
+//! them uses a subset — the adapter tests never touch `Connected::settled`,
+//! the session tests never touch `store` alone. Without this every binary
+//! warns about whatever the other one needs. It is not a licence to leave
+//! unused helpers here; the close-out review still asks.
+#![allow(dead_code)]
+
+//!
 //! The adapter is the one file that turns this project's intentions into
 //! HTTP, and neither of its existing test tiers sends a request: `StoreDouble`
 //! answers **above** it and `StaticReplayClient` replays bytes **below** it.
@@ -217,9 +226,16 @@ pub fn config_for(service: &Service) -> (tempfile::TempDir, caixonho_core::Confi
 /// The profile name the config file declares, and what a failure names back.
 pub const PROFILE: &str = "local";
 
-/// An adapter talking to `service`, reached the way the application reaches
-/// one: through [`config_for`] and `Session::open`.
+/// A session opened against `service`, reached the way the application
+/// reaches one: through [`config_for`] and `Session::open`.
+///
+/// The session is kept, not only the store, and that is the point of this
+/// type. `Session::open` installs a real `S3ObjectStore` into the session as
+/// its last act, so every `spawn_*` afterwards goes to the real service —
+/// which makes the whole async layer the window sits on testable here, off
+/// the render thread and without gpui.
 pub struct Connected {
+    pub session: caixonho_core::Session,
     pub store: std::sync::Arc<dyn caixonho_core::ObjectStore>,
     _config: tempfile::TempDir,
 }
@@ -243,7 +259,23 @@ impl Connected {
 
         Self {
             store: std::sync::Arc::new(caixonho_core::S3ObjectStore::new(&connection)),
+            session,
             _config: dir,
         }
+    }
+
+    /// Await one `spawn_*` call, which delivers on a runtime thread.
+    ///
+    /// Every spawn here hands its outcome to a callback rather than returning
+    /// a future — because the window has no `await` to give it — so a test
+    /// bridges the two. Delivery is exactly once, so a oneshot is the right
+    /// shape and a second delivery would be a panic rather than a silent
+    /// overwrite.
+    pub async fn settled<T: Send + 'static>(spawn: impl FnOnce(Box<dyn FnOnce(T) + Send>)) -> T {
+        let (tell, told) = tokio::sync::oneshot::channel();
+        spawn(Box::new(move |outcome| {
+            let _ = tell.send(outcome);
+        }));
+        told.await.expect("delivered exactly once")
     }
 }
