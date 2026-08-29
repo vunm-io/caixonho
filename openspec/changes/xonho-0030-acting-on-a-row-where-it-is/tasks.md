@@ -142,8 +142,19 @@
       -D warnings`, `cargo test --workspace` green [dispatch: main]
   - Verification: the commands themselves
 
-- [ ] 5.2 CI green on both targets, run id recorded here [dispatch: main]
-  - Verification: `gh run list --limit 1 --repo vunm-io/caixonho`
+- [x] 5.2 CI green on both targets, run id recorded here [dispatch: main]
+  - Run **33229709376**, 4m30s: rustfmt, dependency audit,
+    `build (macos-latest)` and `build (windows-latest)` all success, 0
+    annotations.
+  - The run before it (**33229546118**) was red on Windows, and the reason is
+    worth keeping: splitting `shoot` into `shoot`/`shoot_at` left the new
+    function ungated while it calls the macOS-gated `judgement_dir`.
+    `cargo clippy --workspace --all-targets` on macOS cannot see that — it
+    compiles the macOS branch and only that one — so a clean local clippy was
+    never evidence about the other target. Checked since by walking the file
+    for every gated item and confirming each reference to one sits inside
+    another.
+  - Verification: `gh run view 33229709376 --repo vunm-io/caixonho`
 
 - [ ] 5.3 Live: delete several, and delete a folder [dispatch: main]
   - Done criteria: on the owner's machine, on a **directory bucket**: select
