@@ -14,17 +14,16 @@
 
 ## 1. A service the tests can start
 
-- [ ] 1.1 `s3s-fs` as a dev-dependency, and the audit still clean
+- [x] 1.1 `s3s-fs` as a dev-dependency, and the audit still clean
       [dispatch: main]
   - Paths: `Cargo.toml`, `crates/caixonho-core/Cargo.toml`
   - Done criteria: pinned in `[workspace.dependencies]` beside the others, with
     a comment saying why a test dependency is allowed here at all — `XONHO-0017`
     trimmed this graph deliberately and the next reader deserves the reason.
-  - **Verification: `cargo deny check advisories` over the real merged graph.**
-    Measured on the isolated graph already (0 vulnerabilities, `advisories ok`);
-    that is not the same as measuring it here.
+  - **Verified: `cargo deny check advisories` over the merged graph answers
+    `advisories ok`.** 372 crates in `caixonho-core`'s tree, up from 224.
 
-- [ ] 1.2 Start one, on a port the OS chooses [dispatch: main]
+- [x] 1.2 Start one, on a port the OS chooses [dispatch: main]
   - Paths: `crates/caixonho-core/tests/` (new)
   - Done criteria: a helper that binds `127.0.0.1:0`, serves an empty
     filesystem root under a temporary directory, hands back the base URL, and
@@ -32,38 +31,53 @@
     resolves.
   - **Port 0, never a constant.** Two tests at once on a fixed port is a
     flake that reads as a product bug.
+  - **What cost an hour, and is worth having written down:** the base domain
+    must carry the port — `localhost:54321`, not `localhost`. `s3s` matches a
+    virtual host with `strip_suffix(base_domain)`, which the port defeats, so
+    every bucket request silently fell back to path-style and the service
+    answered a *different operation* with HTTP 200. What reached the caller was
+    `Unexpected { detail: "the service answered HTTP 200" }` — a message that
+    reads like a product defect and is not one. The listener is therefore bound
+    before the service is built, because the port is the OS's to choose.
   - Verification: a test that starts one, lists nothing, and stops
 
 ## 2. The adapter over real HTTP
 
-- [ ] 2.1 Reach it the way the application does [dispatch: main]
+- [x] 2.1 Reach it the way the application does [dispatch: main]
   - Paths: `crates/caixonho-core/tests/`
   - Done criteria: a temporary AWS config file naming `endpoint_url` and static
     keys, then `Session::open` — not a hand-built `SdkConfig`. The tier exists
     to test the wiring, and hand-building the configuration tests around it.
   - Verification: one listing that works
 
-- [ ] 2.2 Listing, both shapes [dispatch: main]
+- [x] 2.2 Listing, both shapes [dispatch: main]
   - Done criteria: a location read with the delimiter groups into folders and
     objects; the flat walk (`list_keys_under`) returns every key at every
     depth. The same fixture through both, so the *difference* is what is
     asserted rather than each in isolation.
   - Verification: `cargo test -p caixonho-core --test <name>`
 
-- [ ] 2.3 Pagination, past one page [dispatch: main]
+- [x] 2.3 Pagination, past one page [dispatch: main]
   - Done criteria: more objects than one page, and the walk reports the total.
     `XONHO-0030` proved this against a scripted double; this proves the
     continuation token the *real* service mints round-trips.
-  - Verification: the test
+  - **First draft of this test was a lie.** It seeded 25 objects, and the
+    adapter sets no `max_keys`, so the service's default of 1000 fetched
+    everything in one page — the test passed without ever touching a
+    continuation token, while its name reported the requirement as covered.
+    1001 objects now, with `pages > 1` asserted; ablated back to 25 and it goes
+    red. This is the same failure as `XONHO-0025`'s missing test, caught this
+    time before the commit rather than by the owner afterwards.
+  - Verification: the test, and the ablation
 
-- [ ] 2.4 The conditional write [dispatch: main]
+- [x] 2.4 The conditional write [dispatch: main]
   - Done criteria: a write to a free key lands; a conditional write to a taken
     key comes back as the question, refused **by the service**. This is the
     guarantee `XONHO-0020` claims and the first time anything has checked that
     a real service makes it.
   - Verification: the test
 
-- [ ] 2.5 Get, delete, and the round trip [dispatch: main]
+- [x] 2.5 Get, delete, and the round trip [dispatch: main]
   - Done criteria: bytes written come back byte-identical; a delete removes the
     key and the next listing does not show it.
   - Verification: the test

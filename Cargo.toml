@@ -28,6 +28,22 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", features = [
 gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "7a9ac172e804ce89aebac644a02f09813dc9e793" }
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "7a9ac172e804ce89aebac644a02f09813dc9e793" }
 
+# XONHO-0031. An S3 service the tests start themselves, so a generic-S3 flow
+# stops needing the owner to accept it by hand. Dev-only, and that matters
+# here more than usual: XONHO-0017 spent real effort getting this workspace's
+# `cargo deny check advisories` to clean, and a test dependency must not undo
+# it. Measured over its own graph before adding — 148 crates, zero
+# vulnerabilities, `advisories ok` — and re-measured over the merged one.
+#
+# `s3s-fs` rather than a container: Docker is installed on the owner's machine
+# and its daemon is normally not running, and a tier whose first act is "start
+# Docker Desktop" is a tier that gets skipped. This one binds a port from
+# inside the test and needs nothing on either CI runner.
+s3s = "0.15.0"
+s3s-fs = "0.15.0"
+hyper-util = { version = "0.1", features = ["server", "http1", "tokio"] }
+tempfile = "3"
+
 anyhow = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "macros"] }

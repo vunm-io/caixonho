@@ -52,3 +52,10 @@ test-support = []
 # crate is not part of the UI stack `ADR-0001` freezes, so nothing pinned by
 # `rev` or by `Cargo.lock` is disturbed by touching its features.
 aws-smithy-http-client = { workspace = true, features = ["test-util"] }
+
+# XONHO-0031. A real S3 service, started by the test that needs it, so the
+# adapter is exercised over HTTP rather than only above and below itself.
+s3s.workspace = true
+s3s-fs.workspace = true
+hyper-util.workspace = true
+tempfile.workspace = true
