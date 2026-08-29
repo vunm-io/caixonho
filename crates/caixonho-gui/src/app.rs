@@ -6773,6 +6773,7 @@ mod tests {
     /// verbs beside a sixty-character directory-bucket name has plenty of
     /// space until it does not, and a harness that only ever renders wide
     /// cannot photograph the failure it is meant to catch.
+    #[cfg(target_os = "macos")]
     fn shoot_at(
         name: &str,
         width: u32,
