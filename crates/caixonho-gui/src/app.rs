@@ -9,7 +9,7 @@ use gpui::{
     Render, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
 use gpui_component::{
-    ActiveTheme, Disableable as _, Icon, IconName, IndexPath, Side, TitleBar,
+    ActiveTheme, Icon, IconName, IndexPath, Side, TitleBar,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -31,6 +31,7 @@ use crate::views::failure::{guidance_for, refusal_detail, refusal_headline, unav
 use crate::views::format::split_zonal_name;
 use crate::views::objects::ObjectsDelegate;
 use caixonho_core::queue::{Queue, Standing, TransferId};
+use caixonho_core::transfer::Cancel;
 
 /// Everything the window shows.
 pub(crate) struct CaixonhoApp {
@@ -79,6 +80,17 @@ pub(crate) struct CaixonhoApp {
     /// The one deletion being confirmed, in flight, or just settled
     /// (`XONHO-0021`).
     deletion: Option<Deletion>,
+    /// The deletes a confirmation armed, bounded the way transfers are.
+    ///
+    /// Its own queue rather than an arm of the transfer one: a deletion moves
+    /// nothing, and "Downloading…" vocabulary does not belong one enum away
+    /// from a destructive verb (`XONHO-0021`'s reason, unchanged). What is
+    /// shared is the *structure* — `Queue` is generic precisely so a second
+    /// kind of work can be bounded without a second scheduler.
+    deletes: Queue<String>,
+    /// Each refusal a bulk delete met, as `key: cause`, gathered while the
+    /// queue drains and taken when the last one settles.
+    delete_failures: Vec<String>,
     /// The buckets ticked in the chooser, while it is open (`XONHO-0027`).
     ///
     /// `None` when the chooser is closed. Held apart from
@@ -295,24 +307,67 @@ enum TransferPhase {
 struct Deletion {
     connection: ConnectionId,
     bucket: String,
-    key: String,
+    /// What the user pointed at, kept for the **wording**.
+    ///
+    /// The work is always the same shape — a list of keys — but the sentence
+    /// is not: a count of one is weaker than a name, and someone who asked to
+    /// delete a folder is owed the folder's name rather than a number.
+    asked: Asked,
     phase: DeletePhase,
 }
 
+/// What the user pointed at when they asked for a delete (`XONHO-0030`).
+enum Asked {
+    /// One object's row.
+    Object(String),
+    /// One folder's row, by the name shown on it.
+    Folder(String),
+    /// The ticked rows, however many were ticked. Not the same number as the
+    /// keys: ticking one folder can come to fifty objects, and saying both is
+    /// how that stops being a surprise.
+    Rows(usize),
+}
+
 enum DeletePhase {
-    /// The second act has not happened; nothing has been deleted.
-    Confirming,
-    /// The delete is in flight.
-    Deleting,
-    /// The service accepted it. `marker` is the undo's proof and token.
+    /// Walking prefixes to find out how many there are.
+    ///
+    /// **Cannot be confirmed.** A dialog offering a number it may still be
+    /// about to change is asking for a yes to the wrong question. The
+    /// `cancels` stop the walks; they are held rather than dropped because a
+    /// walk nobody can stop keeps listing after the user has moved on.
+    Counting {
+        cancels: Vec<Cancel>,
+        /// How many walks have not answered yet.
+        left: usize,
+        /// What the answered ones found.
+        gathered: Vec<String>,
+    },
+    /// Counted. `keys` is exactly what confirming would remove — the same
+    /// list the count was taken from, so the number and the work cannot
+    /// disagree.
+    Confirming { keys: Vec<String> },
+    /// The walk found nothing under the prefix. Told rather than shown as a
+    /// confirmation for zero.
+    Empty,
+    /// More objects than one walk will gather. Refused with the reason.
+    TooMany { at_least: usize },
+    /// Deletes are in flight. `total` of one is the single-object case, which
+    /// takes the same path so that there is only one.
+    Deleting { done: usize, total: usize },
+    /// One object was deleted. `marker` is the undo's proof and token —
+    /// reached only when `total` was one, because a bulk delete is not undone
+    /// here (`XONHO-0030`).
     Gone { marker: Option<String> },
+    /// Several were deleted. `failures` keeps each refusal's own cause, so
+    /// one denial does not become "the delete failed".
+    Went { gone: usize, failures: Vec<String> },
     /// The undo is in flight. The marker travelled with the spawn; nothing
     /// here needs it again, and a field nobody reads is how retry-shaped
     /// ideas sneak in unreviewed.
     Restoring,
     /// The marker is gone; the object is back.
     Restored,
-    /// A delete or undo failed. `during_undo` picks the words.
+    /// A count, a delete or an undo failed. `during_undo` picks the words.
     Failed { error: Error, during_undo: bool },
 }
 
@@ -405,6 +460,52 @@ impl Transfer {
 ///
 /// The name comes from the outcome rather than the key: `mapped` may have
 /// changed it to avoid a collision, and joining the key would name a file
+/// What the confirmation asks, given what was pointed at and how many keys it
+/// came to (`XONHO-0030`).
+///
+/// A free function so it can be read without a window: this sentence is the
+/// last thing between a person and losing data, and it is worth being able to
+/// test every branch of it directly.
+///
+/// The rule is that **a name beats a count**. One object is named, however it
+/// was reached — through its own row, or as the only thing ticked — because
+/// "1 object" tells the reader nothing they can check. Past one, the count is
+/// what a person can actually verify against what they meant to tick; a list
+/// of twenty keys is a list the eye skims.
+fn confirmation_sentence(asked: &Asked, keys: usize) -> String {
+    match asked {
+        Asked::Folder(name) => format!(
+            "Delete `{name}/` and everything under it — {keys} \
+             {} — from this bucket?",
+            plural_objects(keys)
+        ),
+        Asked::Object(key) => format!("Delete `{key}` from this bucket?"),
+        Asked::Rows(rows) => {
+            if keys == 1 {
+                // One thing ticked, and it turned out to be one object: it
+                // still gets its name.
+                return "Delete this object from this bucket?".to_owned();
+            }
+            if *rows == keys {
+                format!("Delete {keys} {}?", plural_objects(keys))
+            } else {
+                // The surprise worth saying out loud: three ticks can be
+                // forty-seven objects, and the number that matters is the
+                // one that gets deleted.
+                format!(
+                    "Delete {keys} {} from the {rows} rows you ticked?",
+                    plural_objects(keys)
+                )
+            }
+        }
+    }
+}
+
+/// "object" or "objects", so no sentence above has to say "1 objects".
+fn plural_objects(count: usize) -> &'static str {
+    if count == 1 { "object" } else { "objects" }
+}
+
 /// that is not there.
 fn opens_at(transfer: &Transfer, name: &str) -> Option<std::path::PathBuf> {
     transfer.then_open.then(|| transfer.directory.join(name))
@@ -446,6 +547,13 @@ fn droppable_paths(paths: &[std::path::PathBuf]) -> Result<(), SharedString> {
 /// right for every network and every account.
 const TRANSFERS_AT_ONCE: usize = 4;
 
+/// How many deletes run at once.
+///
+/// The same number as transfers and for the same reason: `PROJECT_BRIEF.md`
+/// §4.4 names `503 SlowDown` as what a burst into one prefix meets, and a
+/// bulk delete is exactly that burst with a different verb.
+const DELETES_AT_ONCE: usize = 4;
+
 /// Making a folder, from naming it to what became of it (`XONHO-0024`).
 ///
 /// Its own state rather than a phase on `Deletion`, for that type's own
@@ -480,7 +588,14 @@ enum FolderPhase {
 
 /// What a deletion reports back to the window.
 enum DeleteEvent {
-    Settled(caixonho_core::session::DeleteOutcome),
+    /// One walk under a prefix finished.
+    Counted(caixonho_core::session::Tally),
+    /// One delete settled. `id` names which — every delete goes through the
+    /// queue, including a single one, so that there is one path and not two.
+    Settled {
+        id: TransferId,
+        outcome: caixonho_core::session::DeleteOutcome,
+    },
     UndoSettled(caixonho_core::session::UndoOutcome),
 }
 
@@ -674,6 +789,12 @@ impl CaixonhoApp {
         } = world;
         let table = cx.new(|cx| TableState::new(BucketsDelegate::new(), window, cx));
         let objects = cx.new(|cx| TableState::new(ObjectsDelegate::new(), window, cx));
+        // A row's own menu acts on the window, so the table is told which
+        // window it belongs to. Weak, because the window owns the table.
+        let reachable = cx.weak_entity();
+        objects.update(cx, |state, _| {
+            state.delegate_mut().reachable_from(reachable);
+        });
         let path = cx.new(|cx| InputState::new(window, cx).placeholder("s3://bucket/prefix/"));
         let accel = cx.new(|_| ScrollAccel::default());
 
@@ -932,6 +1053,8 @@ impl CaixonhoApp {
             // bound prevents — "many small files into one prefix" is the
             // classic trigger for `503 SlowDown`.
             queue: Queue::new(TRANSFERS_AT_ONCE),
+            deletes: Queue::new(DELETES_AT_ONCE),
+            delete_failures: Vec::new(),
             transfers,
             deletion: None,
             dropped_refusal: None,
@@ -1053,7 +1176,7 @@ impl CaixonhoApp {
         // location keeps it, because that re-read is how the strip's own
         // outcome refreshes the listing (`XONHO-0021`).
         if self.location() != Some(&location) {
-            self.deletion = None;
+            self.forget_deletion();
             self.preview = None;
         }
         self.path.update(cx, |state, cx| {
@@ -1150,7 +1273,7 @@ impl CaixonhoApp {
     }
 
     /// Enter the row at `index`, when it is something that can be entered.
-    fn enter(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn enter(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let (Some(location), Some(entry)) = (
             self.location().cloned(),
             self.objects.read(cx).delegate().row(index).cloned(),
@@ -1165,19 +1288,27 @@ impl CaixonhoApp {
         self.go_to(Location::at(location.bucket, prefix), window, cx);
     }
 
-    /// The selected object's key, when the selection is an object.
-    fn selected_object_key(&self, cx: &Context<Self>) -> Option<String> {
-        let index = self.objects.read(cx).selected_row()?;
+    /// The key of the object at `index`, when that row is an object.
+    ///
+    /// Takes the row rather than reading the table's own selection: the verbs
+    /// this feeds are reached from a row's menu now, and the row under the
+    /// pointer is the one being acted on (`XONHO-0030`).
+    fn object_key_at(&self, index: usize, cx: &Context<Self>) -> Option<String> {
         match self.objects.read(cx).delegate().row(index)? {
             crate::views::objects::Entry::Object(object) => Some(object.key.clone()),
             crate::views::objects::Entry::Folder(_) => None,
         }
     }
 
-    /// Download the selected object to a directory the user chooses
+    /// Download the object at `index` to a directory the user chooses
     /// (`XONHO-0007` task 4.1).
-    fn download_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (Some(location), Some(key)) = (self.location().cloned(), self.selected_object_key(cx))
+    pub(crate) fn download_row(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (Some(location), Some(key)) = (self.location().cloned(), self.object_key_at(index, cx))
         else {
             return;
         };
@@ -1208,10 +1339,10 @@ impl CaixonhoApp {
         .detach();
     }
 
-    /// Open the selected object with the system's own application for it
+    /// Open the object at `index` with the system's own application for it
     /// (`XONHO-0007` task 4.3): download to the open-cache, then hand over.
-    fn open_selected(&mut self, cx: &mut Context<Self>) {
-        let (Some(location), Some(key)) = (self.location().cloned(), self.selected_object_key(cx))
+    pub(crate) fn open_row(&mut self, index: usize, cx: &mut Context<Self>) {
+        let (Some(location), Some(key)) = (self.location().cloned(), self.object_key_at(index, cx))
         else {
             return;
         };
@@ -1627,12 +1758,9 @@ impl CaixonhoApp {
         self.start_upload(Some(id), bucket, key, source, collision, cx);
     }
 
-    /// Preview the selected object (`XONHO-0008` task 4.1).
-    fn preview_selected(&mut self, cx: &mut Context<Self>) {
-        let (Some(location), Some(index)) = (
-            self.location().cloned(),
-            self.objects.read(cx).selected_row(),
-        ) else {
+    /// Preview the object at `index` (`XONHO-0008` task 4.1).
+    pub(crate) fn preview_row(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(location) = self.location().cloned() else {
             return;
         };
         let Some(crate::views::objects::Entry::Object(object)) =
@@ -1700,23 +1828,144 @@ impl CaixonhoApp {
         cx.notify();
     }
 
-    /// Ask to delete the selected object (`XONHO-0021` task 3.1).
+    /// Ask about deleting the row at `index` (`XONHO-0030`).
     ///
-    /// Asks. The first act deletes nothing: it puts the named-key
-    /// confirmation on screen, and only the confirmation's own button
-    /// issues the delete.
-    fn delete_selected(&mut self, cx: &mut Context<Self>) {
-        let (Some(location), Some(key)) = (self.location().cloned(), self.selected_object_key(cx))
-        else {
+    /// An object is one key and is ready to confirm at once. A folder is
+    /// every key under a prefix, and nobody knows how many that is yet — so
+    /// it counts first, and the confirmation cannot be confirmed until the
+    /// counting stops.
+    pub(crate) fn delete_row(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(entry) = self.objects.read(cx).delegate().row(index).cloned() else {
             return;
         };
+        match entry {
+            crate::views::objects::Entry::Object(object) => {
+                self.ask_about_deleting(Asked::Object(object.key.clone()), vec![object.key], cx);
+            }
+            crate::views::objects::Entry::Folder(folder) => {
+                let name = folder.name().to_owned();
+                self.count_then_ask(Asked::Folder(name), Vec::new(), vec![folder.prefix], cx);
+            }
+        }
+    }
+
+    /// Ask about deleting every ticked row.
+    ///
+    /// The toolbar's own verb, and the only one there that still acts on rows
+    /// — because a tick is not a place and there is nowhere else it could
+    /// live. Folders among the ticks are walked; objects go straight in.
+    fn delete_ticked(&mut self, cx: &mut Context<Self>) {
+        let ticked = self.objects.read(cx).delegate().chosen_rows();
+        if ticked.is_empty() {
+            return;
+        }
+        let asked = Asked::Rows(ticked.len());
+        let mut keys = Vec::new();
+        let mut prefixes = Vec::new();
+        for row in ticked {
+            match row {
+                crate::views::objects::Entry::Object(object) => keys.push(object.key),
+                crate::views::objects::Entry::Folder(folder) => prefixes.push(folder.prefix),
+            }
+        }
+        if prefixes.is_empty() {
+            self.ask_about_deleting(asked, keys, cx);
+        } else {
+            self.count_then_ask(asked, keys, prefixes, cx);
+        }
+    }
+
+    /// Put a confirmation up for a list of keys already known.
+    fn ask_about_deleting(&mut self, asked: Asked, keys: Vec<String>, cx: &mut Context<Self>) {
+        let Some(location) = self.location().cloned() else {
+            return;
+        };
+        if keys.is_empty() {
+            return;
+        }
         self.deletion = Some(Deletion {
             connection: self.outcome.active(),
             bucket: location.bucket,
-            key,
-            phase: DeletePhase::Confirming,
+            asked,
+            phase: DeletePhase::Confirming { keys },
         });
         cx.notify();
+    }
+
+    /// Walk `prefixes`, then put the confirmation up with the total.
+    ///
+    /// `already` are keys that need no walking — the plain objects among a
+    /// ticked set. They join the walked ones, so the count is of everything
+    /// that would go and not only of the folders.
+    fn count_then_ask(
+        &mut self,
+        asked: Asked,
+        already: Vec<String>,
+        prefixes: Vec<Prefix>,
+        cx: &mut Context<Self>,
+    ) {
+        let (Some(location), Some(session)) = (self.location().cloned(), self.session.clone())
+        else {
+            return;
+        };
+        let mut cancels = Vec::new();
+        for prefix in &prefixes {
+            let inbox = self.deletions.clone();
+            let cancel = session.spawn_walk_under(
+                Location::at(location.bucket.clone(), prefix.clone()),
+                move |tally| {
+                    let _ = inbox.send(DeleteEvent::Counted(tally));
+                },
+            );
+            cancels.push(cancel);
+        }
+        self.deletion = Some(Deletion {
+            connection: self.outcome.active(),
+            bucket: location.bucket,
+            asked,
+            phase: DeletePhase::Counting {
+                left: prefixes.len(),
+                cancels,
+                gathered: already,
+            },
+        });
+        cx.notify();
+    }
+
+    /// Drop the deletion, stopping any walk it started.
+    ///
+    /// Dismissal has to reach the walks: a listing nobody is waiting for is
+    /// still requests going out, and the user has moved on.
+    fn dismiss_deletion(&mut self, cx: &mut Context<Self>) {
+        self.forget_deletion();
+        cx.notify();
+    }
+
+    /// Forget the deletion and everything it armed.
+    ///
+    /// **The queue goes with it, and that is the point.** `start_ready_deletes`
+    /// reads the bucket from `self.deletion`, so a queue left holding waiting
+    /// items after the deletion is dropped would hand them to whatever the
+    /// *next* confirmation is about — deleting keys from one bucket against
+    /// another. Found in this change's own close-out review: the queue was
+    /// only ever pruned of *finished* items, which is not the same thing.
+    ///
+    /// Replaced rather than drained, so the ids go too: a late `Settled` for
+    /// an abandoned item then finds no payload, which `apply_delete` already
+    /// treats as the answer to a question nobody is asking.
+    fn forget_deletion(&mut self) {
+        if let Some(Deletion {
+            phase: DeletePhase::Counting { cancels, .. },
+            ..
+        }) = &self.deletion
+        {
+            for cancel in cancels {
+                cancel.cancel();
+            }
+        }
+        self.deletion = None;
+        self.deletes = Queue::new(DELETES_AT_ONCE);
+        self.delete_failures.clear();
     }
 
     /// The second act: the confirmation's own button.
@@ -1724,21 +1973,43 @@ impl CaixonhoApp {
         let Some(deletion) = self.deletion.as_mut() else {
             return;
         };
-        if !matches!(deletion.phase, DeletePhase::Confirming) {
+        // Counting refuses here, and that is the requirement: a number still
+        // being worked out is not a number anybody can agree to.
+        let DeletePhase::Confirming { keys } = &deletion.phase else {
+            return;
+        };
+        let keys = keys.clone();
+        if self.session.is_none() {
             return;
         }
+        deletion.phase = DeletePhase::Deleting {
+            done: 0,
+            total: keys.len(),
+        };
+        for key in keys {
+            self.deletes.accept(key);
+        }
+        self.start_ready_deletes(cx);
+        cx.notify();
+    }
+
+    /// Spawn whatever the delete queue says may start now.
+    fn start_ready_deletes(&mut self, cx: &mut Context<Self>) {
         let Some(session) = self.session.clone() else {
             return;
         };
-        deletion.phase = DeletePhase::Deleting;
-        let inbox = self.deletions.clone();
-        session.spawn_delete(
-            deletion.bucket.clone(),
-            deletion.key.clone(),
-            move |outcome| {
-                let _ = inbox.send(DeleteEvent::Settled(outcome));
-            },
-        );
+        let Some(bucket) = self.deletion.as_ref().map(|d| d.bucket.clone()) else {
+            return;
+        };
+        for id in self.deletes.ready() {
+            let Some(key) = self.deletes.payload_mut(id).map(|key| key.clone()) else {
+                continue;
+            };
+            let inbox = self.deletions.clone();
+            session.spawn_delete(bucket.clone(), key, move |outcome| {
+                let _ = inbox.send(DeleteEvent::Settled { id, outcome });
+            });
+        }
         cx.notify();
     }
 
@@ -1753,25 +2024,25 @@ impl CaixonhoApp {
         else {
             return; // No proof, no undo — the button only exists on proof.
         };
+        // Only ever one key here: `Gone` is reached only when the delete was
+        // of a single object, because a bulk delete does not offer an undo.
+        let Asked::Object(key) = &deletion.asked else {
+            return;
+        };
         let Some(session) = self.session.clone() else {
             return;
         };
-        let marker = marker.clone();
+        let (marker, key) = (marker.clone(), key.clone());
         deletion.phase = DeletePhase::Restoring;
         let inbox = self.deletions.clone();
-        session.spawn_undo_delete(
-            deletion.bucket.clone(),
-            deletion.key.clone(),
-            marker,
-            move |outcome| {
-                let _ = inbox.send(DeleteEvent::UndoSettled(outcome));
-            },
-        );
+        session.spawn_undo_delete(deletion.bucket.clone(), key, marker, move |outcome| {
+            let _ = inbox.send(DeleteEvent::UndoSettled(outcome));
+        });
         cx.notify();
     }
 
-    /// Apply a delete or undo outcome, unless the deletion it belongs to has
-    /// left the screen — dismissed, or the connection was switched.
+    /// Apply a count, a delete or an undo outcome, unless the deletion it
+    /// belongs to has left the screen — dismissed, or the connection switched.
     fn apply_delete(&mut self, event: DeleteEvent, window: &mut Window, cx: &mut Context<Self>) {
         let Some(deletion) = self.deletion.as_mut() else {
             return; // Dismissed while in flight; nothing to apply to.
@@ -1779,25 +2050,112 @@ impl CaixonhoApp {
         if deletion.connection != self.outcome.active() {
             // A switch happened. An outcome — and above all an Undo — from
             // the account the user left must not render under the new one's
-            // name (`XONHO-0019`).
-            self.deletion = None;
+            // name (`XONHO-0019`). The queue goes too: keys queued against
+            // that account must never be sent to this one.
+            self.forget_deletion();
             cx.notify();
             return;
         }
-        use caixonho_core::session::{DeleteOutcome, UndoOutcome};
+        use caixonho_core::session::{DeleteOutcome, Tally, UndoOutcome};
         match event {
-            DeleteEvent::Settled(DeleteOutcome::Gone { marker }) => {
-                deletion.phase = DeletePhase::Gone { marker };
-                // The row leaves because the service says so: re-read.
+            DeleteEvent::Counted(tally) => {
+                let DeletePhase::Counting { left, gathered, .. } = &mut deletion.phase else {
+                    return; // A late count for a question already answered.
+                };
+                match tally {
+                    Tally::All(keys) => {
+                        gathered.extend(keys);
+                        *left = left.saturating_sub(1);
+                        if *left == 0 {
+                            let keys = std::mem::take(gathered);
+                            // Nothing under it is *told*, not shown as a
+                            // confirmation for zero — which would ask
+                            // somebody to agree to no work.
+                            deletion.phase = if keys.is_empty() {
+                                DeletePhase::Empty
+                            } else {
+                                DeletePhase::Confirming { keys }
+                            };
+                        }
+                    }
+                    // One prefix too large refuses the whole ask. Deleting
+                    // the rest and silently skipping that one would be a
+                    // partial answer to a question nobody asked.
+                    Tally::TooMany { at_least } => {
+                        deletion.phase = DeletePhase::TooMany { at_least };
+                    }
+                    Tally::Cancelled => {
+                        self.forget_deletion();
+                    }
+                    Tally::Failed(error) => {
+                        deletion.phase = DeletePhase::Failed {
+                            error,
+                            during_undo: false,
+                        };
+                    }
+                }
+            }
+            DeleteEvent::Settled { id, outcome } => {
+                let Some(key) = self.deletes.payload_mut(id).map(|key| key.clone()) else {
+                    return; // A late answer about an item nobody holds.
+                };
+                let marker = match &outcome {
+                    DeleteOutcome::Gone { marker } => marker.clone(),
+                    DeleteOutcome::Failed(_) => None,
+                };
+                self.deletes.settled(
+                    id,
+                    match &outcome {
+                        DeleteOutcome::Gone { .. } => Standing::Finished,
+                        DeleteOutcome::Failed(_) => Standing::Failed,
+                    },
+                );
+                let Some(deletion) = self.deletion.as_mut() else {
+                    return;
+                };
+                let DeletePhase::Deleting { done, total } = &mut deletion.phase else {
+                    return;
+                };
+                *done += 1;
+                let (done, total) = (*done, *total);
+
+                if let DeleteOutcome::Failed(error) = &outcome {
+                    // Each refusal keeps its own cause and its own key: one
+                    // denial in the middle of twenty is not "the delete
+                    // failed", and a user owed a permission to ask for needs
+                    // to know which object wanted it.
+                    self.delete_failures.push(format!("{key}: {error}"));
+                }
+
+                if done < total {
+                    self.start_ready_deletes(cx);
+                    cx.notify();
+                    return;
+                }
+
+                let failures = std::mem::take(&mut self.delete_failures);
+                let Some(deletion) = self.deletion.as_mut() else {
+                    return;
+                };
+                deletion.phase = if total == 1 {
+                    match outcome {
+                        DeleteOutcome::Gone { .. } => DeletePhase::Gone { marker },
+                        DeleteOutcome::Failed(error) => DeletePhase::Failed {
+                            error,
+                            during_undo: false,
+                        },
+                    }
+                } else {
+                    DeletePhase::Went {
+                        gone: total - failures.len(),
+                        failures,
+                    }
+                };
+                self.deletes.clear_finished();
+                // The rows leave because the service says so: re-read.
                 if let Some(location) = self.location().cloned() {
                     self.re_read_location(location, window, cx);
                 }
-            }
-            DeleteEvent::Settled(DeleteOutcome::Failed(error)) => {
-                deletion.phase = DeletePhase::Failed {
-                    error,
-                    during_undo: false,
-                };
             }
             DeleteEvent::UndoSettled(UndoOutcome::Restored) => {
                 deletion.phase = DeletePhase::Restored;
@@ -2006,9 +2364,9 @@ impl CaixonhoApp {
     fn end_location(&mut self, cx: &mut Context<Self>) {
         self.position = None;
         // A deletion's confirmation or outcome is about a key at a location;
-        // leaving the location takes it along (`XONHO-0021`). The preview is
-        // about one too (`XONHO-0008`).
-        self.deletion = None;
+        // leaving the location takes it along (`XONHO-0021`) — and takes the
+        // deletes it armed, which is the half `XONHO-0030` added.
+        self.forget_deletion();
         self.preview = None;
         // A destination is a key at a location; leaving takes it along
         // (`XONHO-0026`), exactly as the deletion strip goes.
@@ -3041,81 +3399,79 @@ impl CaixonhoApp {
         // answered — so the path bar is a *mode* the trail turns into, the way
         // every file manager does it.
         if !self.editing_path {
-            // The two object verbs live here, beside the location they act
-            // in, and only light up when the selection is an object. Open is
-            // deliberately a visible button and double-click deliberately
-            // stays unbound (owner decision 2026-08-24): a stray double-click
-            // must not be enough to write company bytes to disk and hand
-            // them to a third-party application.
-            let on_object = self.selected_object_key(cx).is_some();
+            // **Only verbs that act on a place.** Preview, Open, Download and
+            // Delete-this-one act on a *row*, and they moved to the row —
+            // reached by right-clicking it (`XONHO-0030`). What is left acts
+            // on the location the user is standing in, which is what being
+            // here means, so none of it needs a selection.
+            //
+            // That rule is also the fix for this row overflowing, which it has
+            // done twice. Both times it was patched with flex properties, and
+            // flex only ever decides who loses: seven verbs in a row do not
+            // fit beside a sixty-character directory-bucket name at any
+            // window width, and the answer was never a better squeeze.
+            //
+            // The one exception is Delete, and it earns it: it acts on the
+            // *ticked* rows, and a tick is not a place — there is nowhere else
+            // it could live. It appears only when something is ticked, and it
+            // carries the count, so nobody presses it wondering what it means.
+            let ticked = self.objects.read(cx).delegate().chosen_count();
             return h_flex()
                 .w_full()
                 .items_center()
                 .gap(space::TIGHT)
                 // The trail is the variable-width half — a directory bucket's
                 // name is sixty characters — so it is the half that shrinks.
+                // The verbs refuse to (`flex_shrink_0` below) and the trail
+                // absorbs all of it, clipped. Letting one child shrink is only
+                // half an instruction; the other half is naming who must not.
                 //
-                // Three goes to get this row right, and each attempt taught
-                // the next:
-                //
-                // 1. Nothing: the row pushed the last verb off the edge and
-                //    "Type a location" arrived as "Type a".
-                // 2. `min_w_0` on the trail: the trail could now shrink, but
-                //    the *verbs* were still shrinkable too — so flex squeezed
-                //    them below their own labels and the text spilled out of
-                //    the buttons, interleaving "Preview" with the bucket's
-                //    name.
-                // 3. This: the verbs refuse to shrink (`flex_shrink_0` on the
-                //    group below) and the trail absorbs all of it, clipped.
-                //
-                // The lesson is the middle one. Letting one child shrink is
-                // only half an instruction; the other half is naming who must
-                // not.
-                .child(div().flex_1().min_w_0().overflow_hidden().child(trail))
+                // The `mr` is not decoration, and it is a margin rather than
+                // padding on purpose. At 900px with a Local Zone bucket name
+                // the clip lands *exactly* at the next button's edge, and a
+                // name cut mid-word touching a red `Delete` reads as one
+                // broken control rather than as two. Padding does not fix it:
+                // overflow clips at the padding box, so right padding is
+                // *inside* the clip and the text runs straight through it.
+                // Found by looking at `bucket-09e`, which is what that frame
+                // is for — and the first attempt was the padding one.
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .mr(space::ROW)
+                        .child(trail),
+                )
                 .child(
                     h_flex()
                         .flex_shrink_0()
                         .items_center()
                         .gap(space::TIGHT)
-                        .child(
-                            div().debug_selector(|| "preview-action".into()).child(
-                                Button::new("preview-action")
-                                    .label("Preview")
-                                    .ghost()
-                                    .disabled(!on_object)
-                                    .on_click(
-                                        cx.listener(|app, _, _, cx| app.preview_selected(cx)),
-                                    ),
-                            ),
-                        )
-                        .child(
-                            div().debug_selector(|| "open-action".into()).child(
-                                Button::new("open-action")
-                                    .label("Open")
-                                    .ghost()
-                                    .disabled(!on_object)
-                                    .on_click(cx.listener(|app, _, _, cx| app.open_selected(cx))),
-                            ),
-                        )
-                        .child(
-                            div().debug_selector(|| "download-action".into()).child(
-                                Button::new("download-action")
-                                    .label("Download…")
-                                    .ghost()
-                                    .disabled(!on_object)
-                                    .on_click(cx.listener(|app, _, window, cx| {
-                                        app.download_selected(window, cx)
-                                    })),
-                            ),
-                        )
+                        .children((ticked > 0).then(|| {
+                            // Apart from the benign verbs and in the danger
+                            // colour: this is the one that destroys. It only
+                            // opens the confirmation — nothing deletes here.
+                            div()
+                                .debug_selector(|| "delete-ticked-action".into())
+                                .child(
+                                    Button::new("delete-ticked-action")
+                                        .label(format!("Delete {ticked}…"))
+                                        .ghost()
+                                        .danger()
+                                        .on_click(
+                                            cx.listener(|app, _, _, cx| app.delete_ticked(cx)),
+                                        ),
+                                )
+                        }))
                         .child(
                             div().debug_selector(|| "upload-action".into()).child(
                                 Button::new("upload-action")
                                     .label("Upload…")
                                     .ghost()
-                                    // No `disabled`: unlike the other two verbs this
-                                    // one acts on the location, not on a row, and a
-                                    // location is what being here means.
+                                    // No `disabled`: this acts on the
+                                    // location, and a location is what being
+                                    // here means.
                                     .on_click(cx.listener(|app, _, window, cx| {
                                         app.upload_here(window, cx)
                                     })),
@@ -3126,24 +3482,9 @@ impl CaixonhoApp {
                                 Button::new("new-folder-action")
                                     .label("New folder…")
                                     .ghost()
-                                    // Acts on the location like `Upload…` does, so it
-                                    // needs no selected row and carries no `disabled`.
                                     .on_click(cx.listener(|app, _, window, cx| {
                                         app.new_folder_here(window, cx)
                                     })),
-                            ),
-                        )
-                        .child(
-                            // Apart from the three benign verbs, and in the danger
-                            // colour: this is the one that destroys. It only opens
-                            // the confirmation — nothing deletes on this click.
-                            div().debug_selector(|| "delete-action".into()).child(
-                                Button::new("delete-action")
-                                    .label("Delete…")
-                                    .ghost()
-                                    .danger()
-                                    .disabled(!on_object)
-                                    .on_click(cx.listener(|app, _, _, cx| app.delete_selected(cx))),
                             ),
                         )
                         .child(
@@ -3346,6 +3687,28 @@ impl CaixonhoApp {
                                 self.objects.clone(),
                                 self.accel.clone(),
                             )),
+                    )
+                    // **Task 3.2, decided rather than omitted.** Nothing on
+                    // screen announces a context menu, and right-click is a
+                    // convention people either already know or never discover
+                    // — which for the *only* place Preview, Open, Download and
+                    // Delete now live would be a set of verbs nobody finds.
+                    //
+                    // So: one muted line under the table, in the voice the
+                    // "More to come." strip beside it already uses. A tooltip
+                    // would need the pointer to already be where the reader
+                    // does not know to put it; a toolbar hint would put back
+                    // the row this change just emptied.
+                    .child(
+                        h_flex().w_full().items_center().px(space::TIGHT).child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(
+                                    "Right-click a row to preview, open, download \
+                                         or delete it. Tick rows to delete several.",
+                                ),
+                        ),
                     )
                     // Said, not hidden: a listing that stops early without
                     // saying so is indistinguishable from a small folder.
@@ -3770,26 +4133,88 @@ impl CaixonhoApp {
         };
         Some(line.into_any_element())
     }
-
-    /// The deletion, from its confirmation to its aftermath — one line under
-    /// the listing, like the transfer's, and deliberately not the same
-    /// widget (`XONHO-0021`).
+    /// The deletion's own strip: the question, then what came of it.
+    ///
+    /// One strip for one object and for twenty, because they are one act with
+    /// one confirmation. What changes is the sentence, and the sentence is
+    /// decided here rather than by the caller — so that "1 object" can never
+    /// be rendered where a key would say more.
     fn deletion_line(&self, cx: &Context<Self>) -> Option<AnyElement> {
         let deletion = self.deletion.as_ref()?;
-        let key = deletion.key.clone();
 
         let dismiss = || {
             Button::new("delete-dismiss")
                 .label("Dismiss")
                 .ghost()
-                .on_click(cx.listener(|app, _, _, cx| {
-                    app.deletion = None;
-                    cx.notify();
-                }))
+                .on_click(cx.listener(|app, _, _, cx| app.dismiss_deletion(cx)))
+        };
+        let cancel = |id: &'static str| {
+            Button::new(id)
+                .label("Cancel")
+                .ghost()
+                .on_click(cx.listener(|app, _, _, cx| app.dismiss_deletion(cx)))
         };
 
         let line = match &deletion.phase {
-            DeletePhase::Confirming => h_flex()
+            DeletePhase::Counting { left, .. } => h_flex()
+                .debug_selector(|| "delete-counting".into())
+                .w_full()
+                .gap(space::TIGHT)
+                .items_center()
+                .child(div().text_sm().child(match &deletion.asked {
+                    Asked::Folder(name) => {
+                        format!("Counting what is under `{name}/`…")
+                    }
+                    _ => format!("Counting what is under {left} folders…"),
+                }))
+                .child(div().flex_1())
+                // Present, and it stops the walks rather than only hiding
+                // them: a listing nobody is waiting for is still requests
+                // going out.
+                .child(
+                    div()
+                        .debug_selector(|| "delete-counting-cancel".into())
+                        .child(cancel("delete-counting-cancel")),
+                )
+                .into_any_element(),
+            DeletePhase::Empty => h_flex()
+                .debug_selector(|| "delete-empty".into())
+                .w_full()
+                .gap(space::TIGHT)
+                .items_center()
+                // Told, not offered as a confirmation for zero: nobody should
+                // be asked to agree to no work.
+                .child(div().text_sm().child(match &deletion.asked {
+                    Asked::Folder(name) => format!(
+                        "`{name}/` holds nothing, so there is nothing to delete. \
+                         On a directory bucket a folder disappears with its last object."
+                    ),
+                    _ => "There is nothing under what you ticked.".to_owned(),
+                }))
+                .child(div().flex_1())
+                .child(dismiss())
+                .into_any_element(),
+            DeletePhase::TooMany { at_least } => h_flex()
+                .debug_selector(|| "delete-too-many".into())
+                .w_full()
+                .gap(space::TIGHT)
+                .items_center()
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().danger)
+                        // `at_least`, never a total: the walk stopped, so the
+                        // real number is unknown and saying one would be an
+                        // invention.
+                        .child(format!(
+                            "More than {at_least} objects — too many to delete in one go. \
+                             Nothing was deleted. Go into it and delete in smaller parts."
+                        )),
+                )
+                .child(div().flex_1())
+                .child(dismiss())
+                .into_any_element(),
+            DeletePhase::Confirming { keys } => h_flex()
                 .debug_selector(|| "delete-confirm-strip".into())
                 .w_full()
                 .gap(space::TIGHT)
@@ -3801,7 +4226,7 @@ impl CaixonhoApp {
                     div()
                         .text_sm()
                         .text_color(cx.theme().danger)
-                        .child(format!("Delete `{key}` from this bucket?")),
+                        .child(confirmation_sentence(&deletion.asked, keys.len())),
                 )
                 .child(div().flex_1())
                 .child(
@@ -3813,24 +4238,26 @@ impl CaixonhoApp {
                     ),
                 )
                 .child(
-                    div().debug_selector(|| "delete-cancel".into()).child(
-                        Button::new("delete-cancel")
-                            .label("Cancel")
-                            .ghost()
-                            .on_click(cx.listener(|app, _, _, cx| {
-                                app.deletion = None;
-                                cx.notify();
-                            })),
-                    ),
+                    div()
+                        .debug_selector(|| "delete-cancel".into())
+                        .child(cancel("delete-cancel")),
                 )
                 .into_any_element(),
-            DeletePhase::Deleting => h_flex()
+            DeletePhase::Deleting { done, total } => h_flex()
                 .debug_selector(|| "delete-in-flight".into())
                 .w_full()
                 .items_center()
-                .child(div().text_sm().child(format!("Deleting `{key}`…")))
+                .child(div().text_sm().child(if *total == 1 {
+                    "Deleting…".to_owned()
+                } else {
+                    format!("Deleting… {done} of {total}")
+                }))
                 .into_any_element(),
             DeletePhase::Gone { marker } => {
+                let key = match &deletion.asked {
+                    Asked::Object(key) => key.clone(),
+                    _ => String::new(),
+                };
                 let mut line = h_flex()
                     .debug_selector(|| "delete-gone".into())
                     .w_full()
@@ -3859,18 +4286,70 @@ impl CaixonhoApp {
                 };
                 line.child(dismiss()).into_any_element()
             }
+            DeletePhase::Went { gone, failures } => {
+                let mut line = h_flex()
+                    .debug_selector(|| "delete-went".into())
+                    .w_full()
+                    .gap(space::TIGHT)
+                    .items_center()
+                    .child(
+                        v_flex()
+                            .gap(space::TIGHT)
+                            .child(div().text_sm().child(if failures.is_empty() {
+                                format!("Deleted {gone} objects.")
+                            } else {
+                                format!(
+                                    "Deleted {gone} objects; {} could not be deleted.",
+                                    failures.len()
+                                )
+                            }))
+                            // Said, never merely omitted. The user has seen
+                            // Undo appear after a single delete, so its
+                            // silent absence would read as a bug rather than
+                            // as a decision — which is exactly what happened
+                            // the one time it correctly did not appear.
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(
+                                        "Undo is not offered for a bulk delete: it would be \
+                                         many restores that could half-succeed.",
+                                    ),
+                            )
+                            // Each refusal keeps its own key and its own
+                            // cause. "Some failed" sends nobody anywhere.
+                            .children(failures.iter().take(5).map(|failure| {
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().danger)
+                                    .child(failure.clone())
+                            }))
+                            .children((failures.len() > 5).then(|| {
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(format!("…and {} more, in the log.", failures.len() - 5))
+                            })),
+                    );
+                line = line.child(div().flex_1());
+                line.child(dismiss()).into_any_element()
+            }
             DeletePhase::Restoring => h_flex()
                 .debug_selector(|| "delete-restoring".into())
                 .w_full()
                 .items_center()
-                .child(div().text_sm().child(format!("Restoring `{key}`…")))
+                .child(div().text_sm().child("Restoring…"))
                 .into_any_element(),
             DeletePhase::Restored => h_flex()
                 .debug_selector(|| "delete-restored".into())
                 .w_full()
                 .gap(space::TIGHT)
                 .items_center()
-                .child(div().text_sm().child(format!("`{key}` is back.")))
+                .child(div().text_sm().child(match &deletion.asked {
+                    Asked::Object(key) => format!("`{key}` is back."),
+                    _ => "It is back.".to_owned(),
+                }))
                 .child(div().flex_1())
                 .child(dismiss())
                 .into_any_element(),
@@ -3890,7 +4369,7 @@ impl CaixonhoApp {
                             // marker still stands.
                             .child(if *during_undo {
                                 format!(
-                                    "Could not restore `{key}` — the marker still stands: {rendered}"
+                                    "Could not restore it — the marker still stands: {rendered}"
                                 )
                             } else {
                                 format!("Delete failed: {rendered}")
@@ -4652,8 +5131,19 @@ mod tests {
         cx: &'a mut TestAppContext,
         bucket_name: &str,
     ) -> (gpui::Entity<CaixonhoApp>, &'a mut gpui::VisualTestContext) {
+        looking_through(cx, bucket_name, Arc::new(StoreDouble::allows_listing()))
+    }
+
+    /// [`looking_at`], through a double the test keeps its own handle on — so
+    /// it can ask afterwards what actually crossed the port. "Nothing was
+    /// sent" is not assertable any other way.
+    fn looking_through<'a>(
+        cx: &'a mut TestAppContext,
+        bucket_name: &str,
+        double: Arc<StoreDouble>,
+    ) -> (gpui::Entity<CaixonhoApp>, &'a mut gpui::VisualTestContext) {
         cx.update(gpui_component::init);
-        let store: Arc<dyn caixonho_core::ObjectStore> = Arc::new(StoreDouble::allows_listing());
+        let store: Arc<dyn caixonho_core::ObjectStore> = double;
         let (app, cx) = cx.add_window_view(|window, cx| {
             CaixonhoApp::new(
                 Diagnostics::without_a_log(),
@@ -4819,6 +5309,38 @@ mod tests {
             "after switching connections the window still reports a position, so the trail, \
              the path bar and the contents of the previous connection's bucket are all still \
              on screen"
+        );
+    }
+
+    #[gpui::test]
+    fn leaving_the_location_takes_the_ticked_rows_with_it(cx: &mut TestAppContext) {
+        // A tick is about a row at a location, exactly as a deletion strip and
+        // a preview are, and the three leave together. What this guards
+        // against is the shape of the bug rather than its likelihood: ticks
+        // surviving a departure would be invisible — no rows are on screen to
+        // show them — and the next Delete would act on rows in a bucket the
+        // user is no longer standing in.
+        let (app, cx) = looking_at(cx, "reports");
+        app.update(cx, |app, cx| {
+            app.objects.update(cx, |table, _| {
+                let delegate = table.delegate_mut();
+                delegate.show(
+                    CorePrefix::root(),
+                    Vec::new(),
+                    vec![an_object("one.txt", 1), an_object("two.txt", 2)],
+                );
+                delegate.toggle(0);
+                delegate.toggle(1);
+            });
+            assert_eq!(app.objects.read(cx).delegate().chosen_count(), 2);
+
+            app.leave_bucket(cx);
+        });
+
+        assert_eq!(
+            app.read_with(cx, |app, cx| app.objects.read(cx).delegate().chosen_count()),
+            0,
+            "the ticks belonged to a location nobody is standing in any more"
         );
     }
 
@@ -5043,10 +5565,15 @@ mod tests {
         }
     }
 
-    /// The verbs gate on the selection being an object: a folder can be
-    /// neither downloaded nor opened, and no selection is no object.
+    /// The verbs gate on the row being an object: a folder can be neither
+    /// downloaded nor opened, and a row that is not there is not one either.
+    ///
+    /// Was about the *selection* until `XONHO-0030`. The verbs are reached
+    /// from a row's own menu now, so the question the gate answers changed
+    /// from "what is selected" to "what is this row" — and this test is the
+    /// same guard asked the new way.
     #[gpui::test]
-    fn the_object_verbs_light_up_only_on_an_object(cx: &mut TestAppContext) {
+    fn the_object_verbs_light_up_only_on_an_object_row(cx: &mut TestAppContext) {
         let (app, cx) = looking_at(cx, "reports");
         app.update(cx, |app, cx| {
             app.objects.update(cx, |state, _| {
@@ -5061,20 +5588,20 @@ mod tests {
         });
 
         app.update(cx, |app, cx| {
-            assert_eq!(app.selected_object_key(cx), None, "nothing selected yet");
-            app.objects
-                .update(cx, |state, cx| state.set_selected_row(0, cx));
             assert_eq!(
-                app.selected_object_key(cx),
+                app.object_key_at(0, cx),
                 None,
-                "a folder is selected, and a folder is not an object"
+                "row 0 is a folder, and a folder is not an object"
             );
-            app.objects
-                .update(cx, |state, cx| state.set_selected_row(1, cx));
             assert_eq!(
-                app.selected_object_key(cx).as_deref(),
+                app.object_key_at(1, cx).as_deref(),
                 Some("summary.csv"),
                 "the object row is what the verbs act on"
+            );
+            assert_eq!(
+                app.object_key_at(9, cx),
+                None,
+                "and a row that is not there yields nothing"
             );
         });
     }
@@ -5330,7 +5857,24 @@ mod tests {
         });
     }
 
-    // ---- Deleting (XONHO-0021 tasks 3.1–3.2) ----
+    // ---- Deleting (XONHO-0021 tasks 3.1–3.2, XONHO-0030 section 4) ----
+
+    /// A deletion of one named object, in `phase`.
+    fn deleting_one(connection: ConnectionId, phase: DeletePhase) -> Deletion {
+        Deletion {
+            connection,
+            bucket: "reports".into(),
+            asked: Asked::Object("daily/summary.csv".into()),
+            phase,
+        }
+    }
+
+    /// The queue item id a single hand-built delete settles under. Every
+    /// delete goes through the queue, including one, so a test that settles
+    /// one has to put it there first.
+    fn one_queued_delete(app: &mut CaixonhoApp, key: &str) -> TransferId {
+        app.deletes.accept(key.to_owned())
+    }
 
     /// The two-act rule at the window: the action confirms, only the
     /// confirmation deletes, and dismissing leaves nothing behind.
@@ -5345,30 +5889,157 @@ mod tests {
                     vec![an_object("daily/summary.csv", 10)],
                 );
             });
-            app.objects
-                .update(cx, |state, cx| state.set_selected_row(0, cx));
-            app.delete_selected(cx);
+            app.delete_row(0, cx);
         });
         app.read_with(cx, |app, _| {
             let deletion = app.deletion.as_ref().expect("the confirmation is up");
-            assert!(matches!(deletion.phase, DeletePhase::Confirming));
-            assert_eq!(deletion.key, "daily/summary.csv");
+            match &deletion.phase {
+                DeletePhase::Confirming { keys } => {
+                    assert_eq!(keys, &["daily/summary.csv".to_owned()]);
+                }
+                _ => panic!("expected Confirming"),
+            }
+            assert!(matches!(&deletion.asked, Asked::Object(key) if key == "daily/summary.csv"));
         });
 
         // Dismiss: the deletion state is gone and — the point of the
         // two-act rule — nothing was ever spawned, because only
         // confirm_delete spawns and it was never called.
+        app.update(cx, |app, cx| app.dismiss_deletion(cx));
+        app.read_with(cx, |app, _| assert!(app.deletion.is_none()));
+    }
+
+    /// A row that is not there: the action does nothing at all.
+    ///
+    /// Was "a folder is not deletable here" until `XONHO-0030`. A folder now
+    /// *is* deletable — it counts what is under it first — so what is left to
+    /// guard is the case that still means nothing: no such row.
+    #[gpui::test]
+    fn deleting_a_row_that_is_not_there_does_nothing(cx: &mut TestAppContext) {
+        let (app, cx) = looking_at(cx, "reports");
         app.update(cx, |app, cx| {
-            app.deletion = None;
-            cx.notify();
+            app.objects.update(cx, |state, _| {
+                state
+                    .delegate_mut()
+                    .show(CorePrefix::root(), Vec::new(), Vec::new());
+            });
+            app.delete_row(0, cx);
+        });
+        app.read_with(cx, |app, _| {
+            assert!(app.deletion.is_none(), "no row, no confirmation");
+        });
+    }
+
+    /// Deleting with nothing ticked asks nothing. The button is not rendered
+    /// then, but the state machine must not depend on the render layer for
+    /// that — the same discipline `confirming_is_what_arms_the_delete` keeps.
+    #[gpui::test]
+    fn deleting_nothing_ticked_asks_nothing(cx: &mut TestAppContext) {
+        let (app, cx) = looking_at(cx, "reports");
+        app.update(cx, |app, cx| {
+            app.objects.update(cx, |state, _| {
+                state.delegate_mut().show(
+                    CorePrefix::root(),
+                    Vec::new(),
+                    vec![an_object("one.txt", 1)],
+                );
+            });
+            app.delete_ticked(cx);
         });
         app.read_with(cx, |app, _| assert!(app.deletion.is_none()));
     }
 
-    /// No selection, or a folder selected: the action does nothing at all.
+    // ---- Deleting more than one (XONHO-0030 section 4) ----
+
+    /// The sentence, branch by branch. It is the last thing between a person
+    /// and losing data, so every form of it is asserted rather than inferred
+    /// from one.
+    #[test]
+    fn the_confirmation_names_one_object_and_counts_more_than_one() {
+        // A name, whenever it is one object — however that one was reached.
+        assert_eq!(
+            confirmation_sentence(&Asked::Object("daily/summary.csv".into()), 1),
+            "Delete `daily/summary.csv` from this bucket?"
+        );
+
+        // Past one, the count: a list of twenty keys is a list the eye skims,
+        // and the number is the thing a person can check against what they
+        // meant to tick.
+        assert_eq!(
+            confirmation_sentence(&Asked::Rows(3), 3),
+            "Delete 3 objects?"
+        );
+
+        // The surprise worth saying out loud: three ticks, forty-seven
+        // objects, because one of the ticks was a folder.
+        assert_eq!(
+            confirmation_sentence(&Asked::Rows(3), 47),
+            "Delete 47 objects from the 3 rows you ticked?"
+        );
+
+        // A folder is named even though the work is its keys, because the
+        // folder is what the user pointed at.
+        assert_eq!(
+            confirmation_sentence(&Asked::Folder("daily".into()), 12),
+            "Delete `daily/` and everything under it — 12 objects — from this bucket?"
+        );
+
+        // And nothing says "1 objects".
+        assert_eq!(
+            confirmation_sentence(&Asked::Folder("daily".into()), 1),
+            "Delete `daily/` and everything under it — 1 object — from this bucket?"
+        );
+    }
+
+    /// Ticking several rows and pressing Delete asks about all of them, and
+    /// asks **before** anything is sent.
     #[gpui::test]
-    fn delete_gates_on_an_object_selection(cx: &mut TestAppContext) {
-        let (app, cx) = looking_at(cx, "reports");
+    fn ticked_rows_are_confirmed_together_and_nothing_is_sent_first(cx: &mut TestAppContext) {
+        let deleted = Arc::new(StoreDouble::allows_listing());
+        let (app, cx) = looking_through(cx, "reports", deleted.clone());
+        app.update(cx, |app, cx| {
+            app.objects.update(cx, |state, _| {
+                let delegate = state.delegate_mut();
+                delegate.show(
+                    CorePrefix::root(),
+                    Vec::new(),
+                    vec![
+                        an_object("one.txt", 1),
+                        an_object("two.txt", 2),
+                        an_object("three.txt", 3),
+                    ],
+                );
+                delegate.toggle(0);
+                delegate.toggle(2);
+            });
+            app.delete_ticked(cx);
+        });
+
+        app.read_with(cx, |app, _| {
+            match &app.deletion.as_ref().expect("the confirmation is up").phase {
+                DeletePhase::Confirming { keys } => {
+                    assert_eq!(keys, &["one.txt".to_owned(), "three.txt".to_owned()]);
+                }
+                other => panic!("expected Confirming, got {}", delete_phase_name(other)),
+            }
+            assert!(matches!(
+                app.deletion.as_ref().expect("held").asked,
+                Asked::Rows(2)
+            ));
+        });
+        assert!(
+            deleted.deleted_keys().is_empty(),
+            "the confirmation is a question, not a delete with a receipt"
+        );
+    }
+
+    /// A folder counts first, and **cannot be confirmed while counting**.
+    #[gpui::test]
+    fn a_folder_counts_before_it_asks_and_refuses_to_be_confirmed_meanwhile(
+        cx: &mut TestAppContext,
+    ) {
+        let deleted = Arc::new(StoreDouble::allows_listing());
+        let (app, cx) = looking_through(cx, "reports", deleted.clone());
         app.update(cx, |app, cx| {
             app.objects.update(cx, |state, _| {
                 state.delegate_mut().show(
@@ -5379,18 +6050,358 @@ mod tests {
                     Vec::new(),
                 );
             });
-            app.delete_selected(cx);
-            assert!(app.deletion.is_none(), "no selection, no confirmation");
-            app.objects
-                .update(cx, |state, cx| state.set_selected_row(0, cx));
-            app.delete_selected(cx);
+            app.delete_row(0, cx);
         });
+
         app.read_with(cx, |app, _| {
             assert!(
-                app.deletion.is_none(),
-                "a folder is selected, and a folder is not deletable here"
+                matches!(
+                    app.deletion.as_ref().expect("held").phase,
+                    DeletePhase::Counting { left: 1, .. }
+                ),
+                "a folder's size is not known until something goes and looks"
             );
         });
+
+        // The requirement: a dialog offering a number it may still be about
+        // to change must not be confirmable. Yes to a number that then moves
+        // is a yes to a different question.
+        app.update(cx, |app, cx| app.confirm_delete(cx));
+        app.read_with(cx, |app, _| {
+            assert!(
+                matches!(
+                    app.deletion.as_ref().expect("held").phase,
+                    DeletePhase::Counting { .. }
+                ),
+                "confirming mid-count did something"
+            );
+        });
+        assert!(deleted.deleted_keys().is_empty(), "and sent nothing");
+
+        // The count lands, and only then is there something to agree to.
+        app.update_in(cx, |app, window, cx| {
+            app.apply_delete(
+                DeleteEvent::Counted(caixonho_core::session::Tally::All(vec![
+                    "daily/a.txt".into(),
+                    "daily/b.txt".into(),
+                ])),
+                window,
+                cx,
+            );
+        });
+        app.read_with(cx, |app, _| {
+            match &app.deletion.as_ref().expect("held").phase {
+                DeletePhase::Confirming { keys } => assert_eq!(keys.len(), 2),
+                other => panic!("expected Confirming, got {}", delete_phase_name(other)),
+            }
+        });
+    }
+
+    /// A prefix that holds nothing is *told*, not shown as a confirmation for
+    /// zero: nobody should be asked to agree to no work.
+    #[gpui::test]
+    fn a_folder_that_holds_nothing_says_so(cx: &mut TestAppContext) {
+        let (app, cx) = looking_at(cx, "reports");
+        app.update_in(cx, |app, window, cx| {
+            app.deletion = Some(Deletion {
+                connection: app.outcome.active(),
+                bucket: "reports".into(),
+                asked: Asked::Folder("daily".into()),
+                phase: DeletePhase::Counting {
+                    cancels: Vec::new(),
+                    left: 1,
+                    gathered: Vec::new(),
+                },
+            });
+            app.apply_delete(
+                DeleteEvent::Counted(caixonho_core::session::Tally::All(Vec::new())),
+                window,
+                cx,
+            );
+        });
+        app.read_with(cx, |app, _| {
+            assert!(matches!(
+                app.deletion.as_ref().expect("held").phase,
+                DeletePhase::Empty
+            ));
+        });
+    }
+
+    /// A prefix past the walk's bound refuses the whole ask, and says a
+    /// floor rather than a total.
+    #[gpui::test]
+    fn a_folder_too_large_to_walk_refuses_the_whole_ask(cx: &mut TestAppContext) {
+        let deleted = Arc::new(StoreDouble::allows_listing());
+        let (app, cx) = looking_through(cx, "reports", deleted.clone());
+        app.update_in(cx, |app, window, cx| {
+            app.deletion = Some(Deletion {
+                connection: app.outcome.active(),
+                bucket: "reports".into(),
+                asked: Asked::Rows(2),
+                phase: DeletePhase::Counting {
+                    cancels: Vec::new(),
+                    left: 2,
+                    // Objects already ticked. They go too — the ask is one
+                    // ask, and half of it is not an answer.
+                    gathered: vec!["one.txt".into()],
+                },
+            });
+            app.apply_delete(
+                DeleteEvent::Counted(caixonho_core::session::Tally::TooMany { at_least: 5_001 }),
+                window,
+                cx,
+            );
+        });
+        app.read_with(cx, |app, _| {
+            assert!(matches!(
+                app.deletion.as_ref().expect("held").phase,
+                DeletePhase::TooMany { at_least: 5_001 }
+            ));
+        });
+        assert!(
+            deleted.deleted_keys().is_empty(),
+            "refusing the ask means refusing all of it"
+        );
+    }
+
+    /// Confirming several arms the queue, and a refusal in the middle leaves
+    /// the rest deleted with its own cause kept.
+    #[gpui::test]
+    fn one_refusal_among_many_does_not_stop_the_others(cx: &mut TestAppContext) {
+        let (app, cx) = looking_at(cx, "reports");
+        let ids = app.update(cx, |app, cx| {
+            app.deletion = Some(Deletion {
+                connection: app.outcome.active(),
+                bucket: "reports".into(),
+                asked: Asked::Rows(3),
+                phase: DeletePhase::Confirming {
+                    keys: vec!["a.txt".into(), "b.txt".into(), "c.txt".into()],
+                },
+            });
+            app.confirm_delete(cx);
+            app.deletes
+                .items()
+                .iter()
+                .map(|item| item.id)
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(ids.len(), 3, "three keys, three queue items");
+
+        app.update_in(cx, |app, window, cx| {
+            use caixonho_core::session::DeleteOutcome;
+            app.apply_delete(
+                DeleteEvent::Settled {
+                    id: ids[0],
+                    outcome: DeleteOutcome::Gone { marker: None },
+                },
+                window,
+                cx,
+            );
+            app.apply_delete(
+                DeleteEvent::Settled {
+                    id: ids[1],
+                    outcome: DeleteOutcome::Failed(Error::AccessDenied {
+                        iam_action: "s3:DeleteObject",
+                    }),
+                },
+                window,
+                cx,
+            );
+            assert!(
+                matches!(
+                    app.deletion.as_ref().expect("held").phase,
+                    DeletePhase::Deleting { done: 2, total: 3 }
+                ),
+                "a refusal in the middle is not the end of the run"
+            );
+            app.apply_delete(
+                DeleteEvent::Settled {
+                    id: ids[2],
+                    outcome: DeleteOutcome::Gone { marker: None },
+                },
+                window,
+                cx,
+            );
+        });
+
+        app.read_with(cx, |app, _| {
+            match &app.deletion.as_ref().expect("held").phase {
+                DeletePhase::Went { gone, failures } => {
+                    assert_eq!(*gone, 2, "the two that went, went");
+                    assert_eq!(failures.len(), 1);
+                    assert!(
+                        failures[0].starts_with("b.txt: "),
+                        "each refusal keeps its own key and its own cause, got {:?}",
+                        failures[0]
+                    );
+                }
+                other => panic!("expected Went, got {}", delete_phase_name(other)),
+            }
+        });
+    }
+
+    /// A bulk delete offers no Undo — and the *marker* is not the reason: one
+    /// of these deletes reported one, and it still does not.
+    #[gpui::test]
+    fn a_bulk_delete_offers_no_undo_even_when_a_marker_came_back(cx: &mut TestAppContext) {
+        let (app, cx) = looking_at(cx, "reports");
+        let ids = app.update(cx, |app, cx| {
+            app.deletion = Some(Deletion {
+                connection: app.outcome.active(),
+                bucket: "reports".into(),
+                asked: Asked::Rows(2),
+                phase: DeletePhase::Confirming {
+                    keys: vec!["a.txt".into(), "b.txt".into()],
+                },
+            });
+            app.confirm_delete(cx);
+            app.deletes
+                .items()
+                .iter()
+                .map(|item| item.id)
+                .collect::<Vec<_>>()
+        });
+
+        app.update_in(cx, |app, window, cx| {
+            use caixonho_core::session::DeleteOutcome;
+            for id in &ids {
+                app.apply_delete(
+                    DeleteEvent::Settled {
+                        id: *id,
+                        outcome: DeleteOutcome::Gone {
+                            marker: Some("mk-1".into()),
+                        },
+                    },
+                    window,
+                    cx,
+                );
+            }
+        });
+
+        app.read_with(cx, |app, _| {
+            assert!(
+                matches!(
+                    app.deletion.as_ref().expect("held").phase,
+                    DeletePhase::Went { .. }
+                ),
+                "a bulk delete never reaches Gone, which is where the Undo button lives"
+            );
+        });
+
+        // And pressing it anyway — as a stale click might — restores nothing.
+        app.update(cx, |app, cx| app.undo_delete(cx));
+        app.read_with(cx, |app, _| {
+            assert!(matches!(
+                app.deletion.as_ref().expect("held").phase,
+                DeletePhase::Went { .. }
+            ));
+        });
+    }
+
+    /// Dismissing a confirmation that is still counting stops the walks.
+    #[gpui::test]
+    fn dismissing_mid_count_stops_the_walk(cx: &mut TestAppContext) {
+        let (app, cx) = looking_at(cx, "reports");
+        let cancel = Cancel::default();
+        app.update(cx, |app, cx| {
+            app.deletion = Some(Deletion {
+                connection: app.outcome.active(),
+                bucket: "reports".into(),
+                asked: Asked::Folder("daily".into()),
+                phase: DeletePhase::Counting {
+                    cancels: vec![cancel.clone()],
+                    left: 1,
+                    gathered: Vec::new(),
+                },
+            });
+            app.dismiss_deletion(cx);
+        });
+
+        app.read_with(cx, |app, _| assert!(app.deletion.is_none()));
+        // The walk has to hear about it: listings nobody is waiting for are
+        // still requests going out.
+        app.update_in(cx, |app, window, cx| {
+            app.apply_delete(
+                DeleteEvent::Counted(caixonho_core::session::Tally::Cancelled),
+                window,
+                cx,
+            );
+        });
+        app.read_with(cx, |app, _| assert!(app.deletion.is_none()));
+    }
+
+    /// The close-out review's find: an abandoned bulk delete must not leave
+    /// keys in the queue for the *next* confirmation to send.
+    ///
+    /// `start_ready_deletes` reads the bucket from `self.deletion`, so waiting
+    /// items surviving a dismissal would be spawned against whatever the next
+    /// deletion is about — keys from one bucket deleted from another. Pruning
+    /// finished items, which is all the queue did, is not the same thing.
+    #[gpui::test]
+    fn an_abandoned_bulk_delete_leaves_nothing_for_the_next_one(cx: &mut TestAppContext) {
+        let (app, cx) = looking_at(cx, "reports");
+        app.update(cx, |app, cx| {
+            app.deletion = Some(Deletion {
+                connection: app.outcome.active(),
+                bucket: "reports".into(),
+                asked: Asked::Rows(6),
+                phase: DeletePhase::Confirming {
+                    keys: (0..6).map(|n| format!("reports-only/{n}.txt")).collect(),
+                },
+            });
+            app.confirm_delete(cx);
+            // Four run at once, so two are left waiting — which is exactly
+            // the state that used to survive.
+            assert_eq!(app.deletes.items().len(), 6);
+            assert_eq!(app.deletes.running(), DELETES_AT_ONCE);
+
+            app.dismiss_deletion(cx);
+        });
+
+        app.read_with(cx, |app, _| {
+            assert!(app.deletion.is_none());
+            assert!(
+                app.deletes.is_empty(),
+                "six keys for `reports` are still queued with nothing to send them to"
+            );
+        });
+
+        // And the next confirmation, about somewhere else, sends only its own.
+        app.update(cx, |app, cx| {
+            app.deletion = Some(Deletion {
+                connection: app.outcome.active(),
+                bucket: "logs".into(),
+                asked: Asked::Object("logs/one.txt".into()),
+                phase: DeletePhase::Confirming {
+                    keys: vec!["logs/one.txt".into()],
+                },
+            });
+            app.confirm_delete(cx);
+        });
+        app.read_with(cx, |app, _| {
+            let queued: Vec<&String> = app.deletes.items().iter().map(|i| &i.payload).collect();
+            assert_eq!(
+                queued,
+                vec![&"logs/one.txt".to_owned()],
+                "the second confirmation sent the first one's keys to another bucket"
+            );
+        });
+    }
+
+    /// Naming a phase, for a panic message that says which one it was.
+    fn delete_phase_name(phase: &DeletePhase) -> &'static str {
+        match phase {
+            DeletePhase::Counting { .. } => "Counting",
+            DeletePhase::Confirming { .. } => "Confirming",
+            DeletePhase::Empty => "Empty",
+            DeletePhase::TooMany { .. } => "TooMany",
+            DeletePhase::Deleting { .. } => "Deleting",
+            DeletePhase::Gone { .. } => "Gone",
+            DeletePhase::Went { .. } => "Went",
+            DeletePhase::Restoring => "Restoring",
+            DeletePhase::Restored => "Restored",
+            DeletePhase::Failed { .. } => "Failed",
+        }
     }
 
     /// The undo is offered exactly on proof, and a settled delete re-reads
@@ -5399,16 +6410,18 @@ mod tests {
     fn a_settled_delete_shows_its_proofed_undo_and_rereads(cx: &mut TestAppContext) {
         let (app, cx) = looking_at(cx, "reports");
         app.update_in(cx, |app, window, cx| {
-            app.deletion = Some(Deletion {
-                connection: app.outcome.active(),
-                bucket: "reports".into(),
-                key: "daily/summary.csv".into(),
-                phase: DeletePhase::Deleting,
-            });
+            app.deletion = Some(deleting_one(
+                app.outcome.active(),
+                DeletePhase::Deleting { done: 0, total: 1 },
+            ));
+            let id = one_queued_delete(app, "daily/summary.csv");
             app.apply_delete(
-                DeleteEvent::Settled(caixonho_core::session::DeleteOutcome::Gone {
-                    marker: Some("mk-9".into()),
-                }),
+                DeleteEvent::Settled {
+                    id,
+                    outcome: caixonho_core::session::DeleteOutcome::Gone {
+                        marker: Some("mk-9".into()),
+                    },
+                },
                 window,
                 cx,
             );
@@ -5432,16 +6445,18 @@ mod tests {
     fn an_outcome_from_a_left_connection_is_dropped(cx: &mut TestAppContext) {
         let (app, cx) = looking_at(cx, "reports");
         app.update_in(cx, |app, window, cx| {
-            app.deletion = Some(Deletion {
-                connection: ConnectionId(9_999),
-                bucket: "reports".into(),
-                key: "daily/summary.csv".into(),
-                phase: DeletePhase::Deleting,
-            });
+            app.deletion = Some(deleting_one(
+                ConnectionId(9_999),
+                DeletePhase::Deleting { done: 0, total: 1 },
+            ));
+            let id = one_queued_delete(app, "daily/summary.csv");
             app.apply_delete(
-                DeleteEvent::Settled(caixonho_core::session::DeleteOutcome::Gone {
-                    marker: Some("mk-9".into()),
-                }),
+                DeleteEvent::Settled {
+                    id,
+                    outcome: caixonho_core::session::DeleteOutcome::Gone {
+                        marker: Some("mk-9".into()),
+                    },
+                },
                 window,
                 cx,
             );
@@ -5460,12 +6475,7 @@ mod tests {
     fn a_failed_undo_claims_no_restoration(cx: &mut TestAppContext) {
         let (app, cx) = looking_at(cx, "reports");
         app.update_in(cx, |app, window, cx| {
-            app.deletion = Some(Deletion {
-                connection: app.outcome.active(),
-                bucket: "reports".into(),
-                key: "daily/summary.csv".into(),
-                phase: DeletePhase::Restoring,
-            });
+            app.deletion = Some(deleting_one(app.outcome.active(), DeletePhase::Restoring));
             app.apply_delete(
                 DeleteEvent::UndoSettled(caixonho_core::session::UndoOutcome::Failed(
                     Error::AccessDenied {
@@ -5495,19 +6505,19 @@ mod tests {
     fn confirming_is_what_arms_the_delete(cx: &mut TestAppContext) {
         let (app, cx) = looking_at(cx, "reports");
         app.update(cx, |app, cx| {
-            app.deletion = Some(Deletion {
-                connection: app.outcome.active(),
-                bucket: "reports".into(),
-                key: "daily/summary.csv".into(),
-                phase: DeletePhase::Confirming,
-            });
+            app.deletion = Some(deleting_one(
+                app.outcome.active(),
+                DeletePhase::Confirming {
+                    keys: vec!["daily/summary.csv".into()],
+                },
+            ));
             app.confirm_delete(cx);
         });
         app.read_with(cx, |app, _| {
             assert!(
                 matches!(
                     app.deletion.as_ref().expect("held").phase,
-                    DeletePhase::Deleting
+                    DeletePhase::Deleting { done: 0, total: 1 }
                 ),
                 "the second act moves it to in-flight"
             );
@@ -5518,12 +6528,7 @@ mod tests {
         // the render layer for that.
         let (app, cx) = looking_at(cx, "reports");
         app.update(cx, |app, cx| {
-            app.deletion = Some(Deletion {
-                connection: app.outcome.active(),
-                bucket: "reports".into(),
-                key: "daily/summary.csv".into(),
-                phase: DeletePhase::Restored,
-            });
+            app.deletion = Some(deleting_one(app.outcome.active(), DeletePhase::Restored));
             app.confirm_delete(cx);
         });
         app.read_with(cx, |app, _| {
@@ -5538,12 +6543,10 @@ mod tests {
     fn undo_without_proof_does_nothing(cx: &mut TestAppContext) {
         let (app, cx) = looking_at(cx, "reports");
         app.update(cx, |app, cx| {
-            app.deletion = Some(Deletion {
-                connection: app.outcome.active(),
-                bucket: "reports".into(),
-                key: "daily/summary.csv".into(),
-                phase: DeletePhase::Gone { marker: None },
-            });
+            app.deletion = Some(deleting_one(
+                app.outcome.active(),
+                DeletePhase::Gone { marker: None },
+            ));
             app.undo_delete(cx);
         });
         app.read_with(cx, |app, _| {
@@ -5562,12 +6565,7 @@ mod tests {
     #[gpui::test]
     fn the_strip_survives_a_reread_and_not_a_departure(cx: &mut TestAppContext) {
         let (app, cx) = looking_at(cx, "reports");
-        let gone = || Deletion {
-            connection: ConnectionId(0),
-            bucket: "reports".into(),
-            key: "daily/summary.csv".into(),
-            phase: DeletePhase::Gone { marker: None },
-        };
+        let gone = || deleting_one(ConnectionId(0), DeletePhase::Gone { marker: None });
 
         app.update_in(cx, |app, window, cx| {
             let here = app.location().cloned().expect("looking at a bucket");
@@ -5597,9 +6595,9 @@ mod tests {
         }
     }
 
-    /// The verb gates like the others: an object selection or nothing.
+    /// The verb gates like the others: an object row or nothing.
     #[gpui::test]
-    fn preview_gates_on_an_object_selection(cx: &mut TestAppContext) {
+    fn preview_gates_on_an_object_row(cx: &mut TestAppContext) {
         let (app, cx) = looking_at(cx, "reports");
         app.update(cx, |app, cx| {
             app.objects.update(cx, |state, _| {
@@ -5611,15 +6609,14 @@ mod tests {
                     vec![an_object("daily/big.log", 100_000)],
                 );
             });
-            app.preview_selected(cx);
-            assert!(app.preview.is_none(), "no selection previews nothing");
-            app.objects
-                .update(cx, |state, cx| state.set_selected_row(0, cx));
-            app.preview_selected(cx);
+            app.preview_row(9, cx);
+            assert!(
+                app.preview.is_none(),
+                "a row that is not there previews nothing"
+            );
+            app.preview_row(0, cx);
             assert!(app.preview.is_none(), "a folder previews nothing");
-            app.objects
-                .update(cx, |state, cx| state.set_selected_row(1, cx));
-            app.preview_selected(cx);
+            app.preview_row(1, cx);
         });
         app.read_with(cx, |app, _| {
             let preview = app.preview.as_ref().expect("in flight");
@@ -5766,10 +6763,25 @@ mod tests {
         store: Arc<dyn caixonho_core::ObjectStore>,
         drive: impl FnOnce(&mut CaixonhoApp, &mut gpui::Window, &mut gpui::Context<CaixonhoApp>),
     ) -> std::path::PathBuf {
+        shoot_at(name, 1280, store, drive)
+    }
+
+    /// [`shoot`], at a window width the caller chooses.
+    ///
+    /// Width is a parameter because the two overflow defects this project has
+    /// shipped were **both** invisible at 1280 and obvious at 900: a row of
+    /// verbs beside a sixty-character directory-bucket name has plenty of
+    /// space until it does not, and a harness that only ever renders wide
+    /// cannot photograph the failure it is meant to catch.
+    fn shoot_at(
+        name: &str,
+        width: u32,
+        store: Arc<dyn caixonho_core::ObjectStore>,
+        drive: impl FnOnce(&mut CaixonhoApp, &mut gpui::Window, &mut gpui::Context<CaixonhoApp>),
+    ) -> std::path::PathBuf {
         use gpui::{HeadlessAppContext, px, size};
 
-        const WIDTH: u32 = 1280;
-        const HEIGHT: u32 = 800;
+        let height = 800u32;
 
         // The platform's own text system, not `NoopTextSystem`. The noop one
         // is what `a_real_view_renders_to_an_image` uses and is right there:
@@ -5802,7 +6814,7 @@ mod tests {
         }];
 
         let window = cx
-            .open_window(size(px(WIDTH as f32), px(HEIGHT as f32)), |window, cx| {
+            .open_window(size(px(width as f32), px(height as f32)), |window, cx| {
                 cx.new(|cx| CaixonhoApp::new(Diagnostics::without_a_log(), world, window, cx))
             })
             .expect("a headless window opens");
@@ -6462,12 +7474,12 @@ mod tests {
             |app, _, cx| {
                 inside(app, cx);
                 app.listing = Listing::Loaded;
-                app.deletion = Some(Deletion {
-                    connection: app.outcome.active(),
-                    bucket: "reports".into(),
-                    key: "daily/summary.csv".into(),
-                    phase: DeletePhase::Confirming,
-                });
+                app.deletion = Some(deleting_one(
+                    app.outcome.active(),
+                    DeletePhase::Confirming {
+                        keys: vec!["daily/summary.csv".into()],
+                    },
+                ));
             },
         ));
 
@@ -6477,13 +7489,145 @@ mod tests {
             |app, _, cx| {
                 inside(app, cx);
                 app.listing = Listing::Loaded;
+                app.deletion = Some(deleting_one(
+                    app.outcome.active(),
+                    DeletePhase::Gone {
+                        marker: Some("mk-screenshot".into()),
+                    },
+                ));
+            },
+        ));
+
+        // ---- Acting on rows (`XONHO-0030`) ----
+        //
+        // Staged with real rows rather than the empty state the two frames
+        // above use: the whole subject here is what a *row* looks like when
+        // it is ticked, and an empty folder cannot show that.
+
+        let with_rows = |app: &mut CaixonhoApp, cx: &mut gpui::Context<CaixonhoApp>| {
+            inside(app, cx);
+            app.listing = Listing::Loaded;
+            app.objects.update(cx, |state, _| {
+                state.delegate_mut().show(
+                    CorePrefix::root(),
+                    vec![caixonho_core::Folder {
+                        prefix: CorePrefix::parse("archive/"),
+                    }],
+                    // Root-level keys, because the location staged is the
+                    // root: a key with a separator in it would have been
+                    // *grouped* into a folder by the service and could never
+                    // be a row here. The harness photographs states that
+                    // exist.
+                    vec![
+                        an_object("summary.csv", 4_096),
+                        an_object("build.log", 91_204),
+                        an_object("notes.md", 812),
+                    ],
+                );
+            });
+        };
+
+        written.push(shoot(
+            "bucket-09b-rows-ticked",
+            Arc::new(StoreDouble::allows_listing()),
+            |app, _, cx| {
+                with_rows(app, cx);
+                app.objects.update(cx, |state, _| {
+                    let delegate = state.delegate_mut();
+                    delegate.toggle(1);
+                    delegate.toggle(3);
+                });
+            },
+        ));
+
+        // Counting: the number is not known yet, and the button that would
+        // agree to it is deliberately not on screen.
+        written.push(shoot(
+            "bucket-09c-folder-counting",
+            Arc::new(StoreDouble::allows_listing()),
+            |app, _, cx| {
+                with_rows(app, cx);
                 app.deletion = Some(Deletion {
                     connection: app.outcome.active(),
                     bucket: "reports".into(),
-                    key: "daily/summary.csv".into(),
-                    phase: DeletePhase::Gone {
-                        marker: Some("mk-screenshot".into()),
+                    asked: Asked::Folder("archive".into()),
+                    phase: DeletePhase::Counting {
+                        cancels: Vec::new(),
+                        left: 1,
+                        gathered: Vec::new(),
                     },
+                });
+            },
+        ));
+
+        // Counted: the same strip, now with a number on it and a button.
+        written.push(shoot(
+            "bucket-09d-folder-counted",
+            Arc::new(StoreDouble::allows_listing()),
+            |app, _, cx| {
+                with_rows(app, cx);
+                app.deletion = Some(Deletion {
+                    connection: app.outcome.active(),
+                    bucket: "reports".into(),
+                    asked: Asked::Folder("archive".into()),
+                    phase: DeletePhase::Confirming {
+                        keys: (0..37).map(|n| format!("archive/{n}.csv")).collect(),
+                    },
+                });
+            },
+        ));
+
+        // The aftermath of a bulk delete, with one refusal in it — the state
+        // where "some failed" would be useless and each cause has to survive,
+        // and where the absence of Undo has to be *said*.
+        written.push(shoot(
+            "bucket-10b-bulk-outcome-with-a-refusal",
+            Arc::new(StoreDouble::allows_listing()),
+            |app, _, cx| {
+                with_rows(app, cx);
+                app.deletion = Some(Deletion {
+                    connection: app.outcome.active(),
+                    bucket: "reports".into(),
+                    asked: Asked::Rows(3),
+                    phase: DeletePhase::Went {
+                        gone: 2,
+                        failures: vec![
+                            "build.log: access denied — this needs `s3:DeleteObject`".to_owned(),
+                        ],
+                    },
+                });
+            },
+        ));
+
+        // The width the two overflow defects actually happened at, with the
+        // longest bucket name this application has to render — a directory
+        // bucket in a Local Zone — and the ticks that add a verb to the row.
+        // Both previous overflows were invisible at 1280 and obvious here.
+        written.push(shoot_at(
+            "bucket-09e-narrow-window-with-a-long-bucket-name",
+            900,
+            Arc::new(StoreDouble::allows_listing()),
+            |app, _, cx| {
+                settled(app, cx);
+                app.position = Some(Position {
+                    connection: app.outcome.active(),
+                    at: Location::at(
+                        "vunm-production-archive--apse1-han1-az1--x-s3".to_owned(),
+                        CorePrefix::parse("2026/august/daily-exports/"),
+                    ),
+                });
+                app.listing = Listing::Loaded;
+                app.objects.update(cx, |state, _| {
+                    let delegate = state.delegate_mut();
+                    delegate.show(
+                        CorePrefix::parse("2026/august/daily-exports/"),
+                        Vec::new(),
+                        vec![
+                            an_object("2026/august/daily-exports/summary.csv", 4_096),
+                            an_object("2026/august/daily-exports/build.log", 91_204),
+                        ],
+                    );
+                    delegate.toggle(0);
                 });
             },
         ));
@@ -7038,12 +8182,10 @@ mod tests {
     fn a_re_read_of_the_same_location_keeps_the_deletion_strip(cx: &mut TestAppContext) {
         let (app, cx) = looking_at(cx, "reports");
         app.update(cx, |app, _| {
-            app.deletion = Some(Deletion {
-                connection: app.outcome.active(),
-                bucket: "reports".to_owned(),
-                key: "daily/summary.csv".to_owned(),
-                phase: DeletePhase::Gone { marker: None },
-            });
+            app.deletion = Some(deleting_one(
+                app.outcome.active(),
+                DeletePhase::Gone { marker: None },
+            ));
         });
 
         app.update_in(cx, |app, window, cx| {

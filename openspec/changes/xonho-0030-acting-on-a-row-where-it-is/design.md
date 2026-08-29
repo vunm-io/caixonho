@@ -54,6 +54,26 @@ Two things fall out and both are requirements rather than niceties:
 - A selection **clears when the location changes**. `end_location` already
   clears the strips; this joins them.
 
+### The selection is driven by a tick column
+
+*Decided during implementation; the design had left this open by assuming an
+answer the component does not have.*
+
+Multi-selection normally arrives as cmd-click and shift-click, and neither is
+reachable here: `TableEvent::SelectRow(usize)` carries the row and nothing
+else, so there is no modifier state to read. Intercepting the table's own
+mouse handling to recover it would mean owning a part of the component we
+otherwise use whole.
+
+So the ticks are a column — first, narrow, with a tick-all in its header. Two
+things recommend it beyond being available. It is visible, where cmd-click is
+a convention people either know or never discover; and it is the same idiom
+the bucket chooser already uses in this application, which the owner has used.
+
+The header's tick-all is reachable without it — tick each row — but a folder
+of thirty objects is where a bulk delete is actually wanted, and thirty clicks
+to get there is a feature that exists only on paper.
+
 ### A folder delete counts before it asks
 
 The brief asks for a confirmation stating the object count, and for a folder
@@ -106,6 +126,20 @@ twice with flex properties, which only ever decide who loses.
   and it is being added in the same change as a new selection model. The
   counted confirmation, the deliberate reach, and the refusal to offer Undo
   are all guards, and none of them is optional.
+
+## Found while building, and not fixed here
+
+**The path trail truncates from the wrong end.** At 900px with a Local Zone
+bucket name, `bucket-09e` shows the trail clipped to `vunm-produ…` — the
+bucket, which the sidebar is already showing highlighted — while
+`2026 / august / daily-exports` is gone entirely. The half that survives is
+the half the reader already knows; the half that says *where they are* is the
+half thrown away.
+
+Not fixed here, because it is a different change: truncating a breadcrumb from
+the left, or eliding its middle, has its own decisions in it — which segments
+collapse, and what the collapsed form is clickable for. What this change did
+fix is the part it caused, the clip landing flush against a red `Delete`.
 
 ## Open Questions
 

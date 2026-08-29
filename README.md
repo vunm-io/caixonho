@@ -108,6 +108,21 @@ Working today:
   offers **Undo**, which restores the object exactly; on one that does not,
   it says plainly that the object is gone. The Undo appears only when the
   service's own response proves it exists — never as decoration.
+- **Deletes several at once, and counts a folder before it asks.** Tick the
+  rows you mean and the confirmation states *how many objects* would go —
+  though one object still gets its key, because a name is stronger than a
+  count of one. A folder is not a thing S3 holds, so deleting one means
+  deleting every key beneath it: the app walks the whole prefix first and puts
+  that number in the question, and it will not let you confirm while it is
+  still counting. Undo is **not** offered after a bulk delete, and the outcome
+  says so rather than leaving you to notice — restoring twenty objects is
+  twenty restores that could half-succeed. Each refusal keeps its own key and
+  its own cause, so one denial in the middle of twenty is never reported as
+  "the delete failed".
+- **A row is acted on where it is.** Right-click any row for Preview, Open,
+  Download and Delete. There is deliberately no delete on hover and no
+  destructive double-click: a confirmation is a second step, not a reason to
+  make the first one easy to hit by accident.
 - **Previews an object without downloading it** — a text-like file shows its
   first page from one ranged read, saying honestly how much of the whole you
   are looking at; a small image is drawn whole; and everything else says

@@ -1259,17 +1259,6 @@ pub enum Tally {
     Failed(Error),
 }
 
-impl Tally {
-    /// The keys, when the walk finished. `None` in every other case — which
-    /// is what stops a partial or refused walk from becoming a delete list.
-    pub fn keys(&self) -> Option<&[String]> {
-        match self {
-            Self::All(keys) => Some(keys),
-            _ => None,
-        }
-    }
-}
-
 /// How one delete ended (`XONHO-0021`).
 #[derive(Debug)]
 pub enum DeleteOutcome {
@@ -2267,7 +2256,10 @@ mod tests {
         match tally {
             Tally::TooMany { at_least } => {
                 assert!(at_least > MOST_KEYS_GATHERED);
-                assert!(tally.keys().is_none(), "nothing may be deleted from this");
+                assert!(
+                    !matches!(tally, Tally::All(_)),
+                    "a bounded walk must not come back as a list anybody can delete"
+                );
             }
             other => panic!("expected TooMany, got {other:?}"),
         }

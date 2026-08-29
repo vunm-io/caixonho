@@ -80,11 +80,12 @@ the first one moved.
 
 ## §4.5 Object operations — M3
 
-`XONHO-0021` opened this section on 2026-08-25.
+`XONHO-0021` opened this section on 2026-08-25; `XONHO-0030` carried it
+further on 2026-08-28.
 
 | Requirement | State | Notes |
 |---|---|---|
-| Create "folder"; delete single/bulk/recursive with a counted confirmation | partial | `XONHO-0021`: one object, through a confirmation that names the exact key — stronger than a count of 1. `XONHO-0024` adds create-folder, and it is **two behaviours, not one**: a zero-byte marker on a general purpose bucket, and on a **directory bucket a refusal that spends no request** — AWS documents that a directory is removed as soon as it empties, so an empty folder cannot survive there, and the refusal names uploading into the path as what does work. Bulk and recursive delete are still not started; the counted confirmation belongs to bulk, where a mistake multiplies |
+| Create "folder"; delete single/bulk/recursive with a counted confirmation | partial | `XONHO-0021`: one object, through a confirmation that names the exact key — stronger than a count of 1. `XONHO-0024` adds create-folder, and it is **two behaviours, not one**: a zero-byte marker on a general purpose bucket, and on a **directory bucket a refusal that spends no request** — AWS documents that a directory is removed as soon as it empties, so an empty folder cannot survive there, and the refusal names uploading into the path as what does work. `XONHO-0030` adds **bulk and recursive**: rows are ticked, a folder is walked with the delimiter left off so its whole subtree is counted, and the confirmation states that count — while one object still gets its key, because a name beats a count of one. The deletes run through a bounded queue and each refusal keeps its own key and cause. What is left is the ceiling: a prefix past 5000 objects is refused with a reason rather than walked, and copy/move do not exist to move things out of one first |
 | Copy/move within and across buckets, multipart above the `CopyObject` cap | none | |
 | Properties panel: size, ETag, storage class, encryption, metadata, tags, owner, version id | none | Size, class and ETag already cross the port for the listing; the panel does not exist |
 | Preview without full download: ranged first-N-KB for text kinds; images; markdown (`[S]`) | partial | `XONHO-0008`. Text kinds show their first 64 KiB with both numbers from the ranged response; images draw whole under a 20 MiB gate (a truncated raster does not decode, so ranged was never an option there — recorded in the change's design); binary wearing a text name is called binary. The gap is markdown *rendering* — it previews as the text it is |

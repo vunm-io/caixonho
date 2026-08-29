@@ -100,6 +100,7 @@ that only that arrangement produced. The full reasoning is in
 | `XONHO-0021` | Deleting one object through a named-key confirmation, with Undo offered exactly when the delete's own response reports a marker — and a refused undo that names `s3:DeleteObjectVersion` | landed, awaiting live acceptance |
 | `XONHO-0008` | Previewing without downloading: a ranged first page for text with an honest truncation line, whole small images under a 20 MiB gate, and plain refusals for everything else — nothing on the path touches disk | landed, awaiting live acceptance |
 | `XONHO-0024` | Making a folder: a zero-byte marker on a general purpose bucket, and on a directory bucket an honest refusal — the service removes an empty directory immediately — that names uploading into the path as what works instead | built, awaiting live acceptance |
+| `XONHO-0030` | Acting on a row where it is: right-click for Preview, Open, Download and Delete, ticks for a selection that survives a further page, and bulk delete through a counted confirmation — a folder walked flat and counted before it asks, and Undo refused out loud | built, awaiting live acceptance |
 
 ## What this project will not do
 
