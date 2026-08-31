@@ -13,17 +13,75 @@
 //!   anyway.
 
 use gpui::{App, BoxShadow, Hsla, Pixels, point, px};
-use gpui_component::{ActiveTheme, Theme, ThemeRegistry};
+use gpui_component::{Theme, ThemeMode, ThemeRegistry};
 
 /// Compiled in rather than read from disk: the brief asks for one
 /// self-contained binary per platform, and a theme that can go missing is a
 /// window that can open unstyled.
 const THEME: &str = include_str!("../assets/theme.json");
 
-/// Install the caixonho themes over the toolkit's defaults.
+/// The families the design system names, embedded for the same reason the
+/// theme is (`XONHO-0032`).
 ///
-/// Every colour the document omits is inherited, so this names only what
-/// differs — the brand ramp — and leaves the neutral surfaces alone.
+/// Baloo 2 for display — titles, labels, the text on a button — and Be Vietnam
+/// Pro for anything read at length. The system forbids mixing the two inside
+/// one block of text.
+///
+/// **Static instances, not the variable file**, and that was measured rather
+/// than assumed. `google/fonts` ships Baloo 2 as one variable `Baloo2[wght]`,
+/// and gpui — selecting a weight through font-kit — never reaches its `wght`
+/// axis: the same glyph came back **28.864px wide at both 400 and 800**. A
+/// display family that cannot go bold is not a display family, and the whole
+/// point of Baloo 2 here is the heavy cut.
+///
+/// So three static cuts, from the same family, served per weight by the Google
+/// Fonts CSS API. `the_display_font_actually_changes_shape_with_weight` is the
+/// measurement, and it stays: the day gpui learns variable axes, it still
+/// passes, and the day a font swap breaks weight selection it fails.
+///
+/// Both families are SIL Open Font License; `assets/fonts/OFL-*.txt` travel
+/// with them, which is not optional in a public repository that ships the
+/// glyphs.
+const BALOO_REGULAR: &[u8] = include_bytes!("../assets/fonts/Baloo2-Regular.ttf");
+const BALOO_BOLD: &[u8] = include_bytes!("../assets/fonts/Baloo2-Bold.ttf");
+const BALOO_EXTRABOLD: &[u8] = include_bytes!("../assets/fonts/Baloo2-ExtraBold.ttf");
+const BE_VIETNAM_REGULAR: &[u8] = include_bytes!("../assets/fonts/BeVietnamPro-Regular.ttf");
+const BE_VIETNAM_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/BeVietnamPro-SemiBold.ttf");
+const BE_VIETNAM_BOLD: &[u8] = include_bytes!("../assets/fonts/BeVietnamPro-Bold.ttf");
+
+/// What the design system calls display type: titles, labels, button text.
+pub(crate) const FONT_DISPLAY: &str = "Baloo 2";
+/// And what it calls body type: anything read at length.
+pub(crate) const FONT_BODY: &str = "Be Vietnam Pro";
+
+/// Hand the platform the families this application draws with.
+///
+/// Before the theme, because a theme naming a family the text system has never
+/// heard of falls back silently — and a silent fallback is how a window ships
+/// looking almost right.
+pub(crate) fn load_fonts(cx: &mut App) {
+    if let Err(error) = cx.text_system().add_fonts(vec![
+        std::borrow::Cow::Borrowed(BALOO_REGULAR),
+        std::borrow::Cow::Borrowed(BALOO_BOLD),
+        std::borrow::Cow::Borrowed(BALOO_EXTRABOLD),
+        std::borrow::Cow::Borrowed(BE_VIETNAM_REGULAR),
+        std::borrow::Cow::Borrowed(BE_VIETNAM_SEMIBOLD),
+        std::borrow::Cow::Borrowed(BE_VIETNAM_BOLD),
+    ]) {
+        // Not a reason to refuse to open, for `install`'s reason: the
+        // platform's own families are a working fallback, and a window nobody
+        // can open explains nothing.
+        eprintln!("caixonho: could not load its fonts, falling back: {error}");
+    }
+}
+
+/// Install the caixonho theme over the toolkit's defaults.
+///
+/// **One theme, and it is light** (`XONHO-0032`). Đất Nặn defines a single
+/// light palette; its own notes record dark as a decision the owner deferred,
+/// and building one here from values the system has never specified would be
+/// this project inventing brand. It comes back through the design system, not
+/// through this file.
 pub(crate) fn install(cx: &mut App) {
     if let Err(error) = ThemeRegistry::global_mut(cx).load_themes_from_str(THEME) {
         // A malformed theme is a styling problem, not a reason to refuse to
@@ -38,13 +96,14 @@ pub(crate) fn install(cx: &mut App) {
         .filter(|config| config.name.starts_with("caixonho"))
         .cloned()
         .collect();
-    // Both modes are applied so each is stored against its own mode; the last
-    // one applied also sets the mode, which the change below corrects.
-    let mode = cx.theme().mode;
     for config in ours {
         Theme::global_mut(cx).apply_config(&config);
     }
-    Theme::change(mode, None, cx);
+    // Light, explicitly, rather than following whatever the OS reports. There
+    // is no dark palette to follow it into, and a window that honours a dark
+    // preference by showing light-theme colours on a dark-theme *mode* is the
+    // worst of both.
+    Theme::change(ThemeMode::Light, None, cx);
 }
 
 /// Spacing, named for what it separates rather than by t-shirt size.

@@ -5051,8 +5051,20 @@ impl Render for CaixonhoApp {
         v_flex()
             .size_full()
             .bg(cx.theme().background)
+            // Body type for the window as a whole, and display type named only
+            // where the design system names it: titles, labels, and the text
+            // on a button. The system forbids mixing the two inside one block,
+            // so the default has to be the one used for reading.
+            .font_family(crate::theme::FONT_BODY)
+            .text_color(cx.theme().foreground)
             .child(
-                TitleBar::new().child(div().font_weight(gpui::FontWeight::BOLD).child("caixonho")),
+                TitleBar::new().child(
+                    div()
+                        .font_family(crate::theme::FONT_DISPLAY)
+                        .font_weight(gpui::FontWeight::EXTRA_BOLD)
+                        .text_color(cx.theme().sidebar_primary)
+                        .child("caixonho"),
+                ),
             )
             .child(
                 h_flex()
@@ -5143,6 +5155,7 @@ mod tests {
         double: Arc<StoreDouble>,
     ) -> (gpui::Entity<CaixonhoApp>, &'a mut gpui::VisualTestContext) {
         cx.update(gpui_component::init);
+        cx.update(crate::theme::install);
         let store: Arc<dyn caixonho_core::ObjectStore> = double;
         let (app, cx) = cx.add_window_view(|window, cx| {
             CaixonhoApp::new(
@@ -5510,6 +5523,12 @@ mod tests {
             gpui_platform::current_headless_renderer,
         );
         cx.update(gpui_component::init);
+        // **The application's own theme and fonts, which this harness went
+        // without until `XONHO-0032`.** It called `gpui_component::init` and
+        // stopped, so every frame it has ever written photographed the
+        // *toolkit's* default styling — and the brand ramp in `theme.json` had
+        // never once appeared in a judgement image. A harness for judging how
+        // the window looks, blind to how the window is dressed.
 
         // A world with one profile in it. `World::scripted` deliberately
         // discovers none — a test that wants a connection should say so — and
@@ -6757,6 +6776,158 @@ mod tests {
     /// sees, and a window that reached it by way of four others carries
     /// whatever they left behind — a scroll offset, a selection, a region
     /// filter. Cheap enough not to trade for that.
+    /// The theme this application ships is the one the window actually gets.
+    ///
+    /// `XONHO-0032`. Written because the screenshot harness had been
+    /// photographing the toolkit's default styling all along, and nothing
+    /// noticed — a frame is drawn either way, and "it looks fine" is not a
+    /// comparison anyone was making. This asserts the value rather than the
+    /// pixel, which is the part a test can actually hold.
+    #[gpui::test]
+    fn the_window_is_dressed_in_the_theme_this_app_ships(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        cx.update(crate::theme::install);
+
+        cx.update(|cx| {
+            use gpui_component::ActiveTheme as _;
+            let background = cx.theme().background;
+            let sidebar = cx.theme().sidebar;
+            let danger = cx.theme().danger;
+            eprintln!(
+                "background={:?}\n  sidebar={:?}\n  danger={:?}",
+                background.to_rgb(),
+                sidebar.to_rgb(),
+                danger.to_rgb()
+            );
+            // Đất Nặn's app surface, #F2F4F0 — cool, not white.
+            // Within one unit per channel, not equal: a colour goes through
+            // HSLA on the way in and comes back a hair off. `#F5A81C` returns
+            // as `#F5A81B`, which is the round trip and not a wrong colour.
+            let near = |got: gpui::Hsla, want: u32| {
+                let got = got.to_rgb();
+                let (r, g, b) = (
+                    (got.r * 255.).round() as i32,
+                    (got.g * 255.).round() as i32,
+                    (got.b * 255.).round() as i32,
+                );
+                let want = (
+                    ((want >> 16) & 0xff) as i32,
+                    ((want >> 8) & 0xff) as i32,
+                    (want & 0xff) as i32,
+                );
+                ((r - want.0).abs() <= 1 && (g - want.1).abs() <= 1 && (b - want.2).abs() <= 1)
+                    .then_some(())
+                    .ok_or(format!(
+                        "#{r:02x}{g:02x}{b:02x} vs #{:06x}",
+                        want.0 << 16 | want.1 << 8 | want.2
+                    ))
+            };
+
+            // Named one by one, and this is why: **a key the schema does not
+            // know is dropped without a word.** The first draft of this theme
+            // spelled the button tones `button.danger` where the schema wants
+            // `button.danger.background`, and every one of them silently fell
+            // back to the toolkit's own — which rendered the delete button pale
+            // pink with white text on it, unreadable, and looking for all the
+            // world like a deliberate choice.
+            for (what, got, want) in [
+                ("background", background, 0xf2f4f0),
+                ("sidebar", sidebar, 0xeaeee7),
+                ("danger", danger, 0xd4552f),
+                ("button danger", cx.theme().button_danger, 0xd4552f),
+                (
+                    "button danger ink",
+                    cx.theme().button_danger_foreground,
+                    0xfff1ee,
+                ),
+                ("button primary", cx.theme().button_primary, 0xf5a81c),
+                (
+                    "button primary ink",
+                    cx.theme().button_primary_foreground,
+                    0x5c3a05,
+                ),
+                ("sidebar current", cx.theme().sidebar_primary, 0xf5a81c),
+                ("table head", cx.theme().table_head, 0xeaeee7),
+                (
+                    "selected row border",
+                    cx.theme().table_active_border,
+                    0x3aafc9,
+                ),
+            ] {
+                if let Err(seen) = near(got, want) {
+                    panic!(
+                        "`{what}` is {seen} — the toolkit's, not this app's. Most \
+                         likely a theme key the schema does not recognise, which \
+                         it drops in silence."
+                    );
+                }
+            }
+        });
+    }
+
+    /// Does the variable font's weight axis actually reach the renderer?
+    ///
+    /// `XONHO-0032` task 1.2, and the one thing about that change that could
+    /// not be settled by reading source. Baloo 2 ships from `google/fonts` as
+    /// a single variable file; gpui picks a weight through font-kit, and
+    /// whether that selects along `wght` or just hands back the default
+    /// instance is not visible in either codebase.
+    ///
+    /// So it is measured. The same string is laid out at 400 and at 800, and
+    /// their widths compared: a heavier cut of the same face is wider. If the
+    /// axis is not reached, both come back identical and the fallback is
+    /// static instances — a download, not a redesign.
+    #[test]
+    fn the_display_font_actually_changes_shape_with_weight() {
+        use gpui::{Font, FontFeatures, FontStyle, FontWeight, HeadlessAppContext, px};
+
+        let text_system = gpui_platform::current_platform(true).text_system();
+        let mut cx = HeadlessAppContext::with_platform(
+            text_system,
+            Arc::new(gpui_component_assets::Assets),
+            gpui_platform::current_headless_renderer,
+        );
+
+        cx.update(|cx| {
+            crate::theme::load_fonts(cx);
+
+            // The ink box of one glyph, at a weight. A heavier cut of the
+            // same face draws a fatter `B` — so if the axis is reached these
+            // two differ, and if it is not they are the same number.
+            let width_of_b = |weight: FontWeight| {
+                let font = Font {
+                    family: crate::theme::FONT_DISPLAY.into(),
+                    features: FontFeatures::default(),
+                    fallbacks: None,
+                    weight,
+                    style: FontStyle::Normal,
+                };
+                let id = cx.text_system().resolve_font(&font);
+                cx.text_system()
+                    .typographic_bounds(id, px(64.), 'B')
+                    .expect("the family has a B")
+                    .size
+                    .width
+            };
+
+            let regular = width_of_b(FontWeight::NORMAL);
+            let black = width_of_b(FontWeight::EXTRA_BOLD);
+
+            assert!(
+                regular > px(0.),
+                "the display family did not load at all — `add_fonts` failed \
+                 or the family name is wrong"
+            );
+            eprintln!("Baloo 2 'B' at 64px: regular={regular:?} extra-bold={black:?}");
+            assert_ne!(
+                regular, black,
+                "Baloo 2 renders identically at 400 and 800, so gpui is not \
+                 reaching the variable font's `wght` axis. The fallback is \
+                 static instances of the same family (XONHO-0032 task 1.2)."
+            );
+        });
+    }
+
     #[cfg(target_os = "macos")]
     fn shoot(
         name: &str,
@@ -6799,6 +6970,14 @@ mod tests {
             gpui_platform::current_headless_renderer,
         );
         cx.update(gpui_component::init);
+        // **The application's own theme and fonts, which this harness went
+        // without until `XONHO-0032`.** It called `gpui_component::init` and
+        // stopped, so every frame it ever wrote photographed the *toolkit's*
+        // default styling — the brand ramp in `theme.json` had never once
+        // appeared in a judgement image. A harness for judging how the window
+        // looks, blind to how the window is dressed.
+        cx.update(crate::theme::load_fonts);
+        cx.update(crate::theme::install);
 
         // A world with one profile in it. `World::scripted` deliberately
         // discovers none — a test that wants a connection should say so — and

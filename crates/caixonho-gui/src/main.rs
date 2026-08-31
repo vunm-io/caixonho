@@ -31,6 +31,7 @@ fn main() {
             // kind that leaves nothing on screen to read afterwards.
             let diagnostics = caixonho_core::diagnostics::start();
             gpui_component::init(cx);
+            theme::load_fonts(cx);
             theme::install(cx);
 
             // Everything the application needs from this machine, read here

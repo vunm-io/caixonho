@@ -12,7 +12,7 @@
 
 ## 1. The fonts, and the one thing that might not work
 
-- [ ] 1.1 Embed both families with their licences [dispatch: main]
+- [x] 1.1 Embed both families with their licences [dispatch: main]
   - Paths: `crates/caixonho-gui/assets/fonts/`
   - Done criteria: `Baloo2[wght].ttf`, three Be Vietnam Pro statics, and
     **both `OFL.txt` files**, from `google/fonts`. The licences are not
@@ -20,22 +20,26 @@
     distributing them wrongly, and this repository is public.
   - Verification: the files, and `README.md` naming them
 
-- [ ] 1.2 Load them, and find out whether the variable weight works
+- [x] 1.2 Load them, and find out whether the variable weight works
       [dispatch: main]
   - Paths: `crates/caixonho-gui/src/theme.rs`, `main.rs`
   - Done criteria: `text_system().add_fonts()` at startup, then **a frame with
     Baloo 2 at 400 beside Baloo 2 at 800** — and the frame is opened and
     compared.
-  - **This is the task that can fail.** Baloo 2 ships as one variable file and
-    gpui selects a weight through font-kit; whether that reaches the `wght`
-    axis is not knowable from the source. If the two weights render alike, the
-    fallback is static instances — a download, not a redesign. Either way, what
-    happened gets written here.
-  - Verification: the frame, looked at
+  - **It failed, exactly as written.** The same `B` measured **28.864px at
+    both 400 and 800** — gpui never reaches the variable font's `wght` axis, so
+    Baloo 2 could only ever have rendered at one weight. A display family that
+    cannot go bold is not a display family.
+  - Fixed with three static cuts (regular / bold / extra-bold), which the
+    Google Fonts CSS API serves per weight. Re-measured: **28.864 → 33.28px**.
+  - The measurement stays as `the_display_font_actually_changes_shape_with_weight`
+    rather than being deleted once green: the day gpui learns variable axes it
+    still passes, and the day a font swap breaks weight selection it fails.
+  - Verification: the measurement, and the frames
 
 ## 2. The tokens
 
-- [ ] 2.1 Colour and surface, app branch [dispatch: main]
+- [x] 2.1 Colour and surface, app branch [dispatch: main]
   - Paths: `crates/caixonho-gui/assets/theme.json`
   - Done criteria: `--surface-app` `#F2F4F0` for the pane,
     `--surface-app-sidebar` `#EAEEE7`, `--surface-app-raised` `#FFFFFF`,
@@ -48,7 +52,7 @@
     being readable.
   - Verification: the frames
 
-- [ ] 2.2 The dark theme goes [dispatch: main]
+- [x] 2.2 The dark theme goes [dispatch: main]
   - Paths: `crates/caixonho-gui/assets/theme.json`, `theme.rs`
   - Done criteria: one theme. Not a dark entry left stale — removed, and the
     mode handling with it.
