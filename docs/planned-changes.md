@@ -51,6 +51,7 @@ branch nobody can land.
 | `XONHO-0029` | Files dropped onto the window, and a picker that takes more than one | §4.4 | M2 |
 | `XONHO-0030` | Right-click a row, select several, and delete in bulk with a counted confirmation | §4.5 | M3 |
 | `XONHO-0031` | A real S3 service the tests start themselves, so generic-S3 flows stop needing the owner to accept them | §7–8 | M3 |
+| `XONHO-0032` | The owner's own design system, Đất Nặn, in the window — its app branch, its two tiers, and the two signatures gpui cannot reproduce | — | M3 |
 
 `XONHO-0008` depends on `XONHO-0007`: a preview is the same download path
 asking for the first N KB instead of the whole object.
