@@ -2818,8 +2818,11 @@ impl CaixonhoApp {
                 app.narrowing.accessible_only = !app.narrowing.accessible_only;
                 app.narrow_rows(cx);
             }));
+        // Filled *is* clay — the two are the same statement, and splitting
+        // them is how the on-state ended up flat while every other filled
+        // button in the window was moulded.
         let accessible_only = if self.narrowing.accessible_only {
-            accessible_only.primary()
+            accessible_only.primary().clay()
         } else {
             accessible_only.ghost()
         };
@@ -3457,6 +3460,12 @@ impl CaixonhoApp {
                             div()
                                 .debug_selector(|| "delete-ticked-action".into())
                                 .child(
+                                    // Ghost, so **flat** — and deliberately:
+                                    // this one opens the question, and the
+                                    // `Delete` inside the confirmation is the
+                                    // one that does the deed and is moulded.
+                                    // Two filled danger buttons a strip apart
+                                    // would make neither of them mean much.
                                     Button::new("delete-ticked-action")
                                         .label(format!("Delete {ticked}…"))
                                         .ghost()
@@ -3885,7 +3894,7 @@ impl CaixonhoApp {
                                 cx.listener(move |app, _, _, cx| app.toggle_chosen(&name, cx)),
                             );
                         if ticked {
-                            button.primary()
+                            button.primary().clay()
                         } else {
                             button.outline()
                         }
@@ -6783,6 +6792,111 @@ mod tests {
     /// sees, and a window that reached it by way of four others carries
     /// whatever they left behind — a scroll offset, a selection, a region
     /// filter. Cheap enough not to trade for that.
+    /// A filled button is clay, everywhere, without anyone remembering.
+    ///
+    /// `XONHO-0032`. The `Clay` trait was supposed to make this true by
+    /// construction and did not: the trait says what clay *is*, and nothing
+    /// said where it *goes*, so applying it came down to matching text — which
+    /// missed every filled button written as `if on { b.primary() }` rather
+    /// than as one chain. The owner found two of them on screen, next to
+    /// moulded ones, on the first pass.
+    ///
+    /// So the rule is checked instead of trusted. Reading the source from a
+    /// test is unusual and it is the honest tool here: the alternative is a
+    /// screenshot per button, and the failure has no behaviour to assert —
+    /// it is a thing that looks slightly wrong.
+    ///
+    /// `ghost` is exempt, and that is the system's own rule: a ghost carries
+    /// its tone's **ink**, not a moulded surface.
+    #[test]
+    fn every_filled_button_is_made_of_clay() {
+        const TONES: [&str; 6] = [
+            ".primary()",
+            ".danger()",
+            ".success()",
+            ".warning()",
+            ".info()",
+            ".secondary()",
+        ];
+
+        let mut flat = Vec::new();
+        for (name, source) in [
+            ("app.rs", include_str!("app.rs")),
+            (
+                "views/credential_form.rs",
+                include_str!("views/credential_form.rs"),
+            ),
+            ("views/failure.rs", include_str!("views/failure.rs")),
+            ("views/buckets.rs", include_str!("views/buckets.rs")),
+        ] {
+            let lines: Vec<&str> = source.lines().collect();
+            for (n, line) in lines.iter().enumerate() {
+                // A comment mentioning a tone is not a button wearing one,
+                // and neither is a quoted one — the array above names all six,
+                // and a lint that trips over its own definition is a lint
+                // nobody keeps.
+                //
+                // This replaces cutting the file at its first `#[cfg(test)]`,
+                // which was the second flaw in this lint and the worse one:
+                // that attribute first appears at line 734 of seven thousand,
+                // so the check was reading a tenth of the file and reporting
+                // the rest as clean.
+                if line.trim_start().starts_with("//")
+                    || !TONES
+                        .iter()
+                        .any(|tone| line.contains(tone) && !line.contains(&format!("\"{tone}\"")))
+                {
+                    continue;
+                }
+
+                // The chain this call belongs to, and **only** that chain: a
+                // fixed window of nearby lines is what made the first draft of
+                // this lint useless. `accessible_only.primary()` sits two
+                // lines above an `else { … .ghost() }`, so a window saw a
+                // ghost and exempted the filled branch — the lint passed with
+                // the exact button the owner had found still flat.
+                //
+                // A continuation line begins with `.`; anything else ends the
+                // chain.
+                let mut chain = vec![*line];
+                for above in lines[..n].iter().rev() {
+                    let t = above.trim_start();
+                    if t.starts_with("//") {
+                        continue;
+                    }
+                    chain.push(*above);
+                    if !t.starts_with('.') {
+                        break;
+                    }
+                }
+                for below in &lines[n + 1..] {
+                    let t = below.trim_start();
+                    if !t.starts_with('.') {
+                        break;
+                    }
+                    chain.push(*below);
+                }
+                let chain = chain.join(" ");
+
+                // A ghost wears ink rather than a surface, so it is flat by
+                // the system's own rule and not an omission.
+                if chain.contains(".ghost()") || chain.contains(".outline()") {
+                    continue;
+                }
+                if !chain.contains(".clay()") {
+                    flat.push(format!("{name}:{} — {}", n + 1, line.trim()));
+                }
+            }
+        }
+
+        assert!(
+            flat.is_empty(),
+            "filled buttons with no clay under them, which will sit flat beside \
+             moulded ones:\n  {}",
+            flat.join("\n  ")
+        );
+    }
+
     /// The theme this application ships is the one the window actually gets.
     ///
     /// `XONHO-0032`. Written because the screenshot harness had been
