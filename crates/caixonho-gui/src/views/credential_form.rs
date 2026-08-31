@@ -241,7 +241,7 @@ impl CredentialForm {
                     .child(
                         Button::new("cancel-credential")
                             .label("Cancel")
-                            .ghost()
+                            .custom(crate::theme::quiet(cx))
                             .on_click(move |_, window, cx| cancel(window, cx)),
                     ),
             )

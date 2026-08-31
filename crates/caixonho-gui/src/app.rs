@@ -2581,7 +2581,7 @@ impl CaixonhoApp {
                 .child(
                     Button::new("cancel-remove")
                         .label("Cancel")
-                        .ghost()
+                        .custom(crate::theme::quiet(cx))
                         .on_click(cx.listener(|app, _, _, cx| {
                             app.confirming = None;
                             cx.notify();
@@ -2824,7 +2824,7 @@ impl CaixonhoApp {
         let accessible_only = if self.narrowing.accessible_only {
             accessible_only.primary().clay()
         } else {
-            accessible_only.ghost()
+            accessible_only.custom(crate::theme::quiet(cx))
         };
 
         let controls = h_flex()
@@ -2859,7 +2859,7 @@ impl CaixonhoApp {
                 div().debug_selector(|| "choose-buckets".into()).child(
                     Button::new("choose-buckets")
                         .label("Choose buckets…")
-                        .ghost()
+                        .custom(crate::theme::quiet(cx))
                         .on_click(cx.listener(|app, _, _, cx| app.start_choosing_buckets(cx))),
                 ),
             )
@@ -2908,12 +2908,12 @@ impl CaixonhoApp {
                 .child(if self.narrowing.showing_all {
                     Button::new("back-to-chosen")
                         .label("Back to my buckets")
-                        .ghost()
+                        .custom(crate::theme::quiet(cx))
                         .on_click(cx.listener(|app, _, _, cx| app.back_to_chosen_buckets(cx)))
                 } else {
                     Button::new("show-all-buckets")
                         .label("Show all")
-                        .ghost()
+                        .custom(crate::theme::quiet(cx))
                         .on_click(cx.listener(|app, _, _, cx| app.show_all_buckets(cx)))
                 })
         });
@@ -2947,7 +2947,7 @@ impl CaixonhoApp {
                             Button::new("add-connection")
                                 .label("Add a connection")
                                 .icon(IconName::Plus)
-                                .ghost()
+                                .custom(crate::theme::quiet(cx))
                                 .w_full()
                                 .on_click(cx.listener(|app, _, window, cx| {
                                     app.form = Some(CredentialForm::new(window, cx));
@@ -3364,7 +3364,7 @@ impl CaixonhoApp {
         let mut trail = h_flex().items_center().gap(space::TIGHT).child(
             Button::new("leave-bucket")
                 .label("All buckets")
-                .ghost()
+                .custom(crate::theme::quiet(cx))
                 .on_click(cx.listener(|app, _, _, cx| app.leave_bucket(cx))),
         );
 
@@ -3372,7 +3372,7 @@ impl CaixonhoApp {
         trail = trail.child(
             Button::new("bucket-root")
                 .label(location.bucket.clone())
-                .ghost()
+                .custom(crate::theme::quiet(cx))
                 .on_click({
                     let bucket = location.bucket.clone();
                     cx.listener(move |app, _, window, cx| {
@@ -3392,7 +3392,7 @@ impl CaixonhoApp {
                 .child(
                     Button::new(("step", index))
                         .label(step.clone())
-                        .ghost()
+                        .custom(crate::theme::quiet(cx))
                         .on_click(cx.listener(move |app, _, window, cx| {
                             app.go_to(target.clone(), window, cx);
                         })),
@@ -3479,7 +3479,7 @@ impl CaixonhoApp {
                             div().debug_selector(|| "upload-action".into()).child(
                                 Button::new("upload-action")
                                     .label("Upload…")
-                                    .ghost()
+                                    .custom(crate::theme::quiet(cx))
                                     // No `disabled`: this acts on the
                                     // location, and a location is what being
                                     // here means.
@@ -3492,7 +3492,7 @@ impl CaixonhoApp {
                             div().debug_selector(|| "new-folder-action".into()).child(
                                 Button::new("new-folder-action")
                                     .label("New folder…")
-                                    .ghost()
+                                    .custom(crate::theme::quiet(cx))
                                     .on_click(cx.listener(|app, _, window, cx| {
                                         app.new_folder_here(window, cx)
                                     })),
@@ -3501,7 +3501,7 @@ impl CaixonhoApp {
                         .child(
                             Button::new("edit-path")
                                 .label("Type a location")
-                                .ghost()
+                                .custom(crate::theme::quiet(cx))
                                 .on_click(cx.listener(|app, _, _, cx| {
                                     app.editing_path = true;
                                     cx.notify();
@@ -3526,7 +3526,7 @@ impl CaixonhoApp {
             .child(
                 Button::new("cancel-path")
                     .label("Cancel")
-                    .ghost()
+                    .custom(crate::theme::quiet(cx))
                     .on_click(cx.listener(|app, _, _, cx| {
                         app.editing_path = false;
                         cx.notify();
@@ -3651,16 +3651,17 @@ impl CaixonhoApp {
                     .gap(space::TIGHT)
                     .child(
                         div().debug_selector(|| "preview-back".into()).child(
-                            Button::new("preview-back").label("Back").ghost().on_click(
-                                cx.listener(|app, _, window, cx| {
+                            Button::new("preview-back")
+                                .label("Back")
+                                .custom(crate::theme::quiet(cx))
+                                .on_click(cx.listener(|app, _, window, cx| {
                                     app.preview = None;
                                     // Back lands on a fresh listing, the same
                                     // re-read the deletion strip uses.
                                     if let Some(location) = app.location().cloned() {
                                         app.go_to(location, window, cx);
                                     }
-                                }),
-                            ),
+                                })),
                         ),
                     )
                     .child(div().text_sm().child(key)),
@@ -3743,7 +3744,7 @@ impl CaixonhoApp {
                             .child(
                                 Button::new("read-more")
                                     .label(if fetching { "Reading…" } else { "Load more" })
-                                    .ghost()
+                                    .custom(crate::theme::quiet(cx))
                                     .on_click(cx.listener(|app, _, _, cx| app.read_more(cx))),
                             )
                     }))
@@ -3797,7 +3798,7 @@ impl CaixonhoApp {
                     .child(
                         Button::new("drop-refused-dismiss")
                             .label("Dismiss")
-                            .ghost()
+                            .custom(crate::theme::quiet(cx))
                             .on_click(cx.listener(|app, _, _, cx| {
                                 app.dropped_refusal = None;
                                 cx.notify();
@@ -3839,15 +3840,23 @@ impl CaixonhoApp {
                         // choice, and mixing the two would put "select
                         // everything" next to "forget everything" wearing
                         // similar words.
-                        .child(div().debug_selector(|| "chooser-none".into()).child(
-                            Button::new("chooser-none").label("None").ghost().on_click(
-                                cx.listener(|app, _, _, cx| app.tick_every_bucket(false, cx)),
-                            ),
-                        ))
                         .child(
-                            Button::new("chooser-all").label("All").ghost().on_click(
-                                cx.listener(|app, _, _, cx| app.tick_every_bucket(true, cx)),
+                            div().debug_selector(|| "chooser-none".into()).child(
+                                Button::new("chooser-none")
+                                    .label("None")
+                                    .custom(crate::theme::quiet(cx))
+                                    .on_click(cx.listener(|app, _, _, cx| {
+                                        app.tick_every_bucket(false, cx)
+                                    })),
                             ),
+                        )
+                        .child(
+                            Button::new("chooser-all")
+                                .label("All")
+                                .custom(crate::theme::quiet(cx))
+                                .on_click(
+                                    cx.listener(|app, _, _, cx| app.tick_every_bucket(true, cx)),
+                                ),
                         )
                         .child(div().flex_1())
                         .child(
@@ -3870,7 +3879,7 @@ impl CaixonhoApp {
                                 // choice shows it, a chosen-everything hides
                                 // it.
                                 .label("Forget my choice")
-                                .ghost()
+                                .custom(crate::theme::quiet(cx))
                                 .on_click(
                                     cx.listener(|app, _, _, cx| app.forget_bucket_choice(cx)),
                                 ),
@@ -3878,7 +3887,7 @@ impl CaixonhoApp {
                         .child(
                             Button::new("chooser-cancel")
                                 .label("Cancel")
-                                .ghost()
+                                .custom(crate::theme::quiet(cx))
                                 .on_click(cx.listener(|app, _, _, cx| {
                                     app.choosing_buckets = None;
                                     cx.notify();
@@ -4038,7 +4047,7 @@ impl CaixonhoApp {
                 .child(
                     Button::new("destination-cancel")
                         .label("Cancel")
-                        .ghost()
+                        .custom(crate::theme::quiet(cx))
                         .on_click(cx.listener(|app, _, _, cx| {
                             app.choosing_destination = None;
                             cx.notify();
@@ -4059,7 +4068,7 @@ impl CaixonhoApp {
         let dismiss = |id: &'static str| {
             Button::new(id)
                 .label("Dismiss")
-                .ghost()
+                .custom(crate::theme::quiet(cx))
                 .on_click(cx.listener(|app, _, _, cx| {
                     app.making_folder = None;
                     cx.notify();
@@ -4160,13 +4169,13 @@ impl CaixonhoApp {
         let dismiss = || {
             Button::new("delete-dismiss")
                 .label("Dismiss")
-                .ghost()
+                .custom(crate::theme::quiet(cx))
                 .on_click(cx.listener(|app, _, _, cx| app.dismiss_deletion(cx)))
         };
         let cancel = |id: &'static str| {
             Button::new(id)
                 .label("Cancel")
-                .ghost()
+                .custom(crate::theme::quiet(cx))
                 .on_click(cx.listener(|app, _, _, cx| app.dismiss_deletion(cx)))
         };
 
@@ -4290,7 +4299,7 @@ impl CaixonhoApp {
                             div().debug_selector(|| "delete-undo".into()).child(
                                 Button::new("delete-undo")
                                     .label("Undo")
-                                    .ghost()
+                                    .custom(crate::theme::quiet(cx))
                                     .on_click(cx.listener(|app, _, _, cx| app.undo_delete(cx))),
                             ),
                         ),
@@ -4450,7 +4459,7 @@ impl CaixonhoApp {
                         .child(
                             Button::new("queue-retry")
                                 .label("Retry failed")
-                                .ghost()
+                                .custom(crate::theme::quiet(cx))
                                 .on_click(cx.listener(|app, _, _, cx| {
                                     app.queue.retry_failed();
                                     app.start_ready(cx);
@@ -4459,7 +4468,7 @@ impl CaixonhoApp {
                         .child(
                             Button::new("queue-clear")
                                 .label("Clear finished")
-                                .ghost()
+                                .custom(crate::theme::quiet(cx))
                                 .on_click(cx.listener(|app, _, _, cx| {
                                     app.queue.clear_finished();
                                     cx.notify();
@@ -4468,7 +4477,7 @@ impl CaixonhoApp {
                         .child(
                             Button::new("queue-cancel")
                                 .label("Cancel all")
-                                .ghost()
+                                .custom(crate::theme::quiet(cx))
                                 .on_click(cx.listener(|app, _, _, cx| app.cancel_queue(cx))),
                         ),
                 )
@@ -4578,7 +4587,7 @@ impl CaixonhoApp {
         let dismiss = || {
             Button::new(("transfer-dismiss", id.0 as usize))
                 .label("Dismiss")
-                .ghost()
+                .custom(crate::theme::quiet(cx))
                 .on_click(cx.listener(move |app, _, _, cx| {
                     app.queue.forget(id);
                     cx.notify();
@@ -4618,7 +4627,7 @@ impl CaixonhoApp {
                     div().debug_selector(|| "transfer-cancel".into()).child(
                         Button::new(("transfer-cancel", id.0 as usize))
                             .label("Cancel")
-                            .ghost()
+                            .custom(crate::theme::quiet(cx))
                             .on_click({
                                 let cancel = transfer.cancel.clone();
                                 cx.listener(move |_, _, _, _| cancel.cancel())
@@ -4640,7 +4649,7 @@ impl CaixonhoApp {
                 .child(
                     Button::new(("collision-replace", id.0 as usize))
                         .label("Replace")
-                        .ghost()
+                        .custom(crate::theme::quiet(cx))
                         .on_click(cx.listener(move |app, _, _, cx| {
                             app.answer_collision(
                                 id,
@@ -4652,7 +4661,7 @@ impl CaixonhoApp {
                 .child(
                     Button::new(("collision-keep-both", id.0 as usize))
                         .label("Keep both")
-                        .ghost()
+                        .custom(crate::theme::quiet(cx))
                         .on_click(cx.listener(move |app, _, _, cx| {
                             app.answer_collision(
                                 id,
@@ -4664,7 +4673,7 @@ impl CaixonhoApp {
                 .child(
                     Button::new(("collision-abandon", id.0 as usize))
                         .label("Cancel")
-                        .ghost()
+                        .custom(crate::theme::quiet(cx))
                         .on_click(cx.listener(move |app, _, _, cx| {
                             app.queue.forget(id);
                             cx.notify();
@@ -4704,7 +4713,7 @@ impl CaixonhoApp {
                     .child(
                         Button::new("transfer-reveal")
                             .label("Reveal")
-                            .ghost()
+                            .custom(crate::theme::quiet(cx))
                             .on_click({
                                 let path = transfer.directory.join(name);
                                 cx.listener(move |_, _, _, cx| cx.reveal_path(&path))
@@ -4731,7 +4740,7 @@ impl CaixonhoApp {
                     .child(
                         Button::new(("key-replace", id.0 as usize))
                             .label("Replace")
-                            .ghost()
+                            .custom(crate::theme::quiet(cx))
                             .on_click(cx.listener(move |app, _, _, cx| {
                                 app.answer_key_collision(
                                     id,
@@ -4743,7 +4752,7 @@ impl CaixonhoApp {
                     .child(
                         Button::new(("key-keep-both", id.0 as usize))
                             .label("Keep both")
-                            .ghost()
+                            .custom(crate::theme::quiet(cx))
                             .on_click(cx.listener(move |app, _, _, cx| {
                                 app.answer_key_collision(
                                     id,
@@ -4755,7 +4764,7 @@ impl CaixonhoApp {
                     .child(
                         Button::new(("key-abandon", id.0 as usize))
                             .label("Cancel")
-                            .ghost()
+                            .custom(crate::theme::quiet(cx))
                             .on_click(cx.listener(move |app, _, _, cx| {
                                 app.queue.forget(id);
                                 cx.notify();
@@ -4778,7 +4787,7 @@ impl CaixonhoApp {
                 .child(
                     Button::new("send-anyway")
                         .label("Send anyway")
-                        .ghost()
+                        .custom(crate::theme::quiet(cx))
                         .on_click(cx.listener(move |app, _, _, cx| {
                             app.answer_key_collision(
                                 id,
@@ -4790,7 +4799,7 @@ impl CaixonhoApp {
                 .child(
                     Button::new("unsupported-abandon")
                         .label("Cancel")
-                        .ghost()
+                        .custom(crate::theme::quiet(cx))
                         .on_click(cx.listener(move |app, _, _, cx| {
                             app.queue.forget(id);
                             cx.notify();
@@ -6852,7 +6861,7 @@ mod tests {
                 // The chain this call belongs to, and **only** that chain: a
                 // fixed window of nearby lines is what made the first draft of
                 // this lint useless. `accessible_only.primary()` sits two
-                // lines above an `else { … .ghost() }`, so a window saw a
+                // lines above an `else { … .custom(crate::theme::quiet(cx)) }`, so a window saw a
                 // ghost and exempted the filled branch — the lint passed with
                 // the exact button the owner had found still flat.
                 //
@@ -6878,9 +6887,21 @@ mod tests {
                 }
                 let chain = chain.join(" ");
 
-                // A ghost wears ink rather than a surface, so it is flat by
-                // the system's own rule and not an omission.
-                if chain.contains(".ghost()") || chain.contains(".outline()") {
+                // A button that wears **ink** rather than a surface is flat
+                // by the system's own rule, not by omission: `quiet`, the
+                // toolkit's `ghost`, and `outline`.
+                //
+                // Spelled in pieces on purpose. A blunt `.ghost()` →
+                // `.custom(…)` substitution across this crate rewrote this
+                // very condition once, so the lint stopped exempting ghosts
+                // and flagged one — which is at least the tool catching the
+                // damage done to it.
+                const INK_NOT_SURFACE: [&str; 3] = [".ghos", "t()", ".outline()"];
+                let ghost = format!("{}{}", INK_NOT_SURFACE[0], INK_NOT_SURFACE[1]);
+                if chain.contains(&ghost)
+                    || chain.contains(INK_NOT_SURFACE[2])
+                    || chain.contains("quiet(cx)")
+                {
                     continue;
                 }
                 if !chain.contains(".clay()") {

@@ -267,3 +267,28 @@ pub(crate) trait Clay: gpui::Styled + Sized {
 }
 
 impl<T: gpui::Styled + Sized> Clay for T {}
+
+/// A quiet button: no surface until the pointer is on it, and then a wash.
+///
+/// **Why not `ghost`.** The toolkit computes a ghost's hover as
+/// `secondary.darken(0.1).opacity(0.8)`, and `darken` multiplies lightness —
+/// so with `secondary` at `#EAEEE7` the hover lands on `#DBDED9`, a solid
+/// block that reads as a *different kind of button* rather than as a pointer
+/// resting on one. Lightening `secondary` barely moves it: at `#F7F9F6` it is
+/// `#E5E7E4`, and even pure white gives `#EBEBEB` — a dead grey outside the
+/// palette. The formula cannot produce a wash, whatever it is fed.
+///
+/// So the hover is stated instead of derived. `rgba(95, 110, 98, .07)` is the
+/// value Đất Nặn's own desktop kit uses for a hover on an app surface, which
+/// is exactly this situation.
+///
+/// The foreground is `--ink-2`, the body ink — a quiet button is a secondary
+/// action and the system says it wears its tone's **ink**, not a fill.
+pub(crate) fn quiet(cx: &App) -> gpui_component::button::ButtonCustomVariant {
+    use gpui_component::ActiveTheme as _;
+    gpui_component::button::ButtonCustomVariant::new(cx)
+        .color(gpui::transparent_black())
+        .foreground(cx.theme().foreground)
+        .hover(gpui::hsla(133. / 360., 0.073, 0.402, 0.07))
+        .active(gpui::hsla(133. / 360., 0.073, 0.402, 0.12))
+}
