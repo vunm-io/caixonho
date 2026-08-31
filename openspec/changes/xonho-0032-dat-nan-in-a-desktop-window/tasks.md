@@ -80,12 +80,20 @@
     mục khác phẳng."*
   - Verification: the frames
 
-- [ ] 3.2 Buttons, chips and badges [dispatch: main]
+- [x] 3.2 Buttons, chips and badges [dispatch: main]
   - Done criteria: inset + drop, asymmetric pixel radii. One `primary` per
     screen — the system says one, and this window has several candidates, so
     **decide which and write it here**.
   - `ghost` uses the tone's *ink* for text and border, not a fill, so it stays
-    readable on the raised white surfaces.
+    readable on the raised white surfaces — so **only filled buttons get
+    clay**, which is eight of them.
+  - A `Clay` extension trait rather than a helper called per site: every button
+    here should be the same material, and a rule applied by remembering to
+    apply it is a rule with exceptions nobody chose.
+  - **The one `primary`, decided:** `Save` on the connection form. It is the
+    only screen in this application with a single obvious commitment; the
+    object pane's verbs all act on different things and none of them outranks
+    the others, so none is primary there.
   - Verification: the frames
 
 - [ ] 3.3 Everything else goes flat [dispatch: main]

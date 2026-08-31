@@ -15,7 +15,7 @@ use gpui_component::{
 };
 
 use crate::components::{icon_tile, inline_message};
-use crate::theme::{space, tile};
+use crate::theme::{Clay, space, tile};
 
 /// What the user is typing, and what is wrong with it so far.
 pub(crate) struct CredentialForm {
@@ -156,15 +156,31 @@ impl CredentialForm {
             .border_color(cx.theme().border)
             .child(
                 gpui_component::h_flex()
+                    .w_full()
                     .gap(space::ROW)
-                    .child(icon_tile(
+                    // The tile keeps its size; the text beside it is what
+                    // gives way.
+                    .child(div().flex_shrink_0().child(icon_tile(
                         IconName::Plus,
                         tile::SM,
                         cx.theme().primary,
                         false,
-                    ))
+                    )))
                     .child(
                         v_flex()
+                            // `min_w_0`, and it is load-bearing: a flex child
+                            // defaults to `min-width: auto`, so without this
+                            // the column refuses to shrink below its longest
+                            // line and the sentence runs out past the card's
+                            // edge instead of wrapping inside it.
+                            //
+                            // It went unnoticed until `XONHO-0032` changed the
+                            // typeface: Be Vietnam Pro is wider than what was
+                            // there, and a line that just fitted stopped
+                            // fitting. The bug was always here; the font only
+                            // made it visible.
+                            .min_w_0()
+                            .flex_1()
                             .gap(space::TIGHT)
                             .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child(
                                 if self.editing.is_some() {
@@ -219,6 +235,7 @@ impl CredentialForm {
                         Button::new("save-credential")
                             .label(if saving { "Saving…" } else { "Save" })
                             .primary()
+                            .clay()
                             .on_click(move |_, window, cx| save(window, cx)),
                     )
                     .child(

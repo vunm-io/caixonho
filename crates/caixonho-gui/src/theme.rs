@@ -178,3 +178,92 @@ pub(crate) mod shadow {
         }
     }
 }
+
+/// The clay tier: what a thing you press is made of (`XONHO-0032`).
+///
+/// Đất Nặn divides every surface in two and states the rule — *if you press
+/// it, it is clay; if you read it for a long time, it is flat.* This is the
+/// first half. The second half is everywhere else, and it is the default: no
+/// inset, a thin line, a light drop shadow.
+///
+/// The DNA is **two inset shadows** — light from the top-left, dark from the
+/// bottom-right — which is what makes a surface read as pressed out of a
+/// material rather than drawn. gpui paints inset shadows, so this is the one
+/// signature of the system that survives the port intact.
+pub(crate) mod clay {
+    use super::{BoxShadow, Pixels, point, px};
+    use gpui::{Hsla, hsla};
+
+    /// The light that falls on a lump of clay from above-left.
+    /// `--clay-hi`, `rgba(255, 252, 240, .9)`.
+    fn highlight() -> Hsla {
+        hsla(45. / 360., 1.0, 0.971, 0.9)
+    }
+
+    /// And the shade it throws below-right. `--clay-lo`,
+    /// `rgba(150, 120, 70, .38)`.
+    fn shade() -> Hsla {
+        hsla(37.5 / 360., 0.364, 0.431, 0.38)
+    }
+
+    /// The warm drop the whole piece sits in. `--drop-sm`,
+    /// `0 8px 16px rgba(90, 80, 50, .16)` — warm, never blue-grey.
+    fn drop() -> Hsla {
+        hsla(45. / 360., 0.286, 0.275, 0.16)
+    }
+
+    fn inset(x: f32, y: f32, blur: f32, color: Hsla) -> BoxShadow {
+        BoxShadow {
+            color,
+            offset: point(px(x), px(y)),
+            blur_radius: px(blur),
+            spread_radius: px(0.),
+            inset: true,
+        }
+    }
+
+    /// `--clay-inset-sm` plus `--drop-sm`: a button, a chip, a badge.
+    ///
+    /// The system's `--elev-button`, in the order CSS writes it — the two
+    /// insets first, the drop behind them.
+    pub(crate) fn button() -> Vec<BoxShadow> {
+        vec![
+            inset(3., 4., 5., highlight()),
+            inset(-3., -5., 7., shade()),
+            BoxShadow {
+                color: drop(),
+                offset: point(px(0.), px(8.)),
+                blur_radius: px(16.),
+                spread_radius: px(0.),
+                inset: false,
+            },
+        ]
+    }
+
+    /// The four corners of a lump nobody rolled perfectly round.
+    ///
+    /// Đất Nặn's `--blob-*` are **elliptical percentages**, and gpui's corners
+    /// are four `Pixels` — so this is the nearest honest thing rather than the
+    /// same thing: four different radii around one control, so no two corners
+    /// agree. It reads as hand-made at a glance and it is not a blob.
+    /// `docs/design-language.md` records the difference.
+    pub(crate) const CORNERS: [Pixels; 4] = [px(14.), px(11.), px(13.), px(10.)];
+}
+
+/// Give anything that can be styled the clay treatment.
+///
+/// An extension trait rather than a helper function per call site: every
+/// button in this window should be the same material, and a rule applied by
+/// remembering to apply it is a rule with exceptions nobody chose.
+pub(crate) trait Clay: gpui::Styled + Sized {
+    fn clay(self) -> Self {
+        let [tl, tr, br, bl] = clay::CORNERS;
+        self.shadow(clay::button())
+            .rounded_tl(tl)
+            .rounded_tr(tr)
+            .rounded_br(br)
+            .rounded_bl(bl)
+    }
+}
+
+impl<T: gpui::Styled + Sized> Clay for T {}

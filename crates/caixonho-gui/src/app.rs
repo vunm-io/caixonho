@@ -24,7 +24,7 @@ use gpui_component::{
 
 use crate::components::{empty_state, icon_tile, inline_message, skeleton_rows, status_badge};
 use crate::scroll::{self, ScrollAccel};
-use crate::theme::{space, tile};
+use crate::theme::{Clay, space, tile};
 use crate::views::buckets::{BucketsDelegate, KindChoice, Narrowing, RegionSelect, region_label};
 use crate::views::credential_form::CredentialForm;
 use crate::views::failure::{guidance_for, refusal_detail, refusal_headline, unavailable_reason};
@@ -2572,6 +2572,7 @@ impl CaixonhoApp {
                     Button::new("confirm-remove")
                         .label("Remove")
                         .danger()
+                        .clay()
                         .on_click(cx.listener(move |app, _, window, cx| {
                             app.confirming = None;
                             app.forget(for_remove.clone(), window, cx);
@@ -3316,6 +3317,7 @@ impl CaixonhoApp {
             Button::new("sign-in")
                 .label("Sign in")
                 .primary()
+                .clay()
                 .debug_selector(|| "sign-in-button".into())
                 .on_click(cx.listener(move |app, _, _, cx| {
                     app.sign_in(profile.clone(), cx);
@@ -3509,6 +3511,7 @@ impl CaixonhoApp {
                 Button::new("go")
                     .label("Go")
                     .primary()
+                    .clay()
                     .on_click(cx.listener(|app, _, window, cx| app.go_typed(window, cx))),
             )
             .child(
@@ -3843,6 +3846,7 @@ impl CaixonhoApp {
                                 Button::new("chooser-keep")
                                     .label("Keep these")
                                     .primary()
+                                    .clay()
                                     .on_click(
                                         cx.listener(|app, _, _, cx| app.confirm_chosen_buckets(cx)),
                                     ),
@@ -4018,6 +4022,7 @@ impl CaixonhoApp {
                         Button::new("destination-send")
                             .label("Send")
                             .primary()
+                            .clay()
                             .on_click(cx.listener(|app, _, _, cx| app.confirm_destination(cx))),
                     ),
                 )
@@ -4066,6 +4071,7 @@ impl CaixonhoApp {
                         Button::new("folder-confirm")
                             .label("Create")
                             .primary()
+                            .clay()
                             .on_click(cx.listener(|app, _, _, cx| app.confirm_new_folder(cx))),
                     ),
                 )
@@ -4234,6 +4240,7 @@ impl CaixonhoApp {
                         Button::new("delete-confirm")
                             .label("Delete")
                             .danger()
+                            .clay()
                             .on_click(cx.listener(|app, _, _, cx| app.confirm_delete(cx))),
                     ),
                 )
@@ -7674,6 +7681,21 @@ mod tests {
                     DeletePhase::Gone {
                         marker: Some("mk-screenshot".into()),
                     },
+                ));
+            },
+        ));
+
+        // Adding a connection. **No frame existed for this until
+        // `XONHO-0032`**, which is why nobody had seen that its description
+        // ran out past the card's edge — a state with no image is a state
+        // nobody looks at, and this one is the first screen a new user meets.
+        written.push(shoot(
+            "account-10-add-a-connection",
+            Arc::new(StoreDouble::allows_listing()),
+            |app, window, cx| {
+                settled(app, cx);
+                app.form = Some(crate::views::credential_form::CredentialForm::new(
+                    window, cx,
                 ));
             },
         ));
