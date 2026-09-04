@@ -7070,6 +7070,84 @@ mod tests {
         });
     }
 
+    /// The same question of the body family, which is where it matters more.
+    ///
+    /// `the_display_font_actually_changes_shape_with_weight` covers one
+    /// heading. `SEMIBOLD` is what the sidebar, the components and the
+    /// credential form are set in, so a family that cannot reach 600 is a
+    /// window whose whole type hierarchy has flattened — a much wider defect
+    /// than the one the display test catches, and until now nothing looked
+    /// for it.
+    ///
+    /// Written because the display test failed on Windows and the body family
+    /// was *inferred* to fail the same way from its name table
+    /// (`BeVietnamPro-SemiBold.ttf` declares the legacy family
+    /// `Be Vietnam Pro SemiBold`, not `Be Vietnam Pro`). An inference is not a
+    /// measurement, and the decision about which weights this design system
+    /// may use should rest on the measurement.
+    #[test]
+    fn the_body_font_actually_changes_shape_with_weight() {
+        use gpui::{Font, FontFeatures, FontStyle, FontWeight, HeadlessAppContext, px};
+
+        let text_system = gpui_platform::current_platform(true).text_system();
+        let mut cx = HeadlessAppContext::with_platform(
+            text_system,
+            Arc::new(gpui_component_assets::Assets),
+            gpui_platform::current_headless_renderer,
+        );
+
+        cx.update(|cx| {
+            crate::theme::load_fonts(cx);
+
+            let width_of_b = |weight: FontWeight| {
+                let font = Font {
+                    family: crate::theme::FONT_BODY.into(),
+                    features: FontFeatures::default(),
+                    fallbacks: None,
+                    weight,
+                    style: FontStyle::Normal,
+                };
+                let id = cx.text_system().resolve_font(&font);
+                cx.text_system()
+                    .typographic_bounds(id, px(64.), 'B')
+                    .expect("the family has a B")
+                    .size
+                    .width
+            };
+
+            let regular = width_of_b(FontWeight::NORMAL);
+            let semibold = width_of_b(FontWeight::SEMIBOLD);
+            let bold = width_of_b(FontWeight::BOLD);
+
+            assert!(
+                regular > px(0.),
+                "the body family did not load at all — `add_fonts` failed or \
+                 the family name is wrong"
+            );
+            eprintln!(
+                "Be Vietnam Pro 'B' at 64px: regular={regular:?} \
+                 semibold={semibold:?} bold={bold:?}"
+            );
+            assert_ne!(
+                regular, bold,
+                "Be Vietnam Pro renders identically at 400 and 700, and those \
+                 two share one legacy family — so this is not the RIBBI limit \
+                 and something more basic is wrong with loading it"
+            );
+            assert_ne!(
+                regular, semibold,
+                "Be Vietnam Pro renders identically at 400 and 600. \
+                 `BeVietnamPro-SemiBold.ttf` declares the legacy family \
+                 `Be Vietnam Pro SemiBold` because a legacy family holds only \
+                 RIBBI, and only its typographic name says `Be Vietnam Pro` — \
+                 so a platform matching on the legacy name never finds 600. \
+                 Upstream ships no variable Be Vietnam Pro, so the weights \
+                 this design system may use is the decision this failure \
+                 forces (XONHO-0032 task 1.2)."
+            );
+        });
+    }
+
     #[cfg(target_os = "macos")]
     fn shoot(
         name: &str,
