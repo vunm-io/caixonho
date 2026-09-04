@@ -7019,6 +7019,53 @@ mod tests {
     /// their widths compared: a heavier cut of the same face is wider. If the
     /// axis is not reached, both come back identical and the fallback is
     /// static instances — a download, not a redesign.
+    /// Are the families this window draws with actually registered?
+    ///
+    /// Asked separately, and first, because the two weight tests cannot ask
+    /// it. `TextSystem::resolve_font` falls back silently — an unresolvable
+    /// family walks down `fallback_font_stack` and returns a system face
+    /// (`gpui/src/text_system.rs:148`) — so a width is always > 0 and the
+    /// `regular > px(0.)` guard those tests carried never fired.
+    ///
+    /// What it hid, measured on Windows CI: Baloo 2 and Be Vietnam Pro both
+    /// reported a 'B' of **25.088px at every weight** — the same number for
+    /// two unrelated typefaces, which is one fallback face answering for all
+    /// of them. `add_fonts` returned `Ok`, so nothing said so.
+    ///
+    /// A weight test on a family that never loaded measures the fallback's
+    /// weights, not the family's. This has to pass before those mean anything.
+    #[test]
+    fn the_families_this_window_draws_with_are_registered() {
+        use gpui::HeadlessAppContext;
+
+        let text_system = gpui_platform::current_platform(true).text_system();
+        let mut cx = HeadlessAppContext::with_platform(
+            text_system,
+            Arc::new(gpui_component_assets::Assets),
+            gpui_platform::current_headless_renderer,
+        );
+
+        cx.update(|cx| {
+            crate::theme::load_fonts(cx);
+            let known = cx.text_system().all_font_names();
+
+            for family in [crate::theme::FONT_DISPLAY, crate::theme::FONT_BODY] {
+                assert!(
+                    known.iter().any(|name| name == family),
+                    "`{family}` is not among the families the text system \
+                     knows, so every use of it resolves to a fallback face and \
+                     the window is not drawn in the typeface it declares. \
+                     `add_fonts` reported no error. Families whose name \
+                     mentions one of ours: {:?}",
+                    known
+                        .iter()
+                        .filter(|name| name.contains("Baloo") || name.contains("Vietnam"))
+                        .collect::<Vec<_>>()
+                );
+            }
+        });
+    }
+
     #[test]
     fn the_display_font_actually_changes_shape_with_weight() {
         use gpui::{Font, FontFeatures, FontStyle, FontWeight, HeadlessAppContext, px};
@@ -7055,11 +7102,10 @@ mod tests {
             let regular = width_of_b(FontWeight::NORMAL);
             let black = width_of_b(FontWeight::EXTRA_BOLD);
 
-            assert!(
-                regular > px(0.),
-                "the display family did not load at all — `add_fonts` failed \
-                 or the family name is wrong"
-            );
+            // Not a load check — `resolve_font` substitutes a fallback, so this
+            // is only ever > 0. `the_families_this_window_draws_with_are_registered`
+            // is what answers whether the family loaded.
+            assert!(regular > px(0.), "a laid-out glyph has a width");
             eprintln!("Baloo 2 'B' at 64px: regular={regular:?} extra-bold={black:?}");
             assert_ne!(
                 regular, black,
@@ -7119,11 +7165,8 @@ mod tests {
             let semibold = width_of_b(FontWeight::SEMIBOLD);
             let bold = width_of_b(FontWeight::BOLD);
 
-            assert!(
-                regular > px(0.),
-                "the body family did not load at all — `add_fonts` failed or \
-                 the family name is wrong"
-            );
+            // See the display test: this cannot detect a fallback either.
+            assert!(regular > px(0.), "a laid-out glyph has a width");
             eprintln!(
                 "Be Vietnam Pro 'B' at 64px: regular={regular:?} \
                  semibold={semibold:?} bold={bold:?}"
