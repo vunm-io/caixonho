@@ -7007,34 +7007,6 @@ mod tests {
         });
     }
 
-    /// Does the variable font's weight axis actually reach the renderer?
-    ///
-    /// `XONHO-0032` task 1.2, and the one thing about that change that could
-    /// not be settled by reading source. Baloo 2 ships from `google/fonts` as
-    /// a single variable file; gpui picks a weight through font-kit, and
-    /// whether that selects along `wght` or just hands back the default
-    /// instance is not visible in either codebase.
-    ///
-    /// So it is measured. The same string is laid out at 400 and at 800, and
-    /// their widths compared: a heavier cut of the same face is wider. If the
-    /// axis is not reached, both come back identical and the fallback is
-    /// static instances — a download, not a redesign.
-    /// Are the families this window draws with actually registered?
-    ///
-    /// Asked separately, and first, because the two weight tests cannot ask
-    /// it. `TextSystem::resolve_font` falls back silently — an unresolvable
-    /// family walks down `fallback_font_stack` and returns a system face
-    /// (`gpui/src/text_system.rs:148`) — so a width is always > 0 and the
-    /// `regular > px(0.)` guard those tests carried never fired.
-    ///
-    /// What it hid, measured on Windows CI: Baloo 2 and Be Vietnam Pro both
-    /// reported a 'B' of **25.088px at every weight** — the same number for
-    /// two unrelated typefaces, which is one fallback face answering for all
-    /// of them. `add_fonts` returned `Ok`, so nothing said so.
-    ///
-    /// A weight test on a family that never loaded measures the fallback's
-    /// weights, not the family's. This has to pass before those mean anything.
-
     /// Why the three font tests above do not run here.
     ///
     /// Not a skip and not a comment: the reason is asserted, so the day this
@@ -7103,6 +7075,18 @@ mod tests {
     }
 
     /// The typeface this window declares is the one it draws with.
+    ///
+    /// `XONHO-0032` task 1.2, and the one thing about that change that could
+    /// not be settled by reading source: Baloo 2 ships from `google/fonts` as
+    /// a single variable file, gpui picks a weight through font-kit, and
+    /// whether that selects along `wght` or hands back the default instance is
+    /// not visible in either codebase. So it is measured — a heavier cut of
+    /// the same face draws a wider `B`.
+    ///
+    /// The branch already carries static instances rather than the variable
+    /// file, which is the fallback that task wrote down in advance. What it
+    /// did not anticipate is that the fallback needs measuring too, and on the
+    /// same terms.
     ///
     /// **One test, and one headless platform, on purpose.** Two of these in
     /// one process abort with SIGABRT — reproduced by splitting this into
