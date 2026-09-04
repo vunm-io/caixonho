@@ -7034,9 +7034,21 @@ mod tests {
     ///
     /// A weight test on a family that never loaded measures the fallback's
     /// weights, not the family's. This has to pass before those mean anything.
+
+    /// Why the three font tests above do not run here.
+    ///
+    /// Not a skip and not a comment: the reason is asserted, so the day this
+    /// platform's headless mode gains a real text system, this fails and says
+    /// to ungate them. A comment becomes folklore; a test does not.
+    ///
+    /// Written after those tests were taken at face value on Windows CI and
+    /// read as a product defect. They reported Baloo 2 and Be Vietnam Pro
+    /// rendering identically at every weight — which was true, and meant
+    /// nothing, because both were being answered by a constant.
+    #[cfg(not(target_os = "macos"))]
     #[test]
-    fn the_families_this_window_draws_with_are_registered() {
-        use gpui::HeadlessAppContext;
+    fn this_platforms_headless_text_system_is_a_noop() {
+        use gpui::{Font, FontFeatures, FontStyle, FontWeight, HeadlessAppContext, px};
 
         let text_system = gpui_platform::current_platform(true).text_system();
         let mut cx = HeadlessAppContext::with_platform(
@@ -7047,51 +7059,112 @@ mod tests {
 
         cx.update(|cx| {
             crate::theme::load_fonts(cx);
-            let known = cx.text_system().all_font_names();
 
+            assert!(
+                cx.text_system().all_font_names().is_empty(),
+                "this platform's headless text system now names fonts, so it \
+                 is no longer a noop — ungate the font tests above and delete \
+                 this one"
+            );
+
+            let width = |family: &str, weight: FontWeight| {
+                let id = cx.text_system().resolve_font(&Font {
+                    family: family.into(),
+                    features: FontFeatures::default(),
+                    fallbacks: None,
+                    weight,
+                    style: FontStyle::Normal,
+                });
+                cx.text_system()
+                    .typographic_bounds(id, px(64.), 'B')
+                    .expect("the noop answers everything")
+                    .size
+                    .width
+            };
+
+            // 392/1000 em at 64px. The same number for two unrelated
+            // typefaces at unrelated weights is the signature of the noop,
+            // and is what a reader of a red Windows log needs to recognise.
+            let constant = px(25.088);
+            for (family, weight) in [
+                (crate::theme::FONT_DISPLAY, FontWeight::NORMAL),
+                (crate::theme::FONT_DISPLAY, FontWeight::EXTRA_BOLD),
+                (crate::theme::FONT_BODY, FontWeight::NORMAL),
+                (crate::theme::FONT_BODY, FontWeight::BOLD),
+            ] {
+                assert_eq!(
+                    width(family, weight),
+                    constant,
+                    "{family} at {weight:?} no longer measures the noop's \
+                     constant, so this platform is measuring something real"
+                );
+            }
+        });
+    }
+
+    /// The typeface this window declares is the one it draws with.
+    ///
+    /// **One test, and one headless platform, on purpose.** Two of these in
+    /// one process abort with SIGABRT — reproduced by splitting this into
+    /// separate `#[test]` functions, where any two of them running in
+    /// parallel killed the whole binary while each passed alone. The screenshot
+    /// harness below shares the constraint and is `#[ignore]`d, which is why it
+    /// never collided with anything. So the three questions this asks are asked
+    /// together rather than made into three tests.
+    ///
+    /// **macOS only, and the reason is the platform not the assertion.**
+    /// `gpui_windows::WindowsPlatform::new(headless)` installs
+    /// `NoopTextSystem` rather than DirectWrite (`platform.rs:113`), so a
+    /// headless Windows run has no text system to ask.
+    /// `this_platforms_headless_text_system_is_a_noop` holds that reason and
+    /// fails when it stops being true.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_typeface_this_window_declares_is_the_one_it_draws_with() {
+        use gpui::{Font, FontFeatures, FontStyle, FontWeight, HeadlessAppContext, px};
+
+        let text_system = gpui_platform::current_platform(true).text_system();
+        let mut cx = HeadlessAppContext::with_platform(
+            text_system,
+            Arc::new(gpui_component_assets::Assets),
+            gpui_platform::current_headless_renderer,
+        );
+
+        cx.update(|cx| {
+            crate::theme::load_fonts(cx);
+
+            // Registration first. `TextSystem::resolve_font` walks
+            // `fallback_font_stack` for a family it cannot resolve and returns
+            // a system face (`gpui/src/text_system.rs:148`), so a width is
+            // always > 0 and a weight comparison on a family that never
+            // loaded is measuring the fallback's weights, not this one's.
+            let known = cx.text_system().all_font_names();
             for family in [crate::theme::FONT_DISPLAY, crate::theme::FONT_BODY] {
                 assert!(
                     known.iter().any(|name| name == family),
                     "`{family}` is not among the families the text system \
                      knows, so every use of it resolves to a fallback face and \
                      the window is not drawn in the typeface it declares. \
-                     `add_fonts` reported no error. Families whose name \
-                     mentions one of ours: {:?}",
+                     `add_fonts` reports no error when this happens. Families \
+                     whose name mentions one of ours: {:?}",
                     known
                         .iter()
                         .filter(|name| name.contains("Baloo") || name.contains("Vietnam"))
                         .collect::<Vec<_>>()
                 );
             }
-        });
-    }
 
-    #[test]
-    fn the_display_font_actually_changes_shape_with_weight() {
-        use gpui::{Font, FontFeatures, FontStyle, FontWeight, HeadlessAppContext, px};
-
-        let text_system = gpui_platform::current_platform(true).text_system();
-        let mut cx = HeadlessAppContext::with_platform(
-            text_system,
-            Arc::new(gpui_component_assets::Assets),
-            gpui_platform::current_headless_renderer,
-        );
-
-        cx.update(|cx| {
-            crate::theme::load_fonts(cx);
-
-            // The ink box of one glyph, at a weight. A heavier cut of the
-            // same face draws a fatter `B` — so if the axis is reached these
-            // two differ, and if it is not they are the same number.
-            let width_of_b = |weight: FontWeight| {
-                let font = Font {
-                    family: crate::theme::FONT_DISPLAY.into(),
+            // The ink box of one glyph, at a weight. A heavier cut of the same
+            // face draws a fatter `B`, so if the weight is reached these
+            // differ and if it is not they are the same number.
+            let width_of_b = |family: &str, weight: FontWeight| {
+                let id = cx.text_system().resolve_font(&Font {
+                    family: family.into(),
                     features: FontFeatures::default(),
                     fallbacks: None,
                     weight,
                     style: FontStyle::Normal,
-                };
-                let id = cx.text_system().resolve_font(&font);
+                });
                 cx.text_system()
                     .typographic_bounds(id, px(64.), 'B')
                     .expect("the family has a B")
@@ -7099,94 +7172,42 @@ mod tests {
                     .width
             };
 
-            let regular = width_of_b(FontWeight::NORMAL);
-            let black = width_of_b(FontWeight::EXTRA_BOLD);
+            let display_regular = width_of_b(crate::theme::FONT_DISPLAY, FontWeight::NORMAL);
+            let display_black = width_of_b(crate::theme::FONT_DISPLAY, FontWeight::EXTRA_BOLD);
+            let body_regular = width_of_b(crate::theme::FONT_BODY, FontWeight::NORMAL);
+            let body_semibold = width_of_b(crate::theme::FONT_BODY, FontWeight::SEMIBOLD);
+            let body_bold = width_of_b(crate::theme::FONT_BODY, FontWeight::BOLD);
 
-            // Not a load check — `resolve_font` substitutes a fallback, so this
-            // is only ever > 0. `the_families_this_window_draws_with_are_registered`
-            // is what answers whether the family loaded.
-            assert!(regular > px(0.), "a laid-out glyph has a width");
-            eprintln!("Baloo 2 'B' at 64px: regular={regular:?} extra-bold={black:?}");
-            assert_ne!(
-                regular, black,
-                "Baloo 2 renders identically at 400 and 800, so gpui is not \
-                 reaching the variable font's `wght` axis. The fallback is \
-                 static instances of the same family (XONHO-0032 task 1.2)."
-            );
-        });
-    }
-
-    /// The same question of the body family, which is where it matters more.
-    ///
-    /// `the_display_font_actually_changes_shape_with_weight` covers one
-    /// heading. `SEMIBOLD` is what the sidebar, the components and the
-    /// credential form are set in, so a family that cannot reach 600 is a
-    /// window whose whole type hierarchy has flattened — a much wider defect
-    /// than the one the display test catches, and until now nothing looked
-    /// for it.
-    ///
-    /// Written because the display test failed on Windows and the body family
-    /// was *inferred* to fail the same way from its name table
-    /// (`BeVietnamPro-SemiBold.ttf` declares the legacy family
-    /// `Be Vietnam Pro SemiBold`, not `Be Vietnam Pro`). An inference is not a
-    /// measurement, and the decision about which weights this design system
-    /// may use should rest on the measurement.
-    #[test]
-    fn the_body_font_actually_changes_shape_with_weight() {
-        use gpui::{Font, FontFeatures, FontStyle, FontWeight, HeadlessAppContext, px};
-
-        let text_system = gpui_platform::current_platform(true).text_system();
-        let mut cx = HeadlessAppContext::with_platform(
-            text_system,
-            Arc::new(gpui_component_assets::Assets),
-            gpui_platform::current_headless_renderer,
-        );
-
-        cx.update(|cx| {
-            crate::theme::load_fonts(cx);
-
-            let width_of_b = |weight: FontWeight| {
-                let font = Font {
-                    family: crate::theme::FONT_BODY.into(),
-                    features: FontFeatures::default(),
-                    fallbacks: None,
-                    weight,
-                    style: FontStyle::Normal,
-                };
-                let id = cx.text_system().resolve_font(&font);
-                cx.text_system()
-                    .typographic_bounds(id, px(64.), 'B')
-                    .expect("the family has a B")
-                    .size
-                    .width
-            };
-
-            let regular = width_of_b(FontWeight::NORMAL);
-            let semibold = width_of_b(FontWeight::SEMIBOLD);
-            let bold = width_of_b(FontWeight::BOLD);
-
-            // See the display test: this cannot detect a fallback either.
-            assert!(regular > px(0.), "a laid-out glyph has a width");
             eprintln!(
-                "Be Vietnam Pro 'B' at 64px: regular={regular:?} \
-                 semibold={semibold:?} bold={bold:?}"
+                "'B' at 64px — Baloo 2: regular={display_regular:?} \
+                 extra-bold={display_black:?}; Be Vietnam Pro: \
+                 regular={body_regular:?} semibold={body_semibold:?} \
+                 bold={body_bold:?}"
+            );
+
+            assert_ne!(
+                display_regular, display_black,
+                "Baloo 2 renders identically at 400 and 800, so the weight is \
+                 not being reached (XONHO-0032 task 1.2)"
             );
             assert_ne!(
-                regular, bold,
+                body_regular, body_bold,
                 "Be Vietnam Pro renders identically at 400 and 700, and those \
-                 two share one legacy family — so this is not the RIBBI limit \
+                 two share one legacy family — so this is not a naming limit \
                  and something more basic is wrong with loading it"
             );
+            // SEMIBOLD is what the sidebar, the components and the credential
+            // form are set in, so this is the wide one: a family that cannot
+            // reach 600 is a window whose type hierarchy has flattened.
             assert_ne!(
-                regular, semibold,
-                "Be Vietnam Pro renders identically at 400 and 600. \
+                body_regular, body_semibold,
+                "Be Vietnam Pro renders identically at 400 and 600. One \
+                 hypothesis, never yet observed to cause anything: \
                  `BeVietnamPro-SemiBold.ttf` declares the legacy family \
-                 `Be Vietnam Pro SemiBold` because a legacy family holds only \
-                 RIBBI, and only its typographic name says `Be Vietnam Pro` — \
-                 so a platform matching on the legacy name never finds 600. \
-                 Upstream ships no variable Be Vietnam Pro, so the weights \
-                 this design system may use is the decision this failure \
-                 forces (XONHO-0032 task 1.2)."
+                 `Be Vietnam Pro SemiBold`, and only its typographic name says \
+                 `Be Vietnam Pro`, so a platform matching legacy names would \
+                 not find 600. Check that before redesigning anything — the \
+                 last time this failed, the cause was the harness."
             );
         });
     }

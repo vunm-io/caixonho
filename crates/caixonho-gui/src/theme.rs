@@ -72,6 +72,32 @@ pub(crate) fn load_fonts(cx: &mut App) {
         // platform's own families are a working fallback, and a window nobody
         // can open explains nothing.
         eprintln!("caixonho: could not load its fonts, falling back: {error}");
+        return;
+    }
+
+    // `add_fonts` returning `Ok` is not the same as the families being usable,
+    // and the difference is silent in the direction that matters.
+    // `TextSystem::resolve_font` walks `fallback_font_stack` for a family it
+    // cannot resolve and hands back a system face, so a window whose fonts
+    // never registered draws in the wrong typeface without a word — which is
+    // this function's own doc comment, left unchecked until now.
+    //
+    // Checked rather than assumed because `Ok` has already been observed
+    // alongside nothing being registered: gpui's headless Windows platform
+    // installs `NoopTextSystem`, whose `add_fonts` succeeds and does nothing.
+    // That case is a test harness rather than a shipped window, but it is the
+    // proof that the return value cannot carry this.
+    let known = cx.text_system().all_font_names();
+    let missing: Vec<&str> = [FONT_DISPLAY, FONT_BODY]
+        .into_iter()
+        .filter(|family| !known.iter().any(|name| name == family))
+        .collect();
+    if !missing.is_empty() {
+        eprintln!(
+            "caixonho: {} did not register, so the window will draw in a \
+             fallback face rather than the typeface it declares",
+            missing.join(" and ")
+        );
     }
 }
 
