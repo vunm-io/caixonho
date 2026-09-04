@@ -10,7 +10,10 @@ async fn the_service_starts_and_stops() {
     // and it is not the one anybody hard-coded.
     let service = Service::start().await;
     let url = service.base_url().to_owned();
-    assert!(url.starts_with("http://localhost:"), "got {url}");
+    // An IP literal, not a name, and the assertion says so on purpose: the
+    // host is what keeps this tier reachable on Windows, and a rewrite back
+    // to `localhost` should fail here rather than five runs later in CI.
+    assert!(url.starts_with("http://127.0.0.1:"), "got {url}");
     assert!(
         !url.ends_with(":0") && !url.ends_with(":8014"),
         "the OS was asked to choose a port, and this is either unbound or the default: {url}"

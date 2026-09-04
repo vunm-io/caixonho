@@ -31,6 +31,12 @@
 //! - **Denials.** The service has no IAM and refuses nothing. Classification
 //!   is covered below the adapter by the replay tests, which is its right
 //!   place.
+//! - **Virtual-hosted addressing.** This tier is addressed by IP, so every
+//!   request it sends is path-style — and against real AWS the SDK sends
+//!   virtual-hosted, which is the shape production actually emits. What is
+//!   proven here is what the *parameters* mean to a service; which of the two
+//!   hosts carries the bucket is the SDK's decision and is covered by its own
+//!   tests, not by this project's. The reason it is not both is `start`.
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
@@ -38,7 +44,6 @@ use std::sync::Arc;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder as ConnBuilder;
 use s3s::auth::SimpleAuth;
-use s3s::host::MultiDomain;
 use s3s::service::S3ServiceBuilder;
 use s3s_fs::FileSystem;
 use tokio::net::TcpListener;
@@ -73,10 +78,30 @@ impl Service {
     /// like a refused connection, which is exactly what a real misconfigured
     /// endpoint looks like too.
     ///
-    /// The base domain is `localhost`, which is what makes virtual-hosted
-    /// addressing work without touching production code: `reports.localhost`
-    /// resolves to `127.0.0.1`, and `s3s` reads the bucket back out of the
-    /// `Host` header.
+    /// **Addressed by IP, which decides the addressing style for us.** The
+    /// SDK sends path-style to an endpoint whose host is an IP literal, so
+    /// the bucket travels in the path and no name has to resolve. That is the
+    /// whole reason for `127.0.0.1` here.
+    ///
+    /// The obvious alternative was `localhost`, which gives virtual-hosted
+    /// addressing for free — `reports.localhost` resolves to `127.0.0.1`, and
+    /// `s3s` reads the bucket back out of the `Host` header. It is what this
+    /// harness did first, and it cost the Windows leg of CI five red runs:
+    /// **Windows does not resolve `*.localhost`.** Its resolver special-cases
+    /// the exact label and does not implement RFC 6761's rule for everything
+    /// under it, where macOS and Linux do. So `ListBuckets` passed — no bucket
+    /// in the host — and every request naming one failed to resolve, reaching
+    /// the caller as `Network`, which reads exactly like an endpoint that is
+    /// genuinely down.
+    ///
+    /// One thing learned the slow way is kept here because it outlived the
+    /// code that taught it. When a base domain *is* configured on `s3s`, it
+    /// must carry the port: the SDK sends `Host: reports.localhost:54321`, and
+    /// `s3s` matches by `strip_suffix`, which a missing port defeats. The
+    /// request then falls back to being read as path-style, the service
+    /// answers a **different operation** with HTTP 200, and what surfaces is
+    /// not a connection error but an unparseable body. Anyone reinstating
+    /// virtual-hosted addressing here walks into that before anything else.
     pub async fn start() -> Self {
         let root = tempfile::tempdir().expect("a temporary directory");
         let fs = FileSystem::new(root.path()).expect("a filesystem-backed service");
@@ -91,19 +116,10 @@ impl Service {
         let service = {
             let mut builder = S3ServiceBuilder::new(fs);
             builder.set_auth(SimpleAuth::from_single(ACCESS_KEY_ID, SECRET_ACCESS_KEY));
-            // `localhost:<port>`, not `localhost`. The SDK sends
-            // `Host: reports.localhost:54321`, and `s3s` matches a virtual
-            // host by `strip_suffix(base_domain)` — which the port defeats.
-            // Without the port every bucket request silently falls back to
-            // path-style, and the service answers a *different operation*
-            // with HTTP 200; what reaches the caller is not a connection
-            // error but "the service answered HTTP 200", because the SDK
-            // could not parse the body as the response it asked for.
-            //
-            // Found the slow way. It is also the one thing in this harness
-            // that would look like a product bug rather than a test bug.
-            builder
-                .set_host(MultiDomain::new(&[format!("localhost:{port}")]).expect("a base domain"));
+            // No `set_host`: nothing here is addressed by name, so there is
+            // no virtual host to match and `s3s` reads every bucket out of
+            // the path. See `start`'s own comment for what configuring one
+            // would cost.
             builder.build()
         };
 
@@ -133,9 +149,7 @@ impl Service {
         });
 
         Self {
-            // `localhost` rather than `127.0.0.1`: the SDK derives the
-            // virtual host from this, and `reports.127.0.0.1` is not a name.
-            base_url: format!("http://localhost:{port}"),
+            base_url: format!("http://127.0.0.1:{port}"),
             root,
             shutdown: Some(shutdown),
             handle: Some(handle),
