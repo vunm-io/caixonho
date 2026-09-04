@@ -7032,12 +7032,20 @@ mod tests {
         cx.update(|cx| {
             crate::theme::load_fonts(cx);
 
-            assert!(
-                cx.text_system().all_font_names().is_empty(),
-                "this platform's headless text system now names fonts, so it \
-                 is no longer a noop — ungate the font tests above and delete \
-                 this one"
-            );
+            // Not `is_empty()`. `TextSystem::all_font_names` appends the
+            // fallback stack and `.SystemUIFont` to whatever the platform
+            // layer returned (`gpui/src/text_system.rs:88`), so the wrapper is
+            // never empty however dead the layer beneath it is. Asserting
+            // otherwise is how this test first failed.
+            let known = cx.text_system().all_font_names();
+            for family in [crate::theme::FONT_DISPLAY, crate::theme::FONT_BODY] {
+                assert!(
+                    !known.iter().any(|name| name == family),
+                    "`{family}` is registered on this platform's headless text \
+                     system, so it is no longer a noop — ungate the font test \
+                     above and delete this one"
+                );
+            }
 
             let width = |family: &str, weight: FontWeight| {
                 let id = cx.text_system().resolve_font(&Font {
@@ -7054,21 +7062,30 @@ mod tests {
                     .width
             };
 
-            // 392/1000 em at 64px. The same number for two unrelated
-            // typefaces at unrelated weights is the signature of the noop,
-            // and is what a reader of a red Windows log needs to recognise.
-            let constant = px(25.088);
-            for (family, weight) in [
+            // The signature of the noop, and what a reader of a red Windows
+            // log needs to recognise: one constant answers everything.
+            // `NoopTextSystem::typographic_bounds` is a fixed 392/1000 em
+            // (`gpui/src/platform.rs:1136`), which is 25.088px at 64px — but
+            // these are compared against *each other* rather than against that
+            // literal, because two unrelated typefaces agreeing at unrelated
+            // weights is the observation, and float equality with a decimal
+            // written out by hand is not.
+            let measurements = [
                 (crate::theme::FONT_DISPLAY, FontWeight::NORMAL),
                 (crate::theme::FONT_DISPLAY, FontWeight::EXTRA_BOLD),
                 (crate::theme::FONT_BODY, FontWeight::NORMAL),
                 (crate::theme::FONT_BODY, FontWeight::BOLD),
-            ] {
+            ]
+            .map(|(family, weight)| (family, weight, width(family, weight)));
+
+            let (_, _, first) = measurements[0];
+            for (family, weight, measured) in measurements {
                 assert_eq!(
-                    width(family, weight),
-                    constant,
-                    "{family} at {weight:?} no longer measures the noop's \
-                     constant, so this platform is measuring something real"
+                    measured, first,
+                    "{family} at {weight:?} measures {measured:?} where another \
+                     family measured {first:?} — this platform is telling two \
+                     typefaces apart, so it is measuring something real and is \
+                     no longer a noop"
                 );
             }
         });
