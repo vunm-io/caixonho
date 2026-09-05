@@ -32,19 +32,20 @@ that each own a subsystem and land on their own:
 | `XONHO-0005` | Regions on the list, filtering by region, and the first working piece of permission awareness | landed |
 | `XONHO-0004` | Entering credentials in the app, storing them in the OS keychain, and connecting only when asked | landed |
 | `XONHO-0012` | A log on disk that says what the app decided and why, and never holds a secret | landed |
+| `XONHO-0031` | A real S3 service the tests start themselves — the adapter over real HTTP, and six whole flows from the window's own controls, on both CI targets (run 33960176049) | landed |
 | `XONHO-0009` | The app shell, the palette, and loading, empty and error states that were improvised before | in progress |
-| `XONHO-0006` | Opening a bucket and browsing objects by prefix, including reaching a bucket by name when the account listing is denied | built, awaiting live acceptance |
+| `XONHO-0006` | Opening a bucket and browsing objects by prefix, including reaching a bucket by name when the account listing is denied |built; browsing and pagination proven from the window against a real service (`XONHO-0031`, run 33960176049); reaching a bucket by name when the listing is denied still awaiting live acceptance — nothing local refuses |
 | `XONHO-0011` | Signing in to IAM Identity Center from the app, via the OIDC device flow | after browsing |
 | `XONHO-0013` | Editing a saved connection: its region, its key, and renaming it | after browsing |
 | `XONHO-0016` | S3 Express One Zone directory buckets: listed beside ordinary ones, opened, and refused in their own words | landed |
-| `XONHO-0018` | Following a bucket to the region it lives in, instead of reporting the redirect as an unexplained error | built, awaiting live acceptance |
+| `XONHO-0018` | Following a bucket to the region it lives in, instead of reporting the redirect as an unexplained error | built, awaiting live acceptance— unchanged by `XONHO-0031`: nothing local emits a region redirect |
 | `XONHO-0017` | Auditing what the project depends on, on every change — and removing the four advisories that were being shipped | landed |
 | `XONHO-0015` | A seam that lets a test build the real window, and the first tests that use it | landed |
-| `XONHO-0019` | A pane that cannot outlive the connection it was read on: switching connection ends the location instead of leaving the previous account's bucket named | built, awaiting live acceptance |
+| `XONHO-0019` | A pane that cannot outlive the connection it was read on: switching connection ends the location instead of leaving the previous account's bucket named | built, awaiting live acceptance— unchanged by `XONHO-0031`: the flows drive one connection |
 | `XONHO-0022` | Asking the OS credential store once per credential per run instead of once per connection open — the keychain stopped interrupting a session of browsing | landed |
-| `XONHO-0023` | Building a connection's client once per run and reusing it, so choosing a profile again costs a listing rather than a fresh credential resolution | built, awaiting live acceptance |
+| `XONHO-0023` | Building a connection's client once per run and reusing it, so choosing a profile again costs a listing rather than a fresh credential resolution | built, awaiting live acceptance— unchanged by `XONHO-0031`: not asserted by any flow |
 | `XONHO-0025` | Narrowing the account listing by region, kind, name and whether a bucket can be used — one pass, one count, and never hiding a bucket whose access is simply unanswered | built, awaiting live acceptance |
-| `XONHO-0027` | Choosing once which buckets a connection shows and remembering it, in a preferences file of its own — with the screen saying when a choice made in another session is in force | built, awaiting live acceptance |
+| `XONHO-0027` | Choosing once which buckets a connection shows and remembering it, in a preferences file of its own — with the screen saying when a choice made in another session is in force | built, awaiting live acceptance— unchanged by `XONHO-0031`: no narrowing is driven |
 | `XONHO-0025` | Narrowing the account listing by region, kind, name and whether a bucket can be used — composing into one pass, with an empty state that says the filters did it | built, awaiting live acceptance |
 
 Three cells were corrected on 2026-08-22, all in the same direction — a row
@@ -88,19 +89,19 @@ that only that arrangement produced. The full reasoning is in
 
 | Change | Delivers | State |
 |---|---|---|
-| `XONHO-0007` | Downloading one object to a chosen folder, and opening one with the system's own application via a bounded cache — progress, cancel, no partial files, deterministic key→filename mapping (ADR-0004) | landed, awaiting live acceptance |
-| `XONHO-0020` | Sending one local file, with the no-clobber guarantee made by the service (`If-None-Match`) rather than by a check — replace/keep-both/abandon, cancel, and an up-front refusal above the single-request size | landed, awaiting live acceptance |
-| `XONHO-0026` | Choosing where an upload lands instead of deriving it from where you stand — which is how a folder is made on a directory bucket, and the half `XONHO-0024` was missing | built, awaiting live acceptance |
-| `XONHO-0028` | A transfer queue: many at once up to a bound, each failure contained to its own item, and a panel that says which — declining pause and resume until multipart can make them honest | built, awaiting live acceptance |
+| `XONHO-0007` | Downloading one object to a chosen folder, and opening one with the system's own application via a bounded cache — progress, cancel, no partial files, deterministic key→filename mapping (ADR-0004) |landed; download through the folder dialog proven byte-for-byte against a real service (`XONHO-0031`, run 33960176049); open-with-the-system still awaiting live acceptance — the test platform opens nothing |
+| `XONHO-0020` | Sending one local file, with the no-clobber guarantee made by the service (`If-None-Match`) rather than by a check — replace/keep-both/abandon, cancel, and an up-front refusal above the single-request size |landed; the no-clobber refusal proven as **made by the service** (`If-None-Match`, `XONHO-0031`, run 33960176049); replace / keep-both / abandon answers still awaiting live acceptance |
+| `XONHO-0026` | Choosing where an upload lands instead of deriving it from where you stand — which is how a folder is made on a directory bucket, and the half `XONHO-0024` was missing |built; the proposed destination, confirmed as offered, proven against a real service (`XONHO-0031`, run 33960176049); an edited destination and the directory-bucket case still awaiting live acceptance |
+| `XONHO-0028` | A transfer queue: many at once up to a bound, each failure contained to its own item, and a panel that says which — declining pause and resume until multipart can make them honest | built, awaiting live acceptance— unchanged by `XONHO-0031`: each flow runs one item, so many-at-once is not exercised |
 
 ## M3 so far
 
 | Change | Delivers | State |
 |---|---|---|
-| `XONHO-0021` | Deleting one object through a named-key confirmation, with Undo offered exactly when the delete's own response reports a marker — and a refused undo that names `s3:DeleteObjectVersion` | landed, awaiting live acceptance |
-| `XONHO-0008` | Previewing without downloading: a ranged first page for text with an honest truncation line, whole small images under a 20 MiB gate, and plain refusals for everything else — nothing on the path touches disk | landed, awaiting live acceptance |
-| `XONHO-0024` | Making a folder: a zero-byte marker on a general purpose bucket, and on a directory bucket an honest refusal — the service removes an empty directory immediately — that names uploading into the path as what works instead | built, awaiting live acceptance |
-| `XONHO-0030` | Acting on a row where it is: right-click for Preview, Open, Download and Delete, ticks for a selection that survives a further page, and bulk delete through a counted confirmation — a folder walked flat and counted before it asks, and Undo refused out loud | built, awaiting live acceptance |
+| `XONHO-0021` | Deleting one object through a named-key confirmation, with Undo offered exactly when the delete's own response reports a marker — and a refused undo that names `s3:DeleteObjectVersion` | landed, awaiting live acceptance— unchanged by `XONHO-0031`: `s3s-fs` keeps no versions, so Undo cannot be shown |
+| `XONHO-0008` | Previewing without downloading: a ranged first page for text with an honest truncation line, whole small images under a 20 MiB gate, and plain refusals for everything else — nothing on the path touches disk |landed; a text first page with both truncation numbers proven against a real service (`XONHO-0031`, run 33960176049); images, binary and the 20 MiB gate still awaiting live acceptance |
+| `XONHO-0024` | Making a folder: a zero-byte marker on a general purpose bucket, and on a directory bucket an honest refusal — the service removes an empty directory immediately — that names uploading into the path as what works instead | built, awaiting live acceptance— unchanged by `XONHO-0031`: an empty folder is invisible to `s3s-fs` |
+| `XONHO-0030` | Acting on a row where it is: right-click for Preview, Open, Download and Delete, ticks for a selection that survives a further page, and bulk delete through a counted confirmation — a folder walked flat and counted before it asks, and Undo refused out loud |built; bulk delete and folder delete proven end to end against a real service — counted first, gone from the service after (`XONHO-0031`, run 33960176049); the context menu itself and directory buckets still awaiting live acceptance |
 
 ## What this project will not do
 
