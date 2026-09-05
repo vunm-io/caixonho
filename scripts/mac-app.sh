@@ -109,10 +109,14 @@ else
     # downloading them could have seen.
     #
     # Signing the bundle seals `Info.plist` and writes
-    # `_CodeSignature/CodeResources`; the same download then gets the ordinary
-    # "could not verify the developer" dialog, whose answer really is
-    # Privacy & Security → Open Anyway. Not `--deep`: one code object here, and
-    # Apple's guidance is to sign it, not recurse.
+    # `_CodeSignature/CodeResources`. On current macOS the first open is
+    # *still* refused with the same "damaged" wording — measured 2026-09-05 on
+    # 26.6.2, syspolicyd: "Code did not match any currently allowed policy" —
+    # but the difference is real: Gatekeeper can now identify the bundle, so it
+    # records the denial, and that record is what puts **Open Anyway** into
+    # Privacy & Security for about an hour. An unsealed bundle never got that
+    # far. Not `--deep`: one code object here, and Apple's guidance is to sign
+    # it, not recurse.
     codesign --force --sign - "$APP"
     signed="ad-hoc signed as a bundle — opens via Open Anyway; run
          scripts/dev-signing-identity.sh to stop the keychain asking again after
