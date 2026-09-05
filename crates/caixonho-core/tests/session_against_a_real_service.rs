@@ -7,7 +7,7 @@
 //!
 //! See `service.rs` for what a local service cannot prove.
 
-mod service;
+use caixonho_core::test_service as service;
 
 use caixonho_core::session::{DeleteOutcome, FolderOutcome, Tally};
 use caixonho_core::transfer::{Collision, DownloadOutcome, UploadOutcome};

@@ -26,6 +26,13 @@ directories.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
+# `test-service` only — see that feature for why these are here and not under
+# `[dev-dependencies]`.
+s3s = { workspace = true, optional = true }
+s3s-fs = { workspace = true, optional = true }
+hyper-util = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
+
 [features]
 # Off by default. Exposes `store::double::StoreDouble` and
 # `Session::install_object_store`, so `caixonho-gui` can build a window over a
@@ -39,6 +46,20 @@ tracing-subscriber.workspace = true
 # AGENTS.md exists to catch. Same arrangement as `gpui`'s `test-support`, which
 # this workspace already consumes.
 test-support = []
+# Off by default, and dev-only wherever it is on. Exposes [`test_service`]: a
+# real S3 service (`s3s-fs`) a test starts in-process on a port the OS chooses,
+# and the `Session`-shaped wiring to reach it the way the application does
+# (`XONHO-0031`). It lived in `tests/service.rs` until the window's own tests
+# needed it too — an integration-test module cannot be reached from another
+# crate, and a second copy of a harness is two harnesses to keep working.
+#
+# The four crates behind it are `optional` normal dependencies rather than
+# dev-dependencies for that reason alone: a feature can only turn on what the
+# manifest can see. They enter no build that does not ask for the feature —
+# resolver 2, measured with `cargo tree --edges normal,no-dev` over
+# `caixonho-gui` before and after, not assumed. This crate's own integration
+# tests get the feature through the self-dependency under `[dev-dependencies]`.
+test-service = ["dep:s3s", "dep:s3s-fs", "dep:hyper-util", "dep:tempfile"]
 
 [dev-dependencies]
 # `StaticReplayClient`, for the canned HTTP exchanges `xonho-0018` needs to
@@ -53,9 +74,8 @@ test-support = []
 # `rev` or by `Cargo.lock` is disturbed by touching its features.
 aws-smithy-http-client = { workspace = true, features = ["test-util"] }
 
-# XONHO-0031. A real S3 service, started by the test that needs it, so the
-# adapter is exercised over HTTP rather than only above and below itself.
-s3s.workspace = true
-s3s-fs.workspace = true
-hyper-util.workspace = true
-tempfile.workspace = true
+# XONHO-0031. This crate's own integration tests reach the real-service
+# harness through the `test-service` feature like any other consumer would,
+# and a crate cannot turn on its own feature for its tests any other way than
+# by depending on itself here. Cargo permits exactly this.
+caixonho-core = { path = ".", features = ["test-service"] }

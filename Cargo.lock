@@ -1418,6 +1418,7 @@ dependencies = [
  "aws-smithy-json",
  "aws-smithy-runtime-api",
  "aws-smithy-types",
+ "caixonho-core",
  "directories",
  "hex",
  "hyper-util",
@@ -1444,6 +1445,7 @@ dependencies = [
  "gpui-component-assets",
  "gpui_platform",
  "image",
+ "tempfile",
  "tokio",
 ]
 

@@ -770,6 +770,53 @@ impl World {
             connections_error: None,
         }
     }
+
+    /// A world with one real connection in it: a profile whose `endpoint_url`
+    /// is a service the test started (`XONHO-0031`).
+    ///
+    /// Everything `scripted` fakes, this does for real — the config file the
+    /// SDK reads, `Session::open`, a real `S3ObjectStore` — so a flow driven
+    /// through this world is the application's own path end to end, with only
+    /// the service on the far side of the port being local.
+    ///
+    /// **A runtime with threads of its own**, unlike `scripted`'s
+    /// current-thread one. Nothing in a `#[gpui::test]` drives a tokio
+    /// runtime, and a current-thread runtime nobody drives runs nothing: the
+    /// HTTP round trip would sit in its queue for ever while the test waited
+    /// for an answer. Worker threads make the round trip happen on their own,
+    /// and the outcome comes back through the same flume channels the window
+    /// already listens on.
+    ///
+    /// The returned directory holds the config file and must outlive the
+    /// session: the SDK reads it lazily, on the first request.
+    pub(crate) fn against(
+        service: &caixonho_core::test_service::Service,
+    ) -> (Self, tempfile::TempDir) {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .thread_name("caixonho-aws-test")
+            .build()
+            .expect("a runtime with threads of its own");
+        let (config, paths) = caixonho_core::test_service::config_for(service);
+        let session = Session::new(
+            runtime.handle().clone(),
+            HttpStack::with_ca_bundle(None).expect("the OS trust store alone builds a client"),
+            paths,
+        );
+        let world = Self {
+            runtime,
+            session: Some(session),
+            startup_error: None,
+            profiles: vec![caixonho_core::Profile {
+                name: caixonho_core::test_service::PROFILE.to_owned(),
+                is_default: true,
+            }],
+            stored: Vec::new(),
+            connections_error: None,
+        };
+        (world, config)
+    }
 }
 
 impl CaixonhoApp {
@@ -8955,5 +9002,482 @@ mod tests {
                 "a running transfer's own settlement reports the cancellation"
             );
         });
+    }
+    /// `XONHO-0031` §3 — whole flows from the window's own controls, against
+    /// a real S3 service the test starts.
+    ///
+    /// Every other test in this module answers above a double. These are the
+    /// ones that ask whether the pieces that each work still work together:
+    /// the control the user presses, the session it spawns into, the adapter,
+    /// real HTTP, a real service, and the outcome landing back in the window.
+    ///
+    /// **They drive through `TestAppContext`, not through `shoot_at`.** The
+    /// change's design said to reuse the screenshot harness and ungate it;
+    /// what that harness gates is the *renderer*, and driving needs none. gpui's
+    /// test platform opens and drives a window on every target already — the
+    /// hundred-odd tests above prove it on Windows every push — so the flows
+    /// go where they already run, and `shoot_at` keeps its gate for the one
+    /// thing that needs it. This is also what keeps them out of the trap the
+    /// font tests found: two real headless platforms in one process abort,
+    /// and `TestAppContext` builds none.
+    ///
+    /// Not gated to any platform, on purpose. A flow that runs only on the
+    /// owner's platform has not taken the owner out of the loop, which is the
+    /// whole point of the change.
+    mod flows_against_a_real_service {
+        use super::*;
+        use caixonho_core::test_service::Service;
+        use gpui::VisualTestContext;
+        use std::time::{Duration, Instant};
+
+        /// How long a real round trip may take before the test says so.
+        /// Generous, because a cold CI runner is slow and a flaky flow test is
+        /// worse than a slow one.
+        const PATIENCE: Duration = Duration::from_secs(30);
+
+        /// Run the window until `settled` holds, or say what never arrived.
+        ///
+        /// The round trip happens on the world's own threads, and its outcome
+        /// enters the window through a flume channel the window's tasks wait
+        /// on. gpui's test executor only learns of that wake the next time it
+        /// is ticked, so the test ticks it — `run_until_parked` drains what is
+        /// runnable, and a short sleep gives the far side time to make more so.
+        fn settle(
+            cx: &mut VisualTestContext,
+            app: &gpui::Entity<CaixonhoApp>,
+            waiting_for: &str,
+            settled: impl Fn(&CaixonhoApp, &gpui::App) -> bool,
+        ) {
+            let started = Instant::now();
+            loop {
+                cx.run_until_parked();
+                if app.read_with(cx, |app, cx| settled(app, cx)) {
+                    return;
+                }
+                assert!(
+                    started.elapsed() < PATIENCE,
+                    "gave up waiting for {waiting_for} after {PATIENCE:?}"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+
+        /// Everything a flow test holds on to for as long as it runs.
+        ///
+        /// Three things whose lifetimes are easy to get wrong separately: the
+        /// runtime the service accepts on (drop it and the port goes dead),
+        /// the service, and the directory holding the SDK config (drop it and
+        /// the next request finds no credentials).
+        struct Live {
+            _serving: tokio::runtime::Runtime,
+            service: Service,
+            _config: tempfile::TempDir,
+        }
+
+        /// A window over a real connection to a freshly started service, with
+        /// the account already listed — which is the second gate `render`
+        /// puts in front of everything else, as `shoot_at` records.
+        fn window_over(
+            cx: &mut TestAppContext,
+            seed: impl FnOnce(&Service),
+        ) -> (gpui::Entity<CaixonhoApp>, &mut VisualTestContext, Live) {
+            let (serving, service) = Service::start_owned();
+            seed(&service);
+            // gpui's test scheduler is deterministic, and treats activity from
+            // any thread but its own as a test that is not — it records the
+            // first such wake and panics at `end_test`
+            // (`scheduler/src/test_scheduler.rs`, `assert_correct_thread`).
+            // Every outcome here arrives on one of the world's tokio threads
+            // and wakes the window through flume, so every flow would be that
+            // panic. `allow_parking` is the scheduler's own switch for exactly
+            // this: its doc names "a mix of deterministic and non-deterministic
+            // async behavior, such as when interacting with I/O in an otherwise
+            // deterministic test", and setting it is what `assert_correct_thread`
+            // checks first. Without it, all six flows fail on the first HTTP
+            // reply — found by running them, not by reading.
+            cx.executor().allow_parking();
+            cx.update(gpui_component::init);
+            let (world, config) = World::against(&service);
+            let (app, cx) = cx.add_window_view(|window, cx| {
+                CaixonhoApp::new(Diagnostics::without_a_log(), world, window, cx)
+            });
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.select_profile(0, window, cx));
+            });
+            settle(cx, &app, "the account listing", |app, _| {
+                matches!(app.outcome.state(), Outcome::Loaded(_))
+            });
+            let live = Live {
+                _serving: serving,
+                service,
+                _config: config,
+            };
+            (app, cx, live)
+        }
+
+        /// [`window_over`], then inside `bucket` with its first page shown.
+        fn browsing<'a>(
+            cx: &'a mut TestAppContext,
+            bucket: &str,
+            seed: impl FnOnce(&Service),
+        ) -> (gpui::Entity<CaixonhoApp>, &'a mut VisualTestContext, Live) {
+            let (app, cx, live) = window_over(cx, seed);
+            let index = app.read_with(cx, |app, cx| {
+                app.table
+                    .read(cx)
+                    .delegate()
+                    .rows
+                    .iter()
+                    .position(|row| row.name == bucket)
+            });
+            let index = index.unwrap_or_else(|| {
+                panic!("the account listing does not show `{bucket}` — seeding did not create it")
+            });
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.open_bucket(index, window, cx));
+            });
+            settle(cx, &app, "the bucket's first page", |app, _| {
+                matches!(app.listing, Listing::Loaded)
+            });
+            (app, cx, live)
+        }
+
+        /// What the objects table shows, top to bottom: folders by name with a
+        /// trailing slash, objects by key.
+        fn rows_shown(app: &CaixonhoApp, cx: &gpui::App) -> Vec<String> {
+            let delegate = app.objects.read(cx);
+            let delegate = delegate.delegate();
+            let mut shown = Vec::new();
+            let mut index = 0;
+            while let Some(entry) = delegate.row(index) {
+                shown.push(match entry {
+                    crate::views::objects::Entry::Folder(folder) => format!("{}/", folder.name()),
+                    crate::views::objects::Entry::Object(object) => object.key.clone(),
+                });
+                index += 1;
+            }
+            shown
+        }
+
+        /// The row index of the entry shown as `label`, in [`rows_shown`]'s terms.
+        fn row_of(app: &CaixonhoApp, cx: &gpui::App, label: &str) -> usize {
+            rows_shown(app, cx)
+                .iter()
+                .position(|shown| shown == label)
+                .unwrap_or_else(|| {
+                    panic!("no row shows `{label}`; rows: {:?}", rows_shown(app, cx))
+                })
+        }
+
+        /// A local file with these bytes, in a directory the test owns.
+        fn a_local_file(name: &str, bytes: &[u8]) -> (tempfile::TempDir, std::path::PathBuf) {
+            let dir = tempfile::tempdir().expect("a temporary directory");
+            let path = dir.path().join(name);
+            std::fs::write(&path, bytes).expect("the file is written");
+            (dir, path)
+        }
+
+        #[gpui::test]
+        fn opening_a_bucket_shows_the_objects_the_service_holds(cx: &mut TestAppContext) {
+            // Task 3.2. Through `select_profile` and `open_bucket`, the same
+            // two calls the sidebar and the table make — and what is asserted
+            // is the rows on screen against what was put in the service.
+            let (app, cx, _live) = browsing(cx, "reports", |service| {
+                service
+                    .with_bucket("reports")
+                    .with_object("reports", "summary.csv", b"a,b,c\n")
+                    .with_object("reports", "notes.md", b"# notes\n")
+                    .with_object("reports", "daily/monday.csv", b"1\n");
+            });
+
+            app.read_with(cx, |app, cx| {
+                assert_eq!(
+                    rows_shown(app, cx),
+                    ["daily/", "notes.md", "summary.csv"],
+                    "one folder inferred from the delimiter, then the objects, \
+                     in the order the table shows them"
+                );
+            });
+        }
+
+        #[gpui::test]
+        fn a_file_dropped_on_the_window_reaches_the_service_and_a_second_asks(
+            cx: &mut TestAppContext,
+        ) {
+            // Task 3.3. The drop handler is the entry the queue was built for
+            // (`XONHO-0029`); the destination it proposes is confirmed as
+            // offered; and the second send of the same file must come back as
+            // the question, refused by the service through `If-None-Match`
+            // rather than by any check in this crate.
+            let (app, cx, live) = browsing(cx, "reports", |service| {
+                service.with_bucket("reports");
+            });
+            let (_dir, file) = a_local_file("report.csv", b"the first send\n");
+
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.take_dropped(std::slice::from_ref(&file), window, cx);
+                    assert!(
+                        app.choosing_destination.is_some(),
+                        "a dropped file is offered a destination before anything is sent"
+                    );
+                    app.confirm_destination(cx);
+                });
+            });
+            settle(cx, &app, "the upload to settle", |app, _| {
+                app.queue
+                    .items()
+                    .iter()
+                    .any(|item| matches!(item.payload.phase, TransferPhase::Sent { .. }))
+            });
+            assert_eq!(
+                live.service.bytes_of("reports", "report.csv").as_deref(),
+                Some(&b"the first send\n"[..]),
+                "the object the service holds is the file that was dropped"
+            );
+            settle(cx, &app, "the listing to show the new object", |app, cx| {
+                rows_shown(app, cx)
+                    .iter()
+                    .any(|shown| shown == "report.csv")
+            });
+
+            // The same file again, to the same proposed key.
+            let (_dir, again) = a_local_file("report.csv", b"the second send\n");
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.take_dropped(std::slice::from_ref(&again), window, cx);
+                    app.confirm_destination(cx);
+                });
+            });
+            settle(cx, &app, "the second upload to be refused", |app, _| {
+                app.queue
+                    .items()
+                    .iter()
+                    .any(|item| matches!(&item.payload.phase, TransferPhase::KeyTaken { key } if key == "report.csv"))
+            });
+            assert_eq!(
+                live.service.bytes_of("reports", "report.csv").as_deref(),
+                Some(&b"the first send\n"[..]),
+                "asking is not replacing: the service still holds the first send"
+            );
+        }
+
+        #[gpui::test]
+        fn a_download_writes_the_object_to_the_chosen_folder_byte_for_byte(
+            cx: &mut TestAppContext,
+        ) {
+            // Task 3.4. `download_row` asks the platform for a folder, which
+            // the test platform lets a test answer — so the flow includes the
+            // dialog rather than reaching around it to `start_download`.
+            let bytes = "một hai ba — ✓\n".as_bytes();
+            let (app, cx, _live) = browsing(cx, "reports", |service| {
+                service
+                    .with_bucket("reports")
+                    .with_object("reports", "notes.md", bytes);
+            });
+            let into = tempfile::tempdir().expect("a temporary directory");
+
+            let index = app.read_with(cx, |app, cx| row_of(app, cx, "notes.md"));
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.download_row(index, window, cx));
+            });
+            let destination = into.path().to_owned();
+            cx.simulate_path_prompt_response(move |_| Some(vec![destination]));
+
+            settle(cx, &app, "the download to finish", |app, _| {
+                app.queue
+                    .items()
+                    .iter()
+                    .any(|item| matches!(item.payload.phase, TransferPhase::Finished { .. }))
+            });
+            let name = app.read_with(cx, |app, _| {
+                app.queue
+                    .items()
+                    .iter()
+                    .find_map(|item| match &item.payload.phase {
+                        TransferPhase::Finished { name, .. } => Some(name.clone()),
+                        _ => None,
+                    })
+                    .expect("a finished transfer names the file it wrote")
+            });
+            let written = std::fs::read(into.path().join(&name)).expect("the file was written");
+            assert_eq!(written, bytes, "byte for byte");
+        }
+
+        #[gpui::test]
+        fn ticked_rows_are_deleted_from_the_service_after_the_counted_confirmation(
+            cx: &mut TestAppContext,
+        ) {
+            // Task 3.5, first half. `XONHO-0030`'s bulk flow end to end: tick
+            // rows, confirm the confirmation that counted them, and the objects
+            // are gone from the service — not merely from the table.
+            let (app, cx, live) = browsing(cx, "reports", |service| {
+                service
+                    .with_bucket("reports")
+                    .with_object("reports", "one.txt", b"1")
+                    .with_object("reports", "two.txt", b"2")
+                    .with_object("reports", "three.txt", b"3");
+            });
+
+            let (one, three) = app.read_with(cx, |app, cx| {
+                (row_of(app, cx, "one.txt"), row_of(app, cx, "three.txt"))
+            });
+            app.update(cx, |app, cx| {
+                app.objects.update(cx, |state, _| {
+                    let delegate = state.delegate_mut();
+                    delegate.toggle(one);
+                    delegate.toggle(three);
+                });
+                app.delete_ticked(cx);
+                match &app.deletion.as_ref().expect("the confirmation is up").phase {
+                    DeletePhase::Confirming { keys } => {
+                        assert_eq!(keys, &["one.txt".to_owned(), "three.txt".to_owned()]);
+                    }
+                    other => panic!("expected Confirming, got {}", delete_phase_name(other)),
+                }
+                assert!(matches!(
+                    app.deletion.as_ref().expect("held").asked,
+                    Asked::Rows(2)
+                ));
+            });
+            assert!(
+                live.service.holds("reports", "one.txt")
+                    && live.service.holds("reports", "three.txt"),
+                "the confirmation is a question: nothing has been sent"
+            );
+
+            app.update(cx, |app, cx| app.confirm_delete(cx));
+            settle(cx, &app, "both deletes to settle", |app, _| {
+                matches!(
+                    app.deletion.as_ref().map(|d| &d.phase),
+                    Some(DeletePhase::Went { gone: 2, failures }) if failures.is_empty()
+                )
+            });
+            assert!(
+                !live.service.holds("reports", "one.txt"),
+                "one.txt is gone from the service"
+            );
+            assert!(
+                !live.service.holds("reports", "three.txt"),
+                "three.txt is gone from the service"
+            );
+            assert!(
+                live.service.holds("reports", "two.txt"),
+                "and the row nobody ticked is not"
+            );
+            settle(cx, &app, "the listing to be re-read", |app, cx| {
+                rows_shown(app, cx) == ["two.txt"]
+            });
+        }
+
+        #[gpui::test]
+        fn a_folder_is_counted_first_and_then_its_whole_subtree_is_gone(cx: &mut TestAppContext) {
+            // Task 3.5, second half. The count comes from a flat walk of the
+            // real service, so the confirmation states three where the grouped
+            // listing would show two — which is the defect `XONHO-0030` guards.
+            let (app, cx, live) = browsing(cx, "reports", |service| {
+                service
+                    .with_bucket("reports")
+                    .with_object("reports", "keep.txt", b"k")
+                    .with_object("reports", "daily/monday.csv", b"1")
+                    .with_object("reports", "daily/tuesday.csv", b"2")
+                    .with_object("reports", "daily/deep/wednesday.csv", b"3");
+            });
+
+            let folder = app.read_with(cx, |app, cx| row_of(app, cx, "daily/"));
+            app.update(cx, |app, cx| app.delete_row(folder, cx));
+            settle(cx, &app, "the folder to be counted", |app, _| {
+                matches!(
+                    app.deletion.as_ref().map(|d| &d.phase),
+                    Some(DeletePhase::Confirming { .. })
+                )
+            });
+            app.read_with(cx, |app, _| {
+                let DeletePhase::Confirming { keys } = &app.deletion.as_ref().expect("held").phase
+                else {
+                    unreachable!("settled on Confirming");
+                };
+                let mut keys = keys.clone();
+                keys.sort();
+                assert_eq!(
+                    keys,
+                    [
+                        "daily/deep/wednesday.csv",
+                        "daily/monday.csv",
+                        "daily/tuesday.csv"
+                    ],
+                    "the whole subtree, not the top level"
+                );
+            });
+
+            app.update(cx, |app, cx| app.confirm_delete(cx));
+            settle(cx, &app, "the three deletes to settle", |app, _| {
+                matches!(
+                    app.deletion.as_ref().map(|d| &d.phase),
+                    Some(DeletePhase::Went { gone: 3, failures }) if failures.is_empty()
+                )
+            });
+            for key in [
+                "daily/monday.csv",
+                "daily/tuesday.csv",
+                "daily/deep/wednesday.csv",
+            ] {
+                assert!(
+                    !live.service.holds("reports", key),
+                    "{key} is gone from the service"
+                );
+            }
+            assert!(
+                live.service.holds("reports", "keep.txt"),
+                "the object outside the folder is not"
+            );
+            settle(cx, &app, "the listing to be re-read", |app, cx| {
+                rows_shown(app, cx) == ["keep.txt"]
+            });
+        }
+
+        #[gpui::test]
+        fn a_text_object_previews_its_first_page_from_the_service(cx: &mut TestAppContext) {
+            // Task 3.6. A ranged read against the real service, and both
+            // numbers on the truncation line come from its response.
+            let text = "# notes\n\nmột hai ba\n";
+            let (app, cx, _live) = browsing(cx, "reports", |service| {
+                service
+                    .with_bucket("reports")
+                    .with_object("reports", "notes.md", text.as_bytes());
+            });
+
+            let index = app.read_with(cx, |app, cx| row_of(app, cx, "notes.md"));
+            app.update(cx, |app, cx| app.preview_row(index, cx));
+            settle(cx, &app, "the preview to arrive", |app, _| {
+                matches!(
+                    app.preview.as_ref().map(|p| &p.phase),
+                    Some(PreviewPhase::Text { .. })
+                )
+            });
+            app.read_with(cx, |app, _| {
+                let preview = app.preview.as_ref().expect("held");
+                assert_eq!(preview.key, "notes.md");
+                let PreviewPhase::Text {
+                    content,
+                    shown,
+                    total,
+                } = &preview.phase
+                else {
+                    unreachable!("settled on Text");
+                };
+                assert_eq!(
+                    content.as_ref(),
+                    text,
+                    "the first page is the whole small object"
+                );
+                assert_eq!(*shown, text.len() as u64, "shown is what was fetched");
+                assert_eq!(
+                    *total,
+                    Some(text.len() as u64),
+                    "total is what the service said"
+                );
+            });
+        }
     }
 }

@@ -1,6 +1,6 @@
 //! `XONHO-0031` — the adapter, over real HTTP.
 
-mod service;
+use caixonho_core::test_service as service;
 
 use service::Service;
 

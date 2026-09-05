@@ -1,16 +1,13 @@
 //! A real S3 service the tests start themselves (`XONHO-0031`).
 //!
-//! `dead_code` is allowed for one reason and it is a real one: a shared test
-//! module is compiled **into each integration binary separately**, and each of
-//! them uses a subset — the adapter tests never touch `Connected::settled`,
-//! the session tests never touch `store` alone. Without this every binary
-//! warns about whatever the other one needs. It is not a licence to leave
-//! unused helpers here; the close-out review still asks.
-#![allow(dead_code)]
-
+//! Behind the `test-service` feature and part of no shipped build. It began as
+//! `tests/service.rs`, a module each integration binary compiled for itself,
+//! and moved here when the window's own tests needed the same service — an
+//! integration-test module cannot be reached from another crate, and a second
+//! copy of a harness is two harnesses to keep working.
 //!
 //! The adapter is the one file that turns this project's intentions into
-//! HTTP, and neither of its existing test tiers sends a request: `StoreDouble`
+//! HTTP, and neither of its other test tiers sends a request: `StoreDouble`
 //! answers **above** it and `StaticReplayClient` replays bytes **below** it.
 //! Between them sits the question neither asks — does the request we build
 //! mean, to a real service, what we believe it means?
@@ -18,9 +15,10 @@
 //! # What this cannot prove
 //!
 //! Stated here rather than discovered later, because a passing suite mistaken
-//! for coverage it does not have is worse than no suite. `not_covered` below
-//! holds a test per exclusion, so the reasons fail loudly if they stop being
-//! true.
+//! for coverage it does not have is worse than no suite. Each exclusion has a
+//! test named for it in `tests/session_against_a_real_service.rs`, asserting
+//! the reason where the reason is observable, so it fails loudly the day it
+//! stops being true.
 //!
 //! - **Directory buckets and Local Zones.** Nothing emulates
 //!   `s3express:CreateSession`, the `{base}--{zone}--x-s3` naming, or a
@@ -31,12 +29,9 @@
 //! - **Denials.** The service has no IAM and refuses nothing. Classification
 //!   is covered below the adapter by the replay tests, which is its right
 //!   place.
-//! - **Virtual-hosted addressing.** This tier is addressed by IP, so every
-//!   request it sends is path-style — and against real AWS the SDK sends
-//!   virtual-hosted, which is the shape production actually emits. What is
-//!   proven here is what the *parameters* mean to a service; which of the two
-//!   hosts carries the bucket is the SDK's decision and is covered by its own
-//!   tests, not by this project's. The reason it is not both is `start`.
+//! - **An empty folder.** `s3s-fs` keeps a folder marker as a directory and
+//!   derives common prefixes from files alone, so a folder with nothing in it
+//!   is invisible to it and `XONHO-0024`'s own scenario cannot be shown here.
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
@@ -156,6 +151,24 @@ impl Service {
         }
     }
 
+    /// [`Self::start`], for a caller with no runtime of its own.
+    ///
+    /// The accept loop is a task on whatever runtime called `start`, so the
+    /// runtime is handed back beside the service and must live as long as it
+    /// does — drop it and the port stops answering with no error anywhere. A
+    /// `#[gpui::test]` is such a caller: it runs on gpui's own executor, which
+    /// is not tokio.
+    pub fn start_owned() -> (tokio::runtime::Runtime, Self) {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .thread_name("caixonho-test-service")
+            .build()
+            .expect("a runtime for the service to accept on");
+        let service = runtime.block_on(Self::start());
+        (runtime, service)
+    }
+
     /// Where to point a client.
     pub fn base_url(&self) -> &str {
         &self.base_url
@@ -184,6 +197,22 @@ impl Service {
         std::fs::write(path, bytes).expect("the object is written");
         self
     }
+
+    /// Whether the service holds `key` in `bucket` right now.
+    ///
+    /// Read off the filesystem rather than through the port, for the same
+    /// reason seeding is: a flow test asking "is it gone **from the service**"
+    /// should not have its answer depend on a listing working. This is what
+    /// lets a test tell a delete that removed the object from one that only
+    /// removed the row.
+    pub fn holds(&self, bucket: &str, key: &str) -> bool {
+        self.root.path().join(bucket).join(key).is_file()
+    }
+
+    /// The bytes the service holds for `key`, or nothing if it holds no such key.
+    pub fn bytes_of(&self, bucket: &str, key: &str) -> Option<Vec<u8>> {
+        std::fs::read(self.root.path().join(bucket).join(key)).ok()
+    }
 }
 
 impl Drop for Service {
@@ -211,7 +240,7 @@ impl Drop for Service {
 ///
 /// The returned directory must outlive the session: dropping it takes the
 /// config file with it, and the SDK reads that file lazily.
-pub fn config_for(service: &Service) -> (tempfile::TempDir, caixonho_core::ConfigPaths) {
+pub fn config_for(service: &Service) -> (tempfile::TempDir, crate::ConfigPaths) {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let config = dir.path().join("config");
     std::fs::write(
@@ -227,7 +256,7 @@ pub fn config_for(service: &Service) -> (tempfile::TempDir, caixonho_core::Confi
     )
     .expect("the config file is written");
 
-    let paths = caixonho_core::ConfigPaths {
+    let paths = crate::ConfigPaths {
         config: Some(config),
         // Named and absent, exactly as on a machine with an SSO-only setup —
         // the shape `connection::open` has a whole comment about, so the tier
@@ -249,30 +278,30 @@ pub const PROFILE: &str = "local";
 /// which makes the whole async layer the window sits on testable here, off
 /// the render thread and without gpui.
 pub struct Connected {
-    pub session: caixonho_core::Session,
-    pub store: std::sync::Arc<dyn caixonho_core::ObjectStore>,
+    pub session: crate::Session,
+    pub store: std::sync::Arc<dyn crate::ObjectStore>,
     _config: tempfile::TempDir,
 }
 
 impl Connected {
     pub async fn to(service: &Service) -> Self {
         let (dir, paths) = config_for(service);
-        let session = caixonho_core::Session::new(
+        let session = crate::Session::new(
             tokio::runtime::Handle::current(),
-            caixonho_core::HttpStack::with_ca_bundle(None).expect("a client"),
+            crate::HttpStack::with_ca_bundle(None).expect("a client"),
             paths,
         );
 
         let connection = session
             .open(
-                caixonho_core::ConnectionId(1),
-                caixonho_core::ConnectionSource::Profile(PROFILE.to_owned()),
+                crate::ConnectionId(1),
+                crate::ConnectionSource::Profile(PROFILE.to_owned()),
             )
             .await
             .expect("the local service is reachable");
 
         Self {
-            store: std::sync::Arc::new(caixonho_core::S3ObjectStore::new(&connection)),
+            store: std::sync::Arc::new(crate::S3ObjectStore::new(&connection)),
             session,
             _config: dir,
         }

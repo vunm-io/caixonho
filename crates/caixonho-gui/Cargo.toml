@@ -36,7 +36,10 @@ gpui_platform = { workspace = true, features = ["test-support"] }
 # machine's `~/.aws` (`XONHO-0015`). Dev-only, so the shipped binary is the
 # same binary; resolver 2 keeps a dev feature out of a build without dev
 # targets, and that was measured rather than assumed.
-caixonho-core = { workspace = true, features = ["test-support"] }
+caixonho-core = { workspace = true, features = ["test-support", "test-service"] }
+# `tempfile` for the files a flow test sends up and the folders it downloads
+# into. Already in the lockfile through `caixonho-core`'s `test-service`.
+tempfile.workspace = true
 # Only to write the captured frames out as files (`XONHO-0009` task 6.3).
 # `capture_screenshot` already returns an `image::RgbaImage` and gpui does not
 # re-export the crate, so the encoder has to be named here to be reachable.
