@@ -36,6 +36,26 @@
     rather than being deleted once green: the day gpui learns variable axes it
     still passes, and the day a font swap breaks weight selection it fails.
   - Verification: the measurement, and the frames
+  - **Added 2026-09-05, after the week that followed.** The measurement above
+    is macOS's. **Windows CI cannot make it**: `WindowsPlatform::new(headless)`
+    installs `NoopTextSystem`, whose `add_fonts` returns `Ok` and does
+    nothing, whose `font_id` answers `FontId(1)` for everything, and whose
+    `typographic_bounds` is a constant 392/1000 em — 25.088px at 64px, for
+    both families at every weight. Three commits read that number as a product
+    defect (the RIBBI legacy-family limit, then "font loading is broken on
+    Windows") before two unrelated typefaces agreeing to three decimals gave
+    it away. The reason is now held by a test,
+    `this_platforms_headless_text_system_is_a_noop`, which fails the day
+    Windows headless gains a real text system — that is when to ungate the
+    measurement there. One hypothesis for a *real*-Windows failure, **never
+    observed**: `Baloo2-ExtraBold.ttf` and `BeVietnamPro-SemiBold.ttf`
+    declare their own legacy families (`Baloo 2 ExtraBold`, `Be Vietnam Pro
+    SemiBold`), since a legacy family holds only RIBBI; a platform matching on
+    legacy names would not find 800 or 600. `load_fonts` now says when a
+    family did not register, which its own comment warned about and nothing
+    checked. **Still owed, and only a person at a Windows machine can pay
+    it:** the two frames opened and looked at there. `v0.1.0-beta.2` carries
+    no Đất Nặn; the first Windows artifact with it is CI run 33895255727's.
 
 ## 2. The tokens
 
