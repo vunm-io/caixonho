@@ -11,7 +11,9 @@
 #
 # It signs with this machine's local identity when there is one — see
 # `dev-signing-identity.sh` for what that buys and why it is not optional in
-# practice.
+# practice. With no identity — CI, or a fresh machine — it still signs the
+# **bundle** ad-hoc, and that is not optional either: see the note below on
+# what Gatekeeper does to a bundle that was never signed as a bundle.
 set -eu
 cd "$(dirname "$0")/.."
 PATH="$HOME/.cargo/bin:$PATH"
@@ -96,9 +98,32 @@ MSG
     fi
     signed="signed as $IDENTITY"
 else
-    signed="UNSIGNED — run scripts/dev-signing-identity.sh to stop the keychain
-         asking again after every build"
+    # No identity, so ad-hoc — but the *bundle*, not only the binary. The
+    # linker already ad-hoc signs the bare Mach-O, and until 2026-09-05 this
+    # branch stopped there, which left a bundle whose only signature was made
+    # before the bundle existed: `Info.plist=not bound`, `Sealed
+    # Resources=none`. Gatekeeper reads that as a bundle somebody altered after
+    # signing and shows **"Caixonho is damaged and can't be opened. You should
+    # move it to the Trash."** — with no Open Anyway anywhere. Both public
+    # betas shipped like this, and the release notes described a dialog nobody
+    # downloading them could have seen.
+    #
+    # Signing the bundle seals `Info.plist` and writes
+    # `_CodeSignature/CodeResources`; the same download then gets the ordinary
+    # "could not verify the developer" dialog, whose answer really is
+    # Privacy & Security → Open Anyway. Not `--deep`: one code object here, and
+    # Apple's guidance is to sign it, not recurse.
+    codesign --force --sign - "$APP"
+    signed="ad-hoc signed as a bundle — opens via Open Anyway; run
+         scripts/dev-signing-identity.sh to stop the keychain asking again after
+         every build"
 fi
+
+# Either branch has to leave a bundle Gatekeeper can evaluate at all. This is
+# the check that would have been red for both betas: it is the exact
+# assessment Gatekeeper makes, and "code has no resources but signature
+# indicates they must be present" is the message behind "damaged".
+codesign --verify --deep --strict --verbose=2 "$APP"
 
 # Quit any instance already running before opening. `open` on a bundle that is
 # already running just brings the old window forward: the build succeeds, the
