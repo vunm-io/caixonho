@@ -141,6 +141,21 @@
     background. `--ink-4` is the lightest text the system allows;
     `--ink-4-decor` is for strokes and **never** for text (2.9:1 on paper).
   - Verification: measured ratios, written here
+  - **Measured 2026-09-07, and it found something.** WCAG AA over every
+    foreground/surface pair the theme declares. Body text is comfortable —
+    `foreground` on `background` 8.51, on `sidebar.background` 8.02, on
+    `popover.background` 9.41, and `muted.foreground` 4.87 on the app surface.
+    Six pairs sit under 4.5:
+    - `link.hover.foreground` `#E8712A` on `background` — **2.78**, which
+      fails even the 3.0 allowed for large text and UI. Hover is the moment
+      before a click, and it is the worst pair in the theme.
+    - `link.foreground` `#2E8C74` — 3.71, large text only.
+    - `danger` and `success` button labels — 3.71 and 3.83, below AA for the
+      normal-size text a button label is.
+    Not fixed here: these are the design system's own values and choosing new
+    ones is the owner's, not this session's. Recorded so the choice is made
+    knowing the numbers, and stated in `v0.1.0-beta.4`'s notes rather than
+    shipped silently.
 
 - [ ] 4.3 `docs/design-language.md` rewritten [dispatch: main]
   - Done criteria: it describes Đất Nặn's app branch, names the system as the
@@ -156,10 +171,15 @@
   - And the macOS-gate walk, which `XONHO-0030` learned to do the hard way.
   - Verification: the commands
 
-- [ ] 5.2 CI green on both targets, run id recorded here [dispatch: main]
+- [x] 5.2 CI green on both targets, run id recorded here [dispatch: main]
   - Verification: `gh run list --limit 1 --repo vunm-io/caixonho`
+  - **Run 34093813481** — `build (windows-latest)` and `build (macos-latest)`
+    both `success`, after `main` was merged in for the sealed bundle and the
+    version work. Artifacts opened and checked: `Info.plist` carries
+    `CFBundleVersion 0.1.0-beta.3`, the bundle verifies sealed, and both font
+    families are in the binary.
 
-- [ ] 5.3 Live: open it and look [dispatch: main]
+- [x] 5.3 Live: open it and look [dispatch: main]
   - Done criteria: the owner's own machine, a real connection. Fonts render,
     the sidebar's current bucket reads as the current one, nothing is a block
     inside a block, and the delete button still reads as dangerous at
@@ -168,6 +188,11 @@
     because it is about how a colour *feels* in the moment before someone
     presses it.
   - Verification: what was seen
+  - **Done 2026-09-07.** The owner opened the macOS build — palette, both
+    families and the light theme — and judged it fit to release ("app bình
+    thường"). What that acceptance does **not** cover is the unfinished half of
+    section 3: the sidebar's current item, the flattening, and a selected row
+    are still the old treatment, so the window is deliberately mixed.
 
 - [ ] 5.4 Close-out review per `AGENTS.md` [dispatch: main]
   - Question 1 has a sharp form here — *did we build what was asked, or what
