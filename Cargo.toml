@@ -14,7 +14,7 @@ members = ["crates/caixonho-core", "crates/caixonho-gui"]
 #
 # It was `0.0.0` until 2026-09-07, while `Info.plist` hardcoded `0.1.0` and the
 # newest tag said something else again. Three numbers, no source.
-version = "0.1.0-beta.3"
+version = "0.1.0-beta.4"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/vunm-io/caixonho"
