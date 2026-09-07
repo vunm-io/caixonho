@@ -10475,6 +10475,221 @@ mod tests {
         }
 
         #[gpui::test]
+        fn a_subtree_arrives_as_a_subtree_byte_for_byte_and_path_for_path(cx: &mut TestAppContext) {
+            // `XONHO-0034` task 4.1 — the test that says the change did what
+            // it promised. Objects at three depths, fetched by one gesture,
+            // compared to the service both ways: every byte, and every path.
+            let tree: [(&str, &[u8]); 5] = [
+                ("daily/monday.csv", b"mon\n"),
+                ("daily/tuesday.csv", b"tue\n"),
+                ("daily/deep/wednesday.csv", b"wed\n"),
+                ("daily/deep/deeper/thursday.csv", "năm\n".as_bytes()),
+                ("daily/12:30.log", b"colon\n"),
+            ];
+            let (app, cx, live) = browsing(cx, "reports", |service| {
+                service.with_bucket("reports");
+                for (key, bytes) in tree {
+                    service.with_object("reports", key, bytes);
+                }
+                // Outside the folder: it must not be fetched.
+                service.with_object("reports", "elsewhere.csv", b"no\n");
+            });
+            let into = tempfile::tempdir().expect("a temporary directory");
+
+            let folder = app.read_with(cx, |app, cx| row_of(app, cx, "daily/"));
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.download_folder_row(folder, window, cx));
+            });
+            let destination = into.path().to_owned();
+            cx.simulate_path_prompt_response(move |_| Some(vec![destination]));
+
+            settle(cx, &app, "every transfer to finish", |app, _| {
+                !app.queue.items().is_empty()
+                    && app.queue.items().iter().all(|item| {
+                        matches!(
+                            item.payload.phase,
+                            TransferPhase::Finished { .. } | TransferPhase::Failed(_)
+                        )
+                    })
+            });
+            app.read_with(cx, |app, _| {
+                for item in app.queue.items() {
+                    assert!(
+                        matches!(item.payload.phase, TransferPhase::Finished { .. }),
+                        "`{}` did not finish: {}",
+                        item.payload.key,
+                        phase_name(&item.payload.phase)
+                    );
+                }
+            });
+
+            // Path for path. The act began at the bucket root — where the
+            // user was standing — so `daily/` arrives *as* `daily/`, which is
+            // the whole promise: a folder you downloaded is a folder you have.
+            // Standing inside `daily/` and fetching a subfolder of it is the
+            // other case, and `local_path`'s own tests pin that one.
+            //
+            // `12:30.log` arrives percent-encoded: `ADR-0004`'s scheme
+            // reaching a file inside a subtree, which is `ADR-0005`.
+            for (key, bytes) in tree {
+                let expected = key.replace("12:30.log", "12%3A30.log");
+                let on_disk = into.path().join(&expected);
+                assert!(
+                    on_disk.is_file(),
+                    "`{key}` should be at `{expected}`; the folder holds {:?}",
+                    walk_disk(into.path())
+                );
+                // Byte for byte, against what the service actually holds
+                // rather than against the literal above — the service is the
+                // thing being compared to.
+                assert_eq!(
+                    std::fs::read(&on_disk).expect("readable"),
+                    live.service
+                        .bytes_of("reports", key)
+                        .expect("the service holds it"),
+                    "`{key}` differs from the object"
+                );
+                let _ = bytes;
+            }
+
+            // Depth is real, not flattened into names.
+            assert!(
+                into.path()
+                    .join("daily")
+                    .join("deep")
+                    .join("deeper")
+                    .is_dir(),
+                "every level is a directory, not a part of a name"
+            );
+            // And nothing outside the folder came along.
+            assert!(
+                !into.path().join("elsewhere.csv").exists(),
+                "an object outside the folder was fetched"
+            );
+        }
+
+        /// Every file under `root`, as paths relative to it — for a failure
+        /// message that says what *is* there rather than only what is not.
+        fn walk_disk(root: &std::path::Path) -> Vec<String> {
+            fn go(dir: &std::path::Path, root: &std::path::Path, out: &mut Vec<String>) {
+                let Ok(entries) = std::fs::read_dir(dir) else {
+                    return;
+                };
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        go(&path, root, out);
+                    } else if let Ok(rel) = path.strip_prefix(root) {
+                        out.push(rel.to_string_lossy().into_owned());
+                    }
+                }
+            }
+            let mut out = Vec::new();
+            go(root, root, &mut out);
+            out.sort();
+            out
+        }
+
+        #[gpui::test]
+        fn one_answer_settles_a_whole_second_fetch_of_the_same_folder(cx: &mut TestAppContext) {
+            // `XONHO-0034` task 4.2. The first fetch fills the folder; the
+            // second meets three taken names and is answered once.
+            let (app, cx, _live) = browsing(cx, "reports", |service| {
+                service.with_bucket("reports");
+                for n in 0..3 {
+                    service.with_object("reports", &format!("daily/{n}.csv"), b"x\n");
+                }
+            });
+            let into = tempfile::tempdir().expect("a temporary directory");
+            let destination = into.path().to_owned();
+
+            let fetch = |cx: &mut VisualTestContext, destination: std::path::PathBuf| {
+                let folder = app.read_with(cx, |app, cx| row_of(app, cx, "daily/"));
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| app.download_folder_row(folder, window, cx));
+                });
+                cx.simulate_path_prompt_response(move |_| Some(vec![destination]));
+            };
+
+            fetch(cx, destination.clone());
+            settle(cx, &app, "the first fetch", |app, _| {
+                app.queue.items().len() == 3
+                    && app
+                        .queue
+                        .items()
+                        .iter()
+                        .all(|item| matches!(item.payload.phase, TransferPhase::Finished { .. }))
+            });
+
+            app.update(cx, |app, cx| {
+                app.queue.clear_finished();
+                cx.notify();
+            });
+            fetch(cx, destination.clone());
+            settle(
+                cx,
+                &app,
+                "the second fetch to meet a taken name",
+                |app, _| {
+                    app.queue
+                        .items()
+                        .iter()
+                        .any(|item| matches!(item.payload.phase, TransferPhase::NameTaken { .. }))
+                },
+            );
+
+            // One answer, ticked for the rest.
+            app.update(cx, |app, cx| {
+                let asking = app
+                    .queue
+                    .items()
+                    .iter()
+                    .find(|item| matches!(item.payload.phase, TransferPhase::NameTaken { .. }))
+                    .expect("one is asking")
+                    .id;
+                if let Some(act) = app.downloading.as_mut() {
+                    act.apply_to_rest = true;
+                }
+                app.answer_collision_maybe_for_the_act(
+                    asking,
+                    caixonho_core::transfer::Collision::KeepBoth,
+                    true,
+                    cx,
+                );
+            });
+
+            settle(
+                cx,
+                &app,
+                "the rest to settle without asking again",
+                |app, _| {
+                    app.queue.items().iter().all(|item| {
+                        matches!(
+                            item.payload.phase,
+                            TransferPhase::Finished { .. } | TransferPhase::Failed(_)
+                        )
+                    })
+                },
+            );
+            app.read_with(cx, |app, _| {
+                assert!(
+                    !app.queue
+                        .items()
+                        .iter()
+                        .any(|item| matches!(item.payload.phase, TransferPhase::NameTaken { .. })),
+                    "nothing is still asking after one answer stood for the act"
+                );
+            });
+            // Kept both: six files where three were fetched twice.
+            assert_eq!(
+                walk_disk(into.path()).len(),
+                6,
+                "three originals and three kept-both: {:?}",
+                walk_disk(into.path())
+            );
+        }
+
+        #[gpui::test]
         fn ticked_rows_are_deleted_from_the_service_after_the_counted_confirmation(
             cx: &mut TestAppContext,
         ) {

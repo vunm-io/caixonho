@@ -187,18 +187,40 @@
 
 ## 4. Flows from the window
 
-- [ ] 4.1 A subtree fetched, and compared [dispatch: main]
+- [x] 4.1 A subtree fetched, and compared [dispatch: main]
   - Paths: `crates/caixonho-gui/src/app.rs`
   - Done criteria: through the window, against the real service — a folder with
     objects at three depths is downloaded, and every file on disk is compared
     to the object byte for byte **and path for path**.
   - This is the test that says the change did what it promised.
   - Verification: the test
+  - **Done — and it caught the test rather than the code.**
+    `a_subtree_arrives_as_a_subtree_byte_for_byte_and_path_for_path`: five
+    objects at three depths, one of them `12:30.log`, fetched by one gesture
+    from the real service. Every file compared to what the service holds, not
+    to a literal in the test, and every path compared to where it should be.
+  - The first run failed because **the test expected the wrong thing**: it
+    stripped `daily/` from the paths, as though the act had begun inside the
+    folder. The act begins where the user is standing — the bucket root — so
+    `daily/` arrives *as* `daily/`, which is the promise. The code was right;
+    the expectation was written from the wrong end. Corrected, with the reason
+    beside it so the next reader does not repeat it.
+  - Also asserted: `daily/deep/deeper` is a real directory chain rather than a
+    name with slashes in it, `12:30.log` lands as `12%3A30.log` deep inside the
+    tree, and an object outside the folder is not fetched.
 
-- [ ] 4.2 The batch answer, end to end [dispatch: main]
+- [x] 4.2 The batch answer, end to end [dispatch: main]
   - Done criteria: a folder downloaded twice into the same destination; the
     second act is answered once and completes without further questions.
   - Verification: the test
+  - **Done**, `one_answer_settles_a_whole_second_fetch_of_the_same_folder`: the
+    folder fetched twice into one destination, the second meeting three taken
+    names, answered once with the tick. Nothing is left asking, and six files
+    exist where three were fetched twice.
+  - **Ablation, with an assertion that it applied** — the lesson from 3.4. With
+    the batch answer disabled the test fails on its own words, "gave up waiting
+    for the rest to settle without asking again", after the full 30s patience.
+    Restored, green in 0.85s.
 
 ## 5. Close-out
 
