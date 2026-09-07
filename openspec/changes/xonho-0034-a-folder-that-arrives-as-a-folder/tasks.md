@@ -115,7 +115,7 @@
 
 ## 3. The act
 
-- [ ] 3.1 A download that knows it is one act [dispatch: main]
+- [x] 3.1 A download that knows it is one act [dispatch: main]
   - Paths: `crates/caixonho-gui/src/app.rs`
   - Done criteria: a struct holding the act's keys, the prefix they are
     relative to, the chosen destination and the collision answer once given;
@@ -123,27 +123,47 @@
     it behind (`XONHO-0019`'s defect, in a new place).
   - Verification: `cargo test -p caixonho-gui`, including a test that switching
     connection ends the act
+  - **Done.** `Downloading` holds the connection, the bucket, the prefix the
+    act began at, the destination, the standing answer and the member ids, with
+    a `DownloadPhase` of `Walking { left, gathered }` or `Sending` — the same
+    shape `Deletion` already uses. Dropped in `end_location`, so it cannot
+    outlive the place it was started from.
 
-- [ ] 3.2 Download a folder from its row [dispatch: main]
+- [x] 3.2 Download a folder from its row [dispatch: main]
   - Paths: `crates/caixonho-gui/src/app.rs`, `crates/caixonho-gui/src/views/objects.rs`
   - Done criteria: the row menu offers `Download…` on a folder; it asks once
     for a destination, walks, and queues every key. The existing single-object
     entry point is untouched.
   - Verification: the test, and `XONHO-0007`'s tests still green
+  - **Done.** `Download folder…` on a folder row. A folder still has none of
+    the three verbs that read one object's bytes, and now has the one that
+    reads the bytes underneath it. `download_row` is untouched.
 
-- [ ] 3.3 Download the selection [dispatch: main]
+- [x] 3.3 Download the selection [dispatch: main]
   - Paths: `crates/caixonho-gui/src/app.rs`
   - Done criteria: ticked rows — objects, folders or both — become one act with
     one destination. Folders in the selection are walked; objects are taken as
     they are.
   - Verification: the test
+  - **Done.** `Download {n}…` in the selection strip, placed **before** the
+    delete: a strip whose first verb destroys is a strip that gets misclicked.
+    Ghost rather than danger, because fetching destroys nothing.
 
-- [ ] 3.4 One answer, for the rest of the act [dispatch: main]
+- [x] 3.4 One answer, for the rest of the act [dispatch: main]
   - Paths: `crates/caixonho-gui/src/app.rs`
   - Done criteria: the collision question gains "and do this for the rest";
     choosing it settles the act's remaining transfers without asking, and
     settles **nothing** outside the act. A later act asks again.
   - Verification: tests for all three — within, outside, and afterwards
+  - **Done, and proved by ablation rather than by passing.** Four tests: the
+    answer settles the act's other waiting members; a transfer outside the act
+    keeps asking; the answer dies with the act; and without "for the rest" one
+    answer is still one answer.
+  - **The first ablation was a fake.** Its string did not match, so nothing was
+    broken and the test passed — which read as the test being weak. Re-run with
+    an assertion that the edit applied, the test fails with its own words. An
+    ablation without an assertion that it landed proves nothing and feels like
+    proof, which is worse than not running one.
 
 - [ ] 3.5 The destination is asserted [dispatch: main]
   - Paths: `crates/caixonho-gui/src/app.rs` or `crates/caixonho-core/src/transfer.rs`

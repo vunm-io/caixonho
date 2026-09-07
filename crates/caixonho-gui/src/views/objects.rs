@@ -313,6 +313,13 @@ impl TableDelegate for ObjectsDelegate {
             menu.item(act("Open folder", |app, index, window, cx| {
                 app.enter(index, window, cx)
             }))
+            // A folder has no bytes of its own, but it has bytes under it:
+            // `XONHO-0034` made the whole subtree one act, so the verb that
+            // reads bytes *is* offered here where the three that read one
+            // object's bytes are not.
+            .item(act("Download folder…", |app, index, window, cx| {
+                app.download_folder_row(index, window, cx)
+            }))
         } else {
             menu.item(act("Preview", |app, index, _, cx| {
                 app.preview_row(index, cx)

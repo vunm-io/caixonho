@@ -80,6 +80,10 @@ pub(crate) struct CaixonhoApp {
     /// The one deletion being confirmed, in flight, or just settled
     /// (`XONHO-0021`).
     deletion: Option<Deletion>,
+    /// The download act in flight, if one is (`XONHO-0034`). One at a time:
+    /// a second gesture replaces the first's *bookkeeping*, never its
+    /// transfers — those are the queue's and finish on their own.
+    downloading: Option<Downloading>,
     /// The deletes a confirmation armed, bounded the way transfers are.
     ///
     /// Its own queue rather than an arm of the transfer one: a deletion moves
@@ -118,6 +122,11 @@ pub(crate) struct CaixonhoApp {
     folder_name: Entity<InputState>,
     /// Where delete and undo outcomes come back.
     deletions: flume::Sender<DeleteEvent>,
+    /// Walk results for a download act (`XONHO-0034`). Its own channel rather
+    /// than the deletion one: the two acts ask the same question of the
+    /// service and do entirely different things with the answer, and a shared
+    /// channel would make which-act-is-this a guess.
+    walks: flume::Sender<caixonho_core::session::Tally>,
     /// The preview on screen or in flight, if any (`XONHO-0008`).
     preview: Option<Preview>,
     /// Where preview outcomes come back.
@@ -303,6 +312,45 @@ enum TransferPhase {
 /// deletion moves nothing, and "Downloading…" vocabulary does not belong one
 /// enum away from a destructive verb. The connection rides along so a stale
 /// outcome can never offer an Undo against an account the user has left
+/// One download the user asked for, however many transfers it becomes
+/// (`XONHO-0034`).
+///
+/// The queue holds transfers; this holds the **act** — the gesture that made
+/// them. Two facts live here because they belong to the gesture and not to any
+/// one transfer: where its files go, and the collision answer the user gave
+/// for the rest of it.
+///
+/// It carries a `connection` for `XONHO-0019`'s reason: an answer given on one
+/// account must not decide a transfer on the next. It is dropped where the
+/// location is dropped, which is what makes that true rather than likely.
+struct Downloading {
+    connection: ConnectionId,
+    bucket: String,
+    /// The prefix the act began at. Paths are relative to it, so downloading
+    /// `daily/` while standing in it writes `monday.csv` rather than
+    /// `daily/monday.csv`.
+    under: Prefix,
+    destination: std::path::PathBuf,
+    /// Set once the user answers a collision *and asks it to stand*. Until
+    /// then every member asks for itself, which is `XONHO-0028`'s rule and
+    /// still the default.
+    answer: Option<caixonho_core::transfer::Collision>,
+    /// The transfers this act became. Membership is what stops an answer
+    /// reaching a transfer the user did not have in mind.
+    members: std::collections::HashSet<TransferId>,
+    phase: DownloadPhase,
+}
+
+/// Where a download act has got to.
+enum DownloadPhase {
+    /// Folders are being walked. Nothing is queued yet, so abandoning here
+    /// costs nothing — which is why the walk happens before the queue and not
+    /// alongside it.
+    Walking { left: usize, gathered: Vec<String> },
+    /// Every key is known and in the queue; the queue owns them from here.
+    Sending,
+}
+
 /// (`XONHO-0019`'s discipline).
 struct Deletion {
     connection: ConnectionId,
@@ -1030,6 +1078,19 @@ impl CaixonhoApp {
         // Deletions get their own channel rather than riding the transfer
         // one — same reasoning as the strip: plumbing is cheap, and mixed
         // vocabulary is not (`XONHO-0021`).
+        let (walks, walked) = flume::unbounded::<caixonho_core::session::Tally>();
+        cx.spawn_in(window, async move |this, cx| {
+            while let Ok(tally) = walked.recv_async().await {
+                if this
+                    .update(cx, |app, cx| app.apply_walk(tally, cx))
+                    .is_err()
+                {
+                    break; // The window is gone.
+                }
+            }
+        })
+        .detach();
+
         let (deletions, deleting) = flume::unbounded::<DeleteEvent>();
         cx.spawn_in(window, async move |this, cx| {
             while let Ok(event) = deleting.recv_async().await {
@@ -1104,6 +1165,7 @@ impl CaixonhoApp {
             delete_failures: Vec::new(),
             transfers,
             deletion: None,
+            downloading: None,
             dropped_refusal: None,
             choosing_buckets: None,
             choosing_destination: None,
@@ -1111,6 +1173,7 @@ impl CaixonhoApp {
             making_folder: None,
             folder_name,
             folder_inbox: folders,
+            walks,
             deletions,
             preview: None,
             previews,
@@ -1388,6 +1451,234 @@ impl CaixonhoApp {
 
     /// Open the object at `index` with the system's own application for it
     /// (`XONHO-0007` task 4.3): download to the open-cache, then hand over.
+    /// Download one folder row, subtree and all.
+    pub(crate) fn download_folder_row(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(entry @ crate::views::objects::Entry::Folder(_)) =
+            self.objects.read(cx).delegate().row(index).cloned()
+        else {
+            return;
+        };
+        self.download_many(vec![entry], window, cx);
+    }
+
+    /// Download every ticked row — objects, folders, or both.
+    fn download_ticked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let ticked = self.objects.read(cx).delegate().chosen_rows();
+        if ticked.is_empty() {
+            return;
+        }
+        self.download_many(ticked, window, cx);
+    }
+
+    /// Download a folder, or everything ticked, as one act (`XONHO-0034`).
+    ///
+    /// The destination is asked for once. The walk resolves folders to keys;
+    /// objects are taken as they are. Nothing is queued until the walk
+    /// finishes, so abandoning it costs nothing.
+    fn download_many(
+        &mut self,
+        entries: Vec<crate::views::objects::Entry>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(location) = self.location().cloned() else {
+            return;
+        };
+        if entries.is_empty() {
+            return;
+        }
+        let ask = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Download here".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(mut chosen))) = ask.await else {
+                return; // Cancelled dialog, or the platform refused it.
+            };
+            let Some(destination) = chosen.pop() else {
+                return;
+            };
+            let _ = this.update_in(cx, |app, _, cx| {
+                app.begin_download(location, destination, entries, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// Turn the chosen rows into an act, and walk what needs walking.
+    fn begin_download(
+        &mut self,
+        location: Location,
+        destination: std::path::PathBuf,
+        entries: Vec<crate::views::objects::Entry>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.session.clone() else {
+            return;
+        };
+        let mut keys: Vec<String> = Vec::new();
+        let mut prefixes: Vec<Prefix> = Vec::new();
+        for entry in entries {
+            match entry {
+                crate::views::objects::Entry::Object(object) => keys.push(object.key),
+                crate::views::objects::Entry::Folder(folder) => prefixes.push(folder.prefix),
+            }
+        }
+
+        self.downloading = Some(Downloading {
+            connection: self.outcome.active(),
+            bucket: location.bucket.clone(),
+            under: location.prefix.clone(),
+            destination,
+            answer: None,
+            members: std::collections::HashSet::new(),
+            phase: DownloadPhase::Sending,
+        });
+
+        if prefixes.is_empty() {
+            if let Some(act) = self.downloading.as_mut() {
+                act.phase = DownloadPhase::Sending;
+            }
+            self.send_downloads(keys, cx);
+            return;
+        }
+
+        if let Some(act) = self.downloading.as_mut() {
+            act.phase = DownloadPhase::Walking {
+                left: prefixes.len(),
+                gathered: keys,
+            };
+        }
+        for prefix in prefixes {
+            let sent = self.walks.clone();
+            // `None`: a download is bounded by nothing, because abandoning one
+            // costs the bytes already fetched and nothing else (`ADR-0005`).
+            // The delete flow keeps its ceiling for the opposite reason.
+            session.spawn_walk_under(
+                Location::at(location.bucket.clone(), prefix),
+                None,
+                move |tally| {
+                    let _ = sent.send(tally);
+                },
+            );
+        }
+        cx.notify();
+    }
+
+    /// One folder's walk has come back.
+    ///
+    /// Nothing is queued until every folder in the act has reported, so the
+    /// act is one gesture in the queue rather than a trickle.
+    fn apply_walk(&mut self, tally: caixonho_core::session::Tally, cx: &mut Context<Self>) {
+        use caixonho_core::session::Tally;
+        let Some(act) = self.downloading.as_mut() else {
+            return; // Abandoned while the walk was out.
+        };
+        if act.connection != self.outcome.active() {
+            self.downloading = None;
+            cx.notify();
+            return;
+        }
+        let DownloadPhase::Walking { left, gathered } = &mut act.phase else {
+            return; // A late walk for an act already sending.
+        };
+        match tally {
+            Tally::All(keys) => {
+                // A folder marker names a directory, not a file
+                // (`ADR-0005`); the directories are made by the objects under
+                // it, or by nothing when it holds none.
+                gathered.extend(keys.into_iter().filter(|key| !key.ends_with('/')));
+                *left = left.saturating_sub(1);
+                if *left == 0 {
+                    let keys = std::mem::take(gathered);
+                    act.phase = DownloadPhase::Sending;
+                    self.send_downloads(keys, cx);
+                    return;
+                }
+            }
+            // The bound is `None` for a download, so this cannot arrive; if it
+            // ever does the act stops rather than silently fetching a part.
+            Tally::TooMany { .. } | Tally::Cancelled => {
+                self.downloading = None;
+            }
+            Tally::Failed(error) => {
+                self.downloading = None;
+                self.listing = Listing::Failed(error);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Queue one transfer per key, each into the directory its path names.
+    ///
+    /// The directory is created here rather than by the writer: `spawn_download`
+    /// is handed a directory and names the file itself, so what a path adds is
+    /// exactly the parent — and a parent that does not exist is a failure the
+    /// user should see against the object it belongs to, not as a panic.
+    fn send_downloads(&mut self, keys: Vec<String>, cx: &mut Context<Self>) {
+        let Some(act) = self.downloading.as_ref() else {
+            return;
+        };
+        let (bucket, destination, under) = (
+            act.bucket.clone(),
+            act.destination.clone(),
+            act.under.as_str().to_owned(),
+        );
+
+        for key in keys {
+            let mapped = caixonho_core::transfer::local_path(&key, &under);
+            let directory = match mapped.path.parent() {
+                Some(parent) if !parent.as_os_str().is_empty() => destination.join(parent),
+                _ => destination.clone(),
+            };
+            if let Err(error) = std::fs::create_dir_all(&directory) {
+                self.enqueue_settled(Transfer {
+                    bucket: bucket.clone(),
+                    key,
+                    directory,
+                    then_open: false,
+                    direction: Direction::Down,
+                    source: None,
+                    bytes: 0,
+                    total: None,
+                    cancel: caixonho_core::transfer::Cancel::default(),
+                    phase: TransferPhase::Failed(Error::Destination {
+                        detail: error.to_string(),
+                    }),
+                });
+                continue;
+            }
+            let answer = self
+                .downloading
+                .as_ref()
+                .and_then(|act| act.answer)
+                .unwrap_or(caixonho_core::transfer::Collision::Ask);
+            let id = self.queue.accept(Transfer::down(
+                bucket.clone(),
+                key.clone(),
+                directory.clone(),
+                false,
+            ));
+            if let Some(act) = self.downloading.as_mut() {
+                act.members.insert(id);
+            }
+            self.start_download(
+                Some(id),
+                Transfer::down(bucket.clone(), key, directory, false),
+                answer,
+                cx,
+            );
+        }
+        cx.notify();
+    }
+
     pub(crate) fn open_row(&mut self, index: usize, cx: &mut Context<Self>) {
         let (Some(location), Some(key)) = (self.location().cloned(), self.object_key_at(index, cx))
         else {
@@ -2296,6 +2587,9 @@ impl CaixonhoApp {
         cx: &mut Context<Self>,
     ) -> bool {
         let mut sent = false;
+        // Set when a collision lands on a transfer whose act was already
+        // answered; acted on below, once the queue is no longer borrowed.
+        let mut answered: Option<caixonho_core::transfer::Collision> = None;
         // Set by a finished download that was asked to open, and acted on
         // after the borrow ends.
         let mut opened: Option<std::path::PathBuf> = None;
@@ -2346,7 +2640,18 @@ impl CaixonhoApp {
                         opened = opens_at(transfer, &name);
                         TransferPhase::Finished { name, mapped }
                     }
-                    DownloadOutcome::NameTaken { name } => TransferPhase::NameTaken { name },
+                    DownloadOutcome::NameTaken { name } => {
+                        // If the act this belongs to has already been
+                        // answered "for the rest", this is one of the rest —
+                        // asking again would be asking a question the user
+                        // has answered (`XONHO-0034`).
+                        answered = self
+                            .downloading
+                            .as_ref()
+                            .filter(|act| act.members.contains(&id))
+                            .and_then(|act| act.answer);
+                        TransferPhase::NameTaken { name }
+                    }
                     DownloadOutcome::Cancelled => TransferPhase::Cancelled,
                     DownloadOutcome::Failed(error) => TransferPhase::Failed(error),
                 };
@@ -2366,12 +2671,75 @@ impl CaixonhoApp {
         if let Some(path) = opened {
             cx.open_with_system(&path);
         }
+        if let Some(collision) = answered {
+            self.reissue_download(id, collision, cx);
+        }
         cx.notify();
         sent
     }
 
     /// Answer the existing-file question by starting over with the answer.
     fn answer_collision(
+        &mut self,
+        id: TransferId,
+        collision: caixonho_core::transfer::Collision,
+        cx: &mut Context<Self>,
+    ) {
+        self.answer_collision_maybe_for_the_act(id, collision, false, cx);
+    }
+
+    /// Answer one collision, and optionally let it stand for the rest of the
+    /// act that transfer belongs to (`XONHO-0034`).
+    ///
+    /// `XONHO-0028` forbids an answer deciding **another** transfer, and that
+    /// still holds: the answer reaches the remaining members of *this act* and
+    /// nothing else. Two hundred files fetched by one gesture are one thing
+    /// the user had in mind; a transfer they started separately is not.
+    ///
+    /// The answer does not outlive the act. `end_location` drops the act, and
+    /// a later download asks again.
+    fn answer_collision_maybe_for_the_act(
+        &mut self,
+        id: TransferId,
+        collision: caixonho_core::transfer::Collision,
+        for_the_rest: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if for_the_rest
+            && let Some(act) = self.downloading.as_mut()
+            && act.members.contains(&id)
+        {
+            act.answer = Some(collision);
+        }
+        // Every member already waiting on its own question takes the answer
+        // too — the user said "the rest", and a file that asked first is not
+        // a reason to ask again.
+        if for_the_rest {
+            let waiting: Vec<TransferId> = self
+                .downloading
+                .as_ref()
+                .map(|act| {
+                    self.queue
+                        .items()
+                        .iter()
+                        .filter(|item| {
+                            item.id != id
+                                && act.members.contains(&item.id)
+                                && matches!(item.payload.phase, TransferPhase::NameTaken { .. })
+                        })
+                        .map(|item| item.id)
+                        .collect()
+                })
+                .unwrap_or_default();
+            for other in waiting {
+                self.reissue_download(other, collision, cx);
+            }
+        }
+        self.reissue_download(id, collision, cx);
+    }
+
+    /// Send one transfer again under an answered collision.
+    fn reissue_download(
         &mut self,
         id: TransferId,
         collision: caixonho_core::transfer::Collision,
@@ -2417,6 +2785,11 @@ impl CaixonhoApp {
         // leaving the location takes it along (`XONHO-0021`) — and takes the
         // deletes it armed, which is the half `XONHO-0030` added.
         self.forget_deletion();
+        // The same for a download act (`XONHO-0034`): its destination and its
+        // collision answer were chosen for a place the user has left. The
+        // transfers it started are the queue's and run to their own end; what
+        // ends here is the answer's authority over them.
+        self.downloading = None;
         self.preview = None;
         // A destination is a key at a location; leaving takes it along
         // (`XONHO-0026`), exactly as the deletion strip goes.
@@ -3550,6 +3923,19 @@ impl CaixonhoApp {
                             // opens the confirmation — nothing deletes here.
                             div()
                                 .debug_selector(|| "delete-ticked-action".into())
+                                .child(
+                                    // Fetching is not destructive, so this one
+                                    // is plain rather than danger — and it sits
+                                    // before the delete, because a strip whose
+                                    // first verb destroys is a strip that gets
+                                    // misclicked.
+                                    Button::new("download-ticked-action")
+                                        .label(format!("Download {ticked}…"))
+                                        .ghost()
+                                        .on_click(cx.listener(|app, _, window, cx| {
+                                            app.download_ticked(window, cx)
+                                        })),
+                                )
                                 .child(
                                     // Ghost, so **flat** — and deliberately:
                                     // this one opens the question, and the
@@ -5388,6 +5774,150 @@ mod tests {
             "the revision belongs beside the version, in parentheses; it \
              showed {shown:?}"
         );
+    }
+
+    /// An act in flight, with `count` members already queued, so the answer
+    /// rules can be exercised without a service.
+    fn downloading_with(app: &mut CaixonhoApp, count: usize) -> Vec<TransferId> {
+        let mut members = std::collections::HashSet::new();
+        let mut ids = Vec::new();
+        for n in 0..count {
+            let id = app.queue.accept(Transfer::down(
+                "reports".into(),
+                format!("daily/{n}.csv"),
+                std::env::temp_dir(),
+                false,
+            ));
+            app.queue.settled(id, Standing::Running);
+            members.insert(id);
+            ids.push(id);
+        }
+        app.downloading = Some(Downloading {
+            connection: app.outcome.active(),
+            bucket: "reports".into(),
+            under: CorePrefix::root(),
+            destination: std::env::temp_dir(),
+            answer: None,
+            members,
+            phase: DownloadPhase::Sending,
+        });
+        ids
+    }
+
+    #[gpui::test]
+    fn an_answer_for_the_rest_settles_the_acts_other_waiting_members(cx: &mut TestAppContext) {
+        // The decision `XONHO-0034` records: two hundred files fetched by one
+        // gesture are one thing the user had in mind, and asking two hundred
+        // times is a question nobody finishes answering.
+        let (app, cx) = looking_at(cx, "reports");
+        app.update(cx, |app, cx| {
+            let ids = downloading_with(app, 3);
+            for id in &ids {
+                if let Some(transfer) = app.queue.payload_mut(*id) {
+                    transfer.phase = TransferPhase::NameTaken {
+                        name: "x.csv".into(),
+                    };
+                }
+            }
+            app.answer_collision_maybe_for_the_act(
+                ids[0],
+                caixonho_core::transfer::Collision::KeepBoth,
+                true,
+                cx,
+            );
+            for id in &ids {
+                let phase = &app.queue.payload_mut(*id).expect("still queued").phase;
+                assert!(
+                    matches!(phase, TransferPhase::Running),
+                    "every member of the act was answered, including {id:?}"
+                );
+            }
+        });
+    }
+
+    #[gpui::test]
+    fn an_answer_for_the_rest_leaves_a_transfer_outside_the_act_asking(cx: &mut TestAppContext) {
+        // `XONHO-0028`'s rule, still standing: an answer may not decide a
+        // transfer the user did not have in mind.
+        let (app, cx) = looking_at(cx, "reports");
+        app.update(cx, |app, cx| {
+            let ids = downloading_with(app, 2);
+            let stranger = app.queue.accept(an_upload(TransferPhase::NameTaken {
+                name: "elsewhere.csv".into(),
+            }));
+            app.queue.settled(stranger, Standing::Asking);
+            for id in &ids {
+                if let Some(transfer) = app.queue.payload_mut(*id) {
+                    transfer.phase = TransferPhase::NameTaken {
+                        name: "x.csv".into(),
+                    };
+                }
+            }
+            app.answer_collision_maybe_for_the_act(
+                ids[0],
+                caixonho_core::transfer::Collision::Replace,
+                true,
+                cx,
+            );
+            let phase = &app.queue.payload_mut(stranger).expect("still queued").phase;
+            assert!(
+                matches!(phase, TransferPhase::NameTaken { .. }),
+                "a transfer outside the act is still waiting for its own answer"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn an_answer_does_not_outlive_the_act_it_was_given_in(cx: &mut TestAppContext) {
+        // Leaving the location ends the act, so a later download asks again.
+        // This is `XONHO-0019`'s defect in a new place: state that belongs to
+        // where the user was standing must not follow them.
+        let (app, cx) = looking_at(cx, "reports");
+        app.update(cx, |app, cx| {
+            let ids = downloading_with(app, 1);
+            app.answer_collision_maybe_for_the_act(
+                ids[0],
+                caixonho_core::transfer::Collision::Replace,
+                true,
+                cx,
+            );
+            assert!(
+                app.downloading.as_ref().expect("held").answer.is_some(),
+                "the answer stands while the act does"
+            );
+            app.end_location(cx);
+            assert!(
+                app.downloading.is_none(),
+                "and ends with it, so the next download asks"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn a_single_answer_settles_only_the_one_it_was_asked_about(cx: &mut TestAppContext) {
+        // The default is unchanged: without "for the rest", one answer is one
+        // answer.
+        let (app, cx) = looking_at(cx, "reports");
+        app.update(cx, |app, cx| {
+            let ids = downloading_with(app, 2);
+            for id in &ids {
+                if let Some(transfer) = app.queue.payload_mut(*id) {
+                    transfer.phase = TransferPhase::NameTaken {
+                        name: "x.csv".into(),
+                    };
+                }
+            }
+            app.answer_collision(ids[0], caixonho_core::transfer::Collision::KeepBoth, cx);
+            let second = &app.queue.payload_mut(ids[1]).expect("still queued").phase;
+            assert!(
+                matches!(second, TransferPhase::NameTaken { .. }),
+                "the one nobody answered is still asking"
+            );
+            assert!(
+                app.downloading.as_ref().expect("held").answer.is_none(),
+                "and the act carries no standing answer"
+            );
+        });
     }
 
     /// A window over two connections, with no profile chosen and no bucket
