@@ -235,8 +235,24 @@
     here. Checking it meant temporarily swapping the gate and **running** the
     lint, not reading the code and deciding it was fine.
 
-- [ ] 5.2 CI green on both targets, run id recorded here [dispatch: main]
+- [x] 5.2 CI green on both targets, run id recorded here [dispatch: main]
   - Verification: `gh run list --limit 1 --repo vunm-io/caixonho`
+  - **Green on both targets: run 34110596012** — rustfmt, dependency audit,
+    `build (macos-latest)`, `build (windows-latest)`, all success. PR
+    [#2](https://github.com/vunm-io/caixonho/pull/2).
+  - **The first run, 34109206677, was red on Windows, and it is the more useful
+    of the two.** macOS green, Windows red on the subtree flow test. It was not
+    the change: seeding writes a key straight to disk, so NTFS turned
+    `daily/12:30.log` into the file `daily\12` with an alternate data stream
+    named `30.log`, the listing returned `daily/12`, and the download of that
+    key was correct. A harness proving something else while passing on the
+    machine the test was written on. Fixed at the harness — `Service` refuses
+    such a key on every platform, the exclusion is in its module docs with a
+    test named for it, and the flow test seeds `%` instead, which every host
+    keeps and which the scheme's injectivity rests on.
+  - This is the second time CI has been the only thing that could have caught a
+    Windows-only fault (the first was `*.localhost` in `XONHO-0031`). Both were
+    invisible on macOS by construction.
 
 - [x] 5.3 Say what it still does not do [dispatch: main]
   - Paths: `docs/requirements-status.md`, `docs/roadmap.md`
