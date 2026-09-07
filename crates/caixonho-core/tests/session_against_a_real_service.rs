@@ -178,6 +178,50 @@ async fn a_delete_removes_the_object_from_the_service() {
 }
 
 #[tokio::test]
+async fn a_walk_refuses_past_the_bound_it_is_given_and_gathers_past_none() {
+    // `XONHO-0034`. The 5,000 ceiling exists because deleting a prefix is
+    // unbounded and irreversible; a download is neither, so the bound had to
+    // become the caller's rather than the walk's.
+    //
+    // Eleven objects and a bound of ten, rather than 5,001 and the real
+    // constant: what is under test is that the caller's number is honoured and
+    // that its absence means no limit. Seeding five thousand objects to prove
+    // arithmetic about five thousand would add seconds to every run and prove
+    // nothing extra.
+    let service = Service::start().await;
+    service.with_bucket("reports");
+    for n in 0..11 {
+        service.with_object("reports", &format!("many/{n:03}.csv"), b"x");
+    }
+    let connected = Connected::to(&service).await;
+
+    let bounded = Connected::settled(|deliver| {
+        connected
+            .session
+            .spawn_walk_under(at("many/"), Some(10), deliver);
+    })
+    .await;
+    match bounded {
+        Tally::TooMany { at_least } => assert!(
+            at_least > 10,
+            "the refusal names what it saw, and it is past the bound: {at_least}"
+        ),
+        other => panic!("expected TooMany, got {other:?}"),
+    }
+
+    let unbounded = Connected::settled(|deliver| {
+        connected
+            .session
+            .spawn_walk_under(at("many/"), None, deliver);
+    })
+    .await;
+    match unbounded {
+        Tally::All(keys) => assert_eq!(keys.len(), 11, "every object, no ceiling"),
+        other => panic!("expected All, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn a_folder_is_walked_to_its_end_and_the_count_is_what_a_delete_removes() {
     // `XONHO-0030`'s count, against a real service. The number and the keys
     // come from one pass on purpose — two passes over a live bucket can
@@ -192,7 +236,11 @@ async fn a_folder_is_walked_to_its_end_and_the_count_is_what_a_delete_removes() 
     let connected = Connected::to(&service).await;
 
     let tally = Connected::settled(|deliver| {
-        connected.session.spawn_walk_under(at("daily/"), deliver);
+        connected.session.spawn_walk_under(
+            at("daily/"),
+            Some(caixonho_core::session::MOST_KEYS_GATHERED),
+            deliver,
+        );
     })
     .await;
 
@@ -218,7 +266,11 @@ async fn a_folder_is_walked_to_its_end_and_the_count_is_what_a_delete_removes() 
     }
 
     let left = Connected::settled(|deliver| {
-        connected.session.spawn_walk_under(at("daily/"), deliver);
+        connected.session.spawn_walk_under(
+            at("daily/"),
+            Some(caixonho_core::session::MOST_KEYS_GATHERED),
+            deliver,
+        );
     })
     .await;
     match left {
@@ -373,4 +425,29 @@ async fn this_service_refuses_nothing_so_denials_cannot_be_proven_here() {
              permission, so denials can be tested here now"
         );
     }
+}
+
+#[tokio::test]
+#[should_panic(expected = "`daily/12:30.log` holds `:`")]
+async fn a_key_a_filesystem_reserves_cannot_be_seeded_here() {
+    // `s3s-fs` is a filesystem, so a key is a path, and seeding writes it
+    // straight to disk. Any key this service can hold is therefore a filename
+    // the host accepts — which quietly excludes exactly the keys `ADR-0004`'s
+    // scheme exists for.
+    //
+    // On Windows it is worse than an error. NTFS reads `:` as the separator
+    // before an alternate data stream, so writing `daily/12:30.log` creates
+    // the file `daily\12` carrying a stream named `30.log`: the write
+    // succeeds, the listing returns `daily/12`, and a download of it is
+    // correct — of the wrong key. It cost CI run 34109206677 to find, because
+    // seeding on macOS accepts the colon and the same test proves nothing on
+    // the two targets.
+    //
+    // So the refusal is on every platform rather than where the character
+    // happens to be reserved: a harness that accepts a key on the machine the
+    // test is written on and mis-stores it on the machine CI runs is a trap,
+    // and the point of failing here is to fail on the writer's own machine.
+    let service = Service::start().await;
+    service.with_bucket("reports");
+    service.with_object("reports", "daily/12:30.log", b"colon\n");
 }

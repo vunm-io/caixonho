@@ -89,6 +89,62 @@ asking for the first N KB instead of the whole object.
 > here because this section reads as a future plan, and the two-directions
 > lesson in the header is about exactly this sentence going stale.
 
+### Two different buckets, one name in the rail (2026-09-07)
+
+Reported by the owner from a live account, with a screenshot: the sidebar's
+**Buckets** group showed `vietcap-bucket-qc` twice, and nothing on either row
+said which was which.
+
+**It is deliberate code, not a layout accident**, which is why it will not fix
+itself. `bucket_group` (`app.rs:3517`) strips a directory bucket's zone suffix
+on purpose:
+
+```rust
+let label = match (kind, split_zonal_name(&name)) {
+    (BucketKind::Directory, Some((chosen, _))) => chosen.to_owned(),
+    _ => name.clone(),
+};
+```
+
+The reasoning recorded beside it is sound as far as it goes — in a 220 px rail
+the zone is the half that costs the most width and carries the least, and left
+in the item's suffix slot it took priority over the label and shrank it to
+three letters. What it did not consider is the case the owner actually has:
+**a general purpose bucket whose name is exactly the chosen half of a
+directory bucket's**. `vietcap-bucket-qc` and
+`vietcap-bucket-qc--usw2-az1--x-s3` collapse onto the same string, and
+`BucketKind` — which the code is already holding, one line above — is not
+drawn at all. Both rows get `IconName::Folder`.
+
+So there are two defects stacked, and they need separating:
+
+- **Ambiguity.** Two buckets, one label. This one is a correctness defect: a
+  click goes to the right bucket (`name` is captured whole in the listener),
+  but the user cannot tell which row is which before clicking.
+- **Illegibility.** Even alone, a directory bucket's kind is invisible in the
+  rail. The table has a column for it; the rail has nothing.
+
+Three shapes, and the width constraint is real in all of them:
+
+- **Draw the kind, keep the short label.** A different icon, or a small
+  `Directory` mark, for `BucketKind::Directory`. Cheapest, and it resolves the
+  ambiguity only because the *pair* differ in kind — two directory buckets
+  sharing a chosen half would still collide.
+- **Disambiguate only on collision.** Keep the short label when it is unique
+  among the shown names, and fall back to the full name when it is not. Right
+  for the reported case, and the label of a given bucket then depends on what
+  else is on screen — which is a surprising property to introduce.
+- **Stop stripping, and let it truncate from the left.** The zone suffix is
+  where the information is, so an ellipsis at the *start* keeps the
+  distinguishing end. Needs a text primitive the rail does not have today.
+
+Worth checking a fourth thing before choosing: whether `shown_names` can
+return the same string twice at all in the general/general case, in which case
+the ambiguity is broader than directory buckets.
+
+**Not issued.** The owner approved fixing it on 2026-09-07; it needs a change
+number of its own and did not get one while `XONHO-0034` was open.
+
 ### A declined prompt is a choice, not a failure (2026-08-25)
 
 The owner, on meeting it for the fourth time: the panel is an eyesore. It

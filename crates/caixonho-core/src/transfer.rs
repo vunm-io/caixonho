@@ -12,7 +12,7 @@
 /// overlong) and a deterministic suffix derived from the full key was added.
 /// `object-transfer` spec: every substitution or collision is reported —
 /// this enum is the report's raw material.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum MappingOutcome {
     /// The key's final segment is usable as-is on every shipped platform.
     Unchanged,
@@ -21,6 +21,18 @@ pub enum MappingOutcome {
     /// A deterministic suffix was appended (implies the name also differs
     /// from the raw segment in shape, whether or not bytes were encoded).
     Suffixed,
+}
+
+/// A key's local **path** below the prefix an act began at, and the strongest
+/// thing the mapping had to do to any of its segments (`XONHO-0034`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MappedPath {
+    /// Relative, always — it is joined under the destination the user chose.
+    pub path: std::path::PathBuf,
+    /// The worst outcome across the segments. The user is being told something
+    /// was done to this object, and the strongest thing done is the honest
+    /// headline.
+    pub how: MappingOutcome,
 }
 
 /// A key's local name, together with what it took to produce it.
@@ -56,7 +68,84 @@ pub struct Mapped {
 /// No `cfg` anywhere: the platform question was decided once, above.
 pub fn local_name(key: &str) -> Mapped {
     let segment = key.rsplit('/').next().unwrap_or("");
+    let (name, how) = map_segment(segment, key);
+    Mapped { name, how }
+}
 
+/// A key's relative path below `under`, and what the mapping cost
+/// (`XONHO-0034`).
+///
+/// `ADR-0004` fixed a scheme for a key's **final** segment. This applies the
+/// identical scheme to **every** segment below `under`, because a filesystem
+/// refuses a directory name for the same reasons it refuses a file name, and
+/// the ADR's own words are "one scheme on every platform".
+///
+/// **What a path resolves that a name could not.** The ADR names a collision
+/// it deliberately leaves to the user — two keys whose final segments agree,
+/// `a/x.txt` against `b/x.txt`. Under a path they no longer share a directory,
+/// so they no longer contend for one name.
+///
+/// **What a broken *middle* segment does**, which the ADR never had to answer:
+/// exactly what a broken last one does. `.` and `..` have their trailing dot
+/// encoded before anything else looks at them, so a key may *name* a parent
+/// directory and can never *be* one — the path this returns is relative and
+/// carries no parent component, whatever the key said.
+///
+/// `under` is the prefix the act began at; what remains below it is the path.
+/// A key that does not start with `under` is mapped whole, because a path
+/// relative to somewhere the object does not live would be a guess.
+pub fn local_path(key: &str, under: &str) -> MappedPath {
+    let below = key.strip_prefix(under).unwrap_or(key);
+    let mut path = std::path::PathBuf::new();
+    let mut worst = MappingOutcome::Unchanged;
+
+    let segments: Vec<&str> = below.split('/').collect();
+    for (i, segment) in segments.iter().enumerate() {
+        // A trailing separator leaves a final empty segment: that is the
+        // folder marker itself, not an object beneath it, and it has no name
+        // to write. An empty segment anywhere else is a real level and takes
+        // the scheme's suffix like any other unusable one.
+        if segment.is_empty() && i + 1 == segments.len() {
+            continue;
+        }
+        let (name, how) = map_segment(segment, key);
+        worst = worst.max(how);
+        path.push(name);
+    }
+
+    MappedPath { path, how: worst }
+}
+
+/// Whether `candidate` sits inside `root` (`XONHO-0034`).
+///
+/// `local_path` returns a relative path carrying no parent component, so a key
+/// cannot climb out of the destination. This runs anyway, on the joined result
+/// the writer will actually open, because "believed impossible" is how
+/// directory traversal ships — and the cost is one comparison per object.
+///
+/// Compared by components rather than by string prefix: `/tmp/a` is not inside
+/// `/tmp/ab`, and a `starts_with` on the text would say it is.
+pub fn under(root: &std::path::Path, candidate: &std::path::Path) -> bool {
+    let mut theirs = candidate.components();
+    for ours in root.components() {
+        match theirs.next() {
+            Some(mine) if mine == ours => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// One segment through `ADR-0004`'s rules, with `key` supplying the suffix.
+///
+/// Extracted from `local_name` when `local_path` needed the same rules for a
+/// directory name (`XONHO-0034`) — shared rather than copied, because two
+/// copies of this would drift and the ADR's promise is *one* scheme.
+///
+/// The suffix hashes the **whole key**, never the segment, so two segments
+/// arriving here identical from different keys still part company. That is the
+/// property the ADR's injectivity rests on, and the reason this takes both.
+fn map_segment(segment: &str, key: &str) -> (String, MappingOutcome) {
     let mut name = String::with_capacity(segment.len());
     let mut substituted = false;
     let bytes = segment.as_bytes();
@@ -88,14 +177,14 @@ pub fn local_name(key: &str) -> Mapped {
     let overlong = name.len() > MAX_NAME_BYTES;
 
     if !(empty || reserved || overlong) {
-        return Mapped {
+        return (
             name,
-            how: if substituted {
+            if substituted {
                 MappingOutcome::Substituted
             } else {
                 MappingOutcome::Unchanged
             },
-        };
+        );
     }
 
     // The suffix carries what the segment alone cannot. Derived from the
@@ -113,10 +202,7 @@ pub fn local_name(key: &str) -> Mapped {
     if kept.is_empty() {
         kept.push_str("object");
     }
-    Mapped {
-        name: format!("{kept}{suffix}"),
-        how: MappingOutcome::Suffixed,
-    }
+    (format!("{kept}{suffix}"), MappingOutcome::Suffixed)
 }
 
 /// The longest name the scheme will produce, in bytes.
@@ -616,6 +702,157 @@ mod tests {
     //! losslessly in effect" — the mapping half. The on-disk half (existing
     //! files, case-insensitive volumes) lives with the writer, which is the
     //! only place that can see the destination.
+    #[test]
+    fn a_key_below_the_prefix_keeps_its_depth() {
+        let mapped = local_path("daily/monday.csv", "");
+        assert_eq!(mapped.path, std::path::Path::new("daily/monday.csv"));
+        assert_eq!(mapped.how, MappingOutcome::Unchanged);
+    }
+
+    #[test]
+    fn the_prefix_the_act_began_at_is_not_part_of_the_path() {
+        // Downloading `daily/` while standing in it writes `monday.csv`, not
+        // `daily/monday.csv` — the destination the user chose is where
+        // `daily/` already is.
+        let mapped = local_path("daily/monday.csv", "daily/");
+        assert_eq!(mapped.path, std::path::Path::new("monday.csv"));
+    }
+
+    #[test]
+    fn every_segment_is_mapped_not_only_the_last() {
+        // `:` is refused on Windows in a directory name exactly as in a file
+        // name, and ADR-0004 says one scheme everywhere.
+        let mapped = local_path("12:30/notes.txt", "");
+        assert_eq!(mapped.path, std::path::Path::new("12%3A30/notes.txt"));
+        assert_eq!(mapped.how, MappingOutcome::Substituted);
+    }
+
+    #[test]
+    fn the_reported_outcome_is_the_worst_across_segments() {
+        // One substituted segment and one suffixed: the user is told the
+        // strongest thing that was done, not the first.
+        let mapped = local_path("12:30//notes.txt", "");
+        assert_eq!(mapped.how, MappingOutcome::Suffixed);
+    }
+
+    #[test]
+    fn a_middle_segment_that_would_climb_becomes_an_ordinary_name() {
+        // The case ADR-0004 never had. `..` must become a directory, never a
+        // movement — checked by the path having its full depth and no
+        // component that is a parent reference.
+        let mapped = local_path("a/../b/x.txt", "");
+        assert_eq!(mapped.path.components().count(), 4, "depth is kept");
+        assert!(
+            !mapped
+                .path
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir)),
+            "no component may be a parent reference: {:?}",
+            mapped.path
+        );
+    }
+
+    #[test]
+    fn an_empty_middle_segment_takes_the_deterministic_suffix() {
+        let mapped = local_path("a//b.txt", "");
+        assert_eq!(mapped.how, MappingOutcome::Suffixed);
+        assert_eq!(mapped.path.components().count(), 3);
+    }
+
+    #[test]
+    fn a_reserved_device_name_cannot_be_a_directory_either() {
+        let mapped = local_path("con/notes.txt", "");
+        let first = mapped
+            .path
+            .components()
+            .next()
+            .expect("a first component")
+            .as_os_str()
+            .to_string_lossy()
+            .into_owned();
+        assert_ne!(first.to_ascii_lowercase(), "con");
+        assert_eq!(mapped.how, MappingOutcome::Suffixed);
+    }
+
+    #[test]
+    fn two_distinct_keys_never_produce_one_path() {
+        // ADR-0004's teeth, widened from a name to a path. The cases are the
+        // ones the scheme is built to keep apart: percent-encoding meeting a
+        // literal percent, a refused byte meeting its encoding, and two
+        // prefixes whose last segments agree.
+        // Object keys only. A folder marker — a key ending in `/` — is
+        // deliberately absent: `a/x.txt/` names the *directory* `a/x.txt`,
+        // and no mapping can keep that apart from the object `a/x.txt`,
+        // because a filesystem cannot hold a file and a directory of one
+        // name. That conflict is the destination's to report, which is where
+        // `ADR-0004` already routes the collisions a pure function cannot
+        // see. Asserting otherwise would be asserting against the filesystem.
+        let keys = [
+            "a/x.txt",
+            "b/x.txt",
+            "12:30.log",
+            "12%3A30.log",
+            "12%253A30.log",
+            "a//x.txt",
+            "con/x.txt",
+            "a/con/x.txt",
+            "a/./x.txt",
+            "a/../x.txt",
+            "A/x.txt",
+        ];
+        let mut seen: std::collections::HashMap<String, &str> = std::collections::HashMap::new();
+        for key in keys {
+            let path = local_path(key, "").path.to_string_lossy().into_owned();
+            if let Some(other) = seen.insert(path.clone(), key) {
+                panic!("`{key}` and `{other}` both map to `{path}`");
+            }
+        }
+    }
+
+    #[test]
+    fn a_folder_marker_names_the_directory_it_stands_for() {
+        // A key ending in `/` is a zero-byte marker saying a folder exists.
+        // It has no content to write, so what it maps to is the directory
+        // itself — the caller creates that rather than writing a file into it.
+        let mapped = local_path("a/empty/", "");
+        assert_eq!(mapped.path, std::path::Path::new("a/empty"));
+    }
+
+    #[test]
+    fn a_destination_refuses_a_path_that_would_leave_it() {
+        // The mapping is believed to make escape impossible; this is the
+        // assertion that runs anyway, because "believed impossible" is how
+        // directory traversal ships. It is checked on the joined result, which
+        // is the only thing the writer actually opens.
+        let root = std::path::Path::new("/tmp/caixonho-under");
+        assert!(under(root, &root.join("daily").join("monday.csv")));
+        assert!(under(root, root));
+        assert!(!under(root, std::path::Path::new("/tmp/elsewhere/x.csv")));
+        assert!(!under(
+            root,
+            std::path::Path::new("/tmp/caixonho-under-2/x.csv")
+        ));
+    }
+
+    #[test]
+    fn a_path_never_leaves_the_destination() {
+        for key in ["../escape.txt", "a/../../escape.txt", "/abs.txt", "a/../b"] {
+            let mapped = local_path(key, "");
+            assert!(
+                mapped.path.is_relative(),
+                "`{key}` produced an absolute path: {:?}",
+                mapped.path
+            );
+            assert!(
+                !mapped
+                    .path
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir)),
+                "`{key}` produced a parent reference: {:?}",
+                mapped.path
+            );
+        }
+    }
 
     use super::*;
 
