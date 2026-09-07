@@ -37,6 +37,17 @@ targets — Windows is the primary daily driver and must never be the lagging po
 ## Conventions
 
 - Everything in the repo is **English**: code, comments, docs, commits, issues.
+  **Outward-facing strings especially** — release titles and bodies, tags,
+  commit subjects, PR and issue titles, `README.md`. A release title says what
+  a reader gains: *"the macOS build can be opened"*, not a name they have to
+  already know. Check the previous two or three titles before writing one; the
+  convention lives in the artefacts, not only in this line.
+- **A proper noun is not an exemption.** `Đất Nặn` is the real name of this
+  project's design system and has been in the repo since 2026-08-31, and it
+  still made a bad release title on 2026-09-07 — a stranger browsing a public
+  repository learns nothing from it. Before writing Vietnamese anywhere in this
+  repository, including reusing a name already present, **ask the owner**.
+  Existing precedent is not permission.
 - **This repository is public.** Its history is part of what it offers: commits
   are self-contained and reviewable, each message says what changed and why it
   changed rather than restating the diff, and history stays linear — no

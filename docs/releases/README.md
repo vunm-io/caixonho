@@ -22,6 +22,15 @@ shipped a macOS asset that could not be opened at all.
 4. Commit both together. The tag then names a commit whose declared version
    matches it.
 
+**The title is English and says what a reader gains.** Look at the previous
+two or three before writing one — `gh release view <tag> --json name` — because
+the convention lives in them: *"directory buckets, Local Zones, and a queue"*,
+*"acting on a row, and on more than one"*, *"the macOS build can be opened"*.
+`v0.1.0-beta.4` shipped as *"Đất Nặn, and a window that says what it is"* and
+was corrected within the hour: the design system's own name is a proper noun
+and belongs in the body, where a sentence can explain it, not in the one string
+a stranger reads first.
+
 ## Getting the assets
 
 **Take what CI built. Do not rename anything.** The files already carry their
