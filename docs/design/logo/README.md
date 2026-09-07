@@ -9,23 +9,36 @@ extending it, and the design system's owner has not passed on it.
 
 ## What it is, and what was rejected
 
-A lowercase **c** in clay: one stroke, round caps, tilted −5°, amber holding
-most of the arc and turning aqua at the lower terminal.
+A **small clay bucket**: a tapered body in amber, a chunky aqua rim, and a
+handle over it — one silhouette, tilted −5°, everything drawn thick enough to
+survive being 16 pixels wide.
 
-Three directions were drawn and measured at 16, 32, 64 and 256 px before
-choosing, because size is the only honest judge of a mark this small:
+A bucket because that is what the application is about. S3 calls its containers
+buckets, and `caixonho` is a small box; a mark that shows one says what the app
+does before any word does.
 
-| Direction | Why not |
+Two rounds, both settled by rendering at 16, 32, 64 and 256 px rather than by
+taste — size is the only honest judge of a mark this small.
+
+**Round one** asked what shape survives. A box with a separate lid became two
+smudges at 16 px, which is the finding
+`vunm-site/docs/design/logo/README.md` already recorded about three clay balls
+— rediscovered here instead of remembered. A box with an inset slot kept one
+silhouette but read as a card, and the slot closed below 32 px. A clay **c**
+won that round on legibility alone.
+
+**Round two** replaced the c with the bucket, and the question moved to the
+handle — the one part thin enough to disappear:
+
+| Variant | Result at 16 px |
 |---|---|
-| A box with a separate lid | Two pieces. At 16 px they stop being a box and become two smudges — which is the finding `vunm-site/docs/design/logo/README.md` already recorded about three clay balls, repeated here before it was remembered |
-| A box with an inset slot | One piece, but the silhouette is a rounded rectangle, which reads as a card or a button; the slot closes up below 32 px |
-| A clay **c** | Legible at 16 px, one connected shape, and the same reasoning that chose a **V** over clay balls for the personal mark |
+| Thick handle, no rim | Survives, but at full size the handle merges into the body and reads as a bag |
+| **Thin** handle | Nearly gone, and a thin line breaks a language where everything else is chunky |
+| Rim only, no handle | Safest, and reads as a cup rather than a bucket |
+| **Thick handle + rim** | Both survive; the silhouette stays a bucket at every size — chosen |
 
-A single-colour version was drawn first. The two-tone stroke was kept because it
-gives the mark identity without breaking it into pieces — the two-lumps-of-clay
-idea of the `VuNM` mark, expressed inside one shape rather than as two. The
-first gradient passed through a dull olive where amber met aqua; the stops now
-hold amber to 64% and turn over between 90% and 100%, which removes it.
+The body was then given a deeper taper and the handle more height, because the
+first bucket was square enough to read as a basket.
 
 ## Colours
 
