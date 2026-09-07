@@ -4,10 +4,22 @@
 > you running?* It is answered when a screenshot of the window contains the
 > answer, and when a file in someone's Downloads folder contains it too.
 >
-> **Routing.** All `[dispatch: main]`. Rust, a build script, a shell script and
-> a workflow — `agy` remains this workspace's second-priority executor and
-> earns nothing here, and GPUI work is not the "frontend" the routing rule
-> hands over.
+> **Routing.** Mostly `[dispatch: main]`, and three tasks are not — 4.1, 4.2
+> and 5.1 go to `agy`.
+>
+> The workspace rule says Rust and GPUI are not the frontend it hands over, and
+> `AGENTS.md` adds a measured reason for this repository in particular: its
+> standards for comments and prose make reviewing a delegated draft dearer than
+> writing one. The owner widened that boundary on 2026-09-07 ("giao task nhỏ
+> cho agy"), and these three are what the widening actually covers — a shell
+> script and a workflow, each fully specified here, none of them Rust and none
+> of them prose. **The dispatch prompt says not to write explanatory comments**:
+> the mechanism is delegable, the voice is not, and mixing them is how the
+> review cost comes back.
+>
+> Everything else stays: `build.rs`'s fallback semantics, the GPUI element, the
+> tests, the release-process note (English source is Claude's by the same
+> rule), and the close-out.
 
 ## 1. The source
 
@@ -65,7 +77,7 @@
 ## 4. The macOS bundle
 
 - [ ] 4.1 `Info.plist` derives, and the numeric field stays numeric
-      [dispatch: main]
+      [dispatch: external-ok]
   - Paths: `scripts/mac-app.sh`
   - Done criteria: version read with `cargo metadata` (not a `grep` of
     `Cargo.toml`, whose `version` line is not the only one);
@@ -76,7 +88,7 @@
   - Verification: `scripts/mac-app.sh --no-open` then
     `plutil -p target/Caixonho.app/Contents/Info.plist | grep -i version`
 
-- [ ] 4.2 A gate for the drift this change exists to end [dispatch: main]
+- [ ] 4.2 A gate for the drift this change exists to end [dispatch: external-ok]
   - Paths: `scripts/mac-app.sh`
   - Done criteria: the script fails if `CFBundleVersion` and the declared
     version disagree. The hardcoded `0.1.0` was wrong from the first release
@@ -87,7 +99,7 @@
 
 ## 5. What is downloaded says what it is
 
-- [ ] 5.1 CI names the artifacts with the version [dispatch: main]
+- [ ] 5.1 CI names the artifacts with the version [dispatch: external-ok]
   - Paths: `.github/workflows/ci.yml`
   - Done criteria: the macOS zip and the Windows exe are produced as
     `caixonho-<version>-macos-arm64.zip` and
