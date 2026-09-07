@@ -164,14 +164,26 @@
     an assertion that the edit applied, the test fails with its own words. An
     ablation without an assertion that it landed proves nothing and feels like
     proof, which is worse than not running one.
+  - **Ticked half a step early, corrected.** When first marked done the logic
+    and its tests existed and the *control* did not — there was no way for a
+    user to say "for the rest". The tick stood on work a person could not
+    reach. The checkbox now exists, offered only when more than one member is
+    still unsettled: a tick that decides one file decides nothing, and a
+    control that decides nothing is noise. The bucket table's `marked` rule,
+    applied to a question.
 
-- [ ] 3.5 The destination is asserted [dispatch: main]
+- [x] 3.5 The destination is asserted [dispatch: main]
   - Paths: `crates/caixonho-gui/src/app.rs` or `crates/caixonho-core/src/transfer.rs`
   - Done criteria: a path that would land outside the chosen directory fails
     the transfer with a stated cause rather than being written. The mapping is
     believed to make this impossible; the assertion is there because "believed
     impossible" is how directory traversal ships.
   - Verification: a test that feeds a key engineered to escape
+  - **Done, in core so both callers get it.** `transfer::under(root, candidate)`
+    compares **components**, not text: `/tmp/a` is not inside `/tmp/ab`, and a
+    `starts_with` on the string would say it is. Written test-first — the four
+    cases were named before the function existed. The act refuses the object
+    with `Error::Destination` rather than writing it.
 
 ## 4. Flows from the window
 

@@ -116,6 +116,26 @@ pub fn local_path(key: &str, under: &str) -> MappedPath {
     MappedPath { path, how: worst }
 }
 
+/// Whether `candidate` sits inside `root` (`XONHO-0034`).
+///
+/// `local_path` returns a relative path carrying no parent component, so a key
+/// cannot climb out of the destination. This runs anyway, on the joined result
+/// the writer will actually open, because "believed impossible" is how
+/// directory traversal ships — and the cost is one comparison per object.
+///
+/// Compared by components rather than by string prefix: `/tmp/a` is not inside
+/// `/tmp/ab`, and a `starts_with` on the text would say it is.
+pub fn under(root: &std::path::Path, candidate: &std::path::Path) -> bool {
+    let mut theirs = candidate.components();
+    for ours in root.components() {
+        match theirs.next() {
+            Some(mine) if mine == ours => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
 /// One segment through `ADR-0004`'s rules, with `key` supplying the suffix.
 ///
 /// Extracted from `local_name` when `local_path` needed the same rules for a
@@ -796,6 +816,22 @@ mod tests {
         // itself — the caller creates that rather than writing a file into it.
         let mapped = local_path("a/empty/", "");
         assert_eq!(mapped.path, std::path::Path::new("a/empty"));
+    }
+
+    #[test]
+    fn a_destination_refuses_a_path_that_would_leave_it() {
+        // The mapping is believed to make escape impossible; this is the
+        // assertion that runs anyway, because "believed impossible" is how
+        // directory traversal ships. It is checked on the joined result, which
+        // is the only thing the writer actually opens.
+        let root = std::path::Path::new("/tmp/caixonho-under");
+        assert!(under(root, &root.join("daily").join("monday.csv")));
+        assert!(under(root, root));
+        assert!(!under(root, std::path::Path::new("/tmp/elsewhere/x.csv")));
+        assert!(!under(
+            root,
+            std::path::Path::new("/tmp/caixonho-under-2/x.csv")
+        ));
     }
 
     #[test]
