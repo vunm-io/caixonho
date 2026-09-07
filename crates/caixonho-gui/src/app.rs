@@ -1960,6 +1960,9 @@ impl CaixonhoApp {
             let inbox = self.deletions.clone();
             let cancel = session.spawn_walk_under(
                 Location::at(location.bucket.clone(), prefix.clone()),
+                // A delete keeps the bound: unbounded and irreversible is the
+                // pair that needs one (`XONHO-0034` made it the caller's).
+                Some(caixonho_core::session::MOST_KEYS_GATHERED),
                 move |tally| {
                     let _ = inbox.send(DeleteEvent::Counted(tally));
                 },
