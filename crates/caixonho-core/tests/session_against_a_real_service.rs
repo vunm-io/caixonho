@@ -426,3 +426,28 @@ async fn this_service_refuses_nothing_so_denials_cannot_be_proven_here() {
         );
     }
 }
+
+#[tokio::test]
+#[should_panic(expected = "`daily/12:30.log` holds `:`")]
+async fn a_key_a_filesystem_reserves_cannot_be_seeded_here() {
+    // `s3s-fs` is a filesystem, so a key is a path, and seeding writes it
+    // straight to disk. Any key this service can hold is therefore a filename
+    // the host accepts — which quietly excludes exactly the keys `ADR-0004`'s
+    // scheme exists for.
+    //
+    // On Windows it is worse than an error. NTFS reads `:` as the separator
+    // before an alternate data stream, so writing `daily/12:30.log` creates
+    // the file `daily\12` carrying a stream named `30.log`: the write
+    // succeeds, the listing returns `daily/12`, and a download of it is
+    // correct — of the wrong key. It cost CI run 34109206677 to find, because
+    // seeding on macOS accepts the colon and the same test proves nothing on
+    // the two targets.
+    //
+    // So the refusal is on every platform rather than where the character
+    // happens to be reserved: a harness that accepts a key on the machine the
+    // test is written on and mis-stores it on the machine CI runs is a trap,
+    // and the point of failing here is to fail on the writer's own machine.
+    let service = Service::start().await;
+    service.with_bucket("reports");
+    service.with_object("reports", "daily/12:30.log", b"colon\n");
+}
