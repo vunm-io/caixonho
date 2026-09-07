@@ -812,8 +812,15 @@ impl Session {
     /// so, as [`Tally::TooMany`], which is deliberately not a number anybody
     /// may present as a total. Cancelling between pages is cooperative for
     /// [`Self::spawn_download`]'s reason: the task stays alive to log and
+    /// `most` is the caller's bound, not the walk's (`XONHO-0034`). Deleting a
+    /// prefix passes `Some(MOST_KEYS_GATHERED)` because an unbounded
+    /// irreversible act needs a bound; downloading one passes `None`, because
+    /// abandoning a download costs the bytes already fetched and nothing else.
+    /// A refusal names what it had seen when it stopped, which is at least one
+    /// past the bound rather than a total.
+    ///
     /// deliver.
-    pub fn spawn_walk_under<F>(&self, location: Location, deliver: F) -> Cancel
+    pub fn spawn_walk_under<F>(&self, location: Location, most: Option<usize>, deliver: F) -> Cancel
     where
         F: FnOnce(Tally) + Send + 'static,
     {
@@ -849,7 +856,7 @@ impl Session {
                 // takes the walk exactly to the bound has still been read in
                 // full, and stopping short of the token would call a complete
                 // answer incomplete.
-                if keys.len() > MOST_KEYS_GATHERED {
+                if most.is_some_and(|bound| keys.len() > bound) {
                     break Tally::TooMany {
                         at_least: keys.len(),
                     };
@@ -2190,6 +2197,7 @@ mod tests {
         let (tell, told) = tokio::sync::oneshot::channel();
         session.spawn_walk_under(
             Location::at("reports", crate::types::Prefix::parse(prefix)),
+            Some(MOST_KEYS_GATHERED),
             move |tally| {
                 let _ = tell.send(tally);
             },
@@ -2301,6 +2309,7 @@ mod tests {
         let (tell, told) = tokio::sync::oneshot::channel();
         let cancel = session.spawn_walk_under(
             Location::at("reports", crate::types::Prefix::parse("a/")),
+            Some(MOST_KEYS_GATHERED),
             move |tally| {
                 let _ = tell.send(tally);
             },

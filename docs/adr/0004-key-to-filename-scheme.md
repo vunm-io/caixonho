@@ -81,3 +81,7 @@ detected by the writer at the only place they are detectable.
   no-silent-merge property over a corpus dense in the characters the scheme
   touches. Changing the scheme is a breaking change to every existing
   download folder and gets a new ADR, not an edit to this one.
+- **Extended, not changed, by [ADR-0005](0005-key-to-path-when-a-folder-arrives.md)**
+  (`XONHO-0034`): the same per-segment rules applied to every segment, so a
+  downloaded folder arrives as a folder. `local_name` is unaffected and no
+  existing download folder moves.

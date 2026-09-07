@@ -61,7 +61,7 @@
     with `12%3A30.log` and `12:30.log` colliding — the exact pair the ADR's
     encoding exists to keep apart. Restored, green.
 
-- [ ] 1.4 Amend `ADR-0004` [dispatch: main]
+- [x] 1.4 Amend `ADR-0004` [dispatch: main]
   - Paths: `docs/adr/0004-key-to-filename-scheme.md`
   - Done criteria: an amendment section dated and signed to `XONHO-0034`,
     stating the unit moved from a filename to a relative path, what a broken
@@ -71,10 +71,19 @@
   - The original decision text is not rewritten. An ADR records what was
     decided when; an amendment records what changed and why.
   - Verification: the file, read against the original decision
+  - **Done differently, and the difference is the point: a new ADR, not an
+    amendment.** `ADR-0004` closes with *"Changing the scheme … gets a new ADR,
+    not an edit to this one."* This change does not alter the scheme —
+    `local_name` returns exactly what it returned and no existing download
+    folder moves — so an amendment was arguably within the rules. Deciding that
+    a document's own closing instruction does not apply to the person invoking
+    it is not a habit worth starting. `ADR-0005` records the path decision, the
+    middle-segment rule, and the marker finding; `ADR-0004` gains one line
+    pointing at it and keeps its decision text untouched.
 
 ## 2. The walk, without a ceiling
 
-- [ ] 2.1 A walk a download may use [dispatch: main]
+- [x] 2.1 A walk a download may use [dispatch: main]
   - Paths: `crates/caixonho-core/src/session.rs`
   - Done criteria: gathering every key under a prefix with no `TooMany`
     refusal, while `spawn_walk_under`'s existing behaviour — and the 5,000
@@ -83,13 +92,26 @@
     reason is recorded here.
   - Verification: `cargo test -p caixonho-core`, and the delete flow's existing
     `TooMany` test still passing
+  - **Done as a parameter, and the reason is at the call site.** `most:
+    Option<usize>` rather than a sibling function: one implementation, and a
+    caller now states its intent where it calls — `Some(MOST_KEYS_GATHERED)`
+    for a delete, `None` for a download. The doc says which and why. The
+    delete flow and both of `session.rs`'s own walk tests pass the ceiling, so
+    nothing about deleting moved.
 
-- [ ] 2.2 Prove it against a real service [dispatch: main]
+- [x] 2.2 Prove it against a real service [dispatch: main]
   - Paths: `crates/caixonho-core/tests/against_a_real_service.rs`
   - Done criteria: a prefix seeded past the ceiling is walked in full, against
     the `s3s-fs` service `XONHO-0031` starts. The pagination is the service's
     own, so this also proves the continuation token round-trips at that size.
   - Verification: the test
+  - **Done, and smaller than the task asked.** Eleven objects with a bound of
+    ten, not 5,001 with the constant: what is under test is that the caller's
+    number is honoured and that its absence means no limit. Seeding five
+    thousand objects to prove arithmetic about five thousand would add seconds
+    to every run and prove nothing extra — the reasoning is in the test.
+    `a_walk_refuses_past_the_bound_it_is_given_and_gathers_past_none`, against
+    the real service.
 
 ## 3. The act
 
