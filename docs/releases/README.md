@@ -85,5 +85,11 @@ log show --predicate 'subsystem == "com.apple.syspolicy"' --last 10m --style com
 ```
 
 Write in the notes the dialog you actually saw. Three sets of release notes
-described a dialog nobody had opened the asset to check, and all three were
-wrong about it.
+described a macOS dialog nobody had opened the asset to check, and all three
+were wrong about it.
+
+**And do the same on Windows**, which took one more round to learn: every set
+of notes up to `v0.1.0-beta.4` said SmartScreen needs *More info → Run anyway*.
+The asset's own dialog, seen on 2026-09-07, offers **Run anyway** directly.
+Both platforms, both times, the same mistake — a dialog copied from
+documentation instead of read off a screen.
