@@ -11,6 +11,7 @@ use gpui::{
 use gpui_component::{
     ActiveTheme, Icon, IconName, IndexPath, Side, TitleBar,
     button::{Button, ButtonVariants},
+    checkbox::Checkbox,
     h_flex,
     input::{Input, InputEvent, InputState},
     menu::PopupMenuItem,
@@ -338,6 +339,11 @@ struct Downloading {
     /// The transfers this act became. Membership is what stops an answer
     /// reaching a transfer the user did not have in mind.
     members: std::collections::HashSet<TransferId>,
+    /// Whether the user has ticked "for the rest" on the question in front of
+    /// them. Held on the act rather than on the question, because the question
+    /// is redrawn on every frame and a tick that survives a repaint has to
+    /// live somewhere that does not.
+    apply_to_rest: bool,
     phase: DownloadPhase,
 }
 
@@ -1539,6 +1545,7 @@ impl CaixonhoApp {
             destination,
             answer: None,
             members: std::collections::HashSet::new(),
+            apply_to_rest: false,
             phase: DownloadPhase::Sending,
         });
 
@@ -1638,6 +1645,26 @@ impl CaixonhoApp {
                 Some(parent) if !parent.as_os_str().is_empty() => destination.join(parent),
                 _ => destination.clone(),
             };
+            // The guard `ADR-0005` promises. The mapping is believed to make
+            // this impossible; it runs because "believed impossible" is how
+            // directory traversal ships, and it costs one comparison.
+            if !caixonho_core::transfer::under(&destination, &directory) {
+                self.enqueue_settled(Transfer {
+                    bucket: bucket.clone(),
+                    key,
+                    directory,
+                    then_open: false,
+                    direction: Direction::Down,
+                    source: None,
+                    bytes: 0,
+                    total: None,
+                    cancel: caixonho_core::transfer::Cancel::default(),
+                    phase: TransferPhase::Failed(Error::Destination {
+                        detail: "the mapped path would leave the chosen folder".into(),
+                    }),
+                });
+                continue;
+            }
             if let Err(error) = std::fs::create_dir_all(&directory) {
                 self.enqueue_settled(Transfer {
                     bucket: bucket.clone(),
@@ -2679,6 +2706,13 @@ impl CaixonhoApp {
     }
 
     /// Answer the existing-file question by starting over with the answer.
+    /// Answer one collision, and only that one.
+    ///
+    /// The default `XONHO-0028` set, and what every caller outside a download
+    /// act means. Only tests reach it directly now — the rendered buttons pass
+    /// the act's own tick — so it is gated rather than left looking like a
+    /// public entry point nobody calls.
+    #[cfg(test)]
     fn answer_collision(
         &mut self,
         id: TransferId,
@@ -5112,51 +5146,106 @@ impl CaixonhoApp {
                     ),
                 )
                 .into_any_element(),
-            TransferPhase::NameTaken { name } => h_flex()
-                .debug_selector(|| "transfer-name-taken".into())
-                .w_full()
-                .gap(space::TIGHT)
-                .items_center()
-                .child(
-                    div()
-                        .text_sm()
-                        .child(format!("`{name}` is already in that folder.")),
-                )
-                .child(div().flex_1())
-                .child(
-                    Button::new(("collision-replace", id.0 as usize))
-                        .label("Replace")
-                        .custom(crate::theme::quiet(cx))
-                        .on_click(cx.listener(move |app, _, _, cx| {
-                            app.answer_collision(
-                                id,
-                                caixonho_core::transfer::Collision::Replace,
-                                cx,
+            TransferPhase::NameTaken { name } => {
+                // Offered only when it would decide more than the question in
+                // front of the user: a tick that settles one file is a tick
+                // that means nothing, and a control that means nothing is
+                // noise (`XONHO-0034`, the `marked` rule from the bucket
+                // table applied to a question).
+                let rest = self
+                    .downloading
+                    .as_ref()
+                    .filter(|act| act.members.contains(&id))
+                    .map(|act| {
+                        (
+                            act.apply_to_rest,
+                            act.members
+                                .iter()
+                                .filter(|member| **member != id)
+                                .filter(|member| {
+                                    self.queue.standing(**member).is_some_and(|standing| {
+                                        !matches!(
+                                            standing,
+                                            Standing::Finished
+                                                | Standing::Failed
+                                                | Standing::Cancelled
+                                        )
+                                    })
+                                })
+                                .count(),
+                        )
+                    })
+                    .filter(|(_, left)| *left > 0);
+
+                h_flex()
+                    .debug_selector(|| "transfer-name-taken".into())
+                    .w_full()
+                    .gap(space::TIGHT)
+                    .items_center()
+                    .child(
+                        div()
+                            .text_sm()
+                            .child(format!("`{name}` is already in that folder.")),
+                    )
+                    .child(div().flex_1())
+                    .children(rest.map(|(checked, left)| {
+                        div()
+                            .debug_selector(|| "collision-for-the-rest".into())
+                            .child(
+                                Checkbox::new(("collision-for-the-rest", id.0 as usize))
+                                    .label(format!("and the other {left}"))
+                                    .checked(checked)
+                                    .on_click(cx.listener(move |app, _, _, cx| {
+                                        if let Some(act) = app.downloading.as_mut() {
+                                            act.apply_to_rest = !act.apply_to_rest;
+                                        }
+                                        cx.notify();
+                                    })),
                             )
-                        })),
-                )
-                .child(
-                    Button::new(("collision-keep-both", id.0 as usize))
-                        .label("Keep both")
-                        .custom(crate::theme::quiet(cx))
-                        .on_click(cx.listener(move |app, _, _, cx| {
-                            app.answer_collision(
-                                id,
-                                caixonho_core::transfer::Collision::KeepBoth,
-                                cx,
-                            )
-                        })),
-                )
-                .child(
-                    Button::new(("collision-abandon", id.0 as usize))
-                        .label("Cancel")
-                        .custom(crate::theme::quiet(cx))
-                        .on_click(cx.listener(move |app, _, _, cx| {
-                            app.queue.forget(id);
-                            cx.notify();
-                        })),
-                )
-                .into_any_element(),
+                    }))
+                    .child(
+                        Button::new(("collision-replace", id.0 as usize))
+                            .label("Replace")
+                            .custom(crate::theme::quiet(cx))
+                            .on_click(cx.listener(move |app, _, _, cx| {
+                                let for_the_rest = app.downloading.as_ref().is_some_and(|act| {
+                                    act.apply_to_rest && act.members.contains(&id)
+                                });
+                                app.answer_collision_maybe_for_the_act(
+                                    id,
+                                    caixonho_core::transfer::Collision::Replace,
+                                    for_the_rest,
+                                    cx,
+                                )
+                            })),
+                    )
+                    .child(
+                        Button::new(("collision-keep-both", id.0 as usize))
+                            .label("Keep both")
+                            .custom(crate::theme::quiet(cx))
+                            .on_click(cx.listener(move |app, _, _, cx| {
+                                let for_the_rest = app.downloading.as_ref().is_some_and(|act| {
+                                    act.apply_to_rest && act.members.contains(&id)
+                                });
+                                app.answer_collision_maybe_for_the_act(
+                                    id,
+                                    caixonho_core::transfer::Collision::KeepBoth,
+                                    for_the_rest,
+                                    cx,
+                                )
+                            })),
+                    )
+                    .child(
+                        Button::new(("collision-abandon", id.0 as usize))
+                            .label("Cancel")
+                            .custom(crate::theme::quiet(cx))
+                            .on_click(cx.listener(move |app, _, _, cx| {
+                                app.queue.forget(id);
+                                cx.notify();
+                            })),
+                    )
+                    .into_any_element()
+            }
             TransferPhase::Finished { name, mapped } => {
                 let said = match (transfer.then_open, mapped) {
                     // The opener's own failure is invisible to gpui on every
@@ -5799,6 +5888,7 @@ mod tests {
             destination: std::env::temp_dir(),
             answer: None,
             members,
+            apply_to_rest: false,
             phase: DownloadPhase::Sending,
         });
         ids
