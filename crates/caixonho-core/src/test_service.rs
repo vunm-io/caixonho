@@ -32,6 +32,15 @@
 //! - **An empty folder.** `s3s-fs` keeps a folder marker as a directory and
 //!   derives common prefixes from files alone, so a folder with nothing in it
 //!   is invisible to it and `XONHO-0024`'s own scenario cannot be shown here.
+//! - **A key holding a character a filesystem reserves.** Seeding writes a key
+//!   straight to disk, so a key here is a path here, and this service can only
+//!   hold keys the host keeps — which excludes exactly the keys `ADR-0004`'s
+//!   scheme exists for. On Windows it does not even fail: NTFS reads `:` as an
+//!   alternate data stream, so `daily/12:30.log` is stored as `daily\12` and
+//!   the listing returns that, quietly. `Service` now refuses such a key on
+//!   every platform rather than on the ones that reserve it, so the trap
+//!   springs on the writer's machine instead of on CI. The scheme itself is
+//!   proven where no filesystem is involved, in `transfer`'s own tests.
 //! - **Virtual-hosted addressing.** This tier is addressed by IP, so every
 //!   request it sends is path-style — and against real AWS the SDK sends
 //!   virtual-hosted, which is the shape production actually emits. What is
@@ -196,6 +205,7 @@ impl Service {
     /// would make every listing test depend on writes working — so a failure
     /// in one would show up as a failure in all of them.
     pub fn with_object(&self, bucket: &str, key: &str, bytes: &[u8]) -> &Self {
+        refuse_a_key_no_filesystem_would_keep(key);
         let path = self.root.path().join(bucket).join(key);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).expect("the key's parents");
@@ -212,12 +222,58 @@ impl Service {
     /// lets a test tell a delete that removed the object from one that only
     /// removed the row.
     pub fn holds(&self, bucket: &str, key: &str) -> bool {
+        refuse_a_key_no_filesystem_would_keep(key);
         self.root.path().join(bucket).join(key).is_file()
     }
 
     /// The bytes the service holds for `key`, or nothing if it holds no such key.
     pub fn bytes_of(&self, bucket: &str, key: &str) -> Option<Vec<u8>> {
+        refuse_a_key_no_filesystem_would_keep(key);
         std::fs::read(self.root.path().join(bucket).join(key)).ok()
+    }
+}
+
+/// Panic if `key` is one this harness would store as something else.
+///
+/// Seeding and reading back both go straight to disk — that is deliberate, so
+/// that a listing test does not depend on writes working — and the price is
+/// that a key here is a path here. A character the host reserves does not
+/// produce an error; it produces a **different object**, and every assertion
+/// downstream then measures the wrong thing.
+///
+/// Windows is the sharp case and the reason this is loud. NTFS reads `:` as
+/// the separator before an alternate data stream, so `daily/12:30.log` is
+/// written as the file `daily\12` carrying a stream named `30.log`: the write
+/// succeeds, the listing returns `daily/12`, and the application downloads
+/// that key perfectly. Nothing fails; the test simply proves something else.
+///
+/// The refusal is on **every** platform, not on the ones where the character
+/// is reserved. A harness that accepts a key on the machine the test is
+/// written on and mis-stores it on the machine CI runs is a trap, and this
+/// exists to spring it on the writer instead of on the run. `/` is the key
+/// separator and stays legal; `%` — the character `ADR-0004`'s scheme leans
+/// on — is legal everywhere and is what a test should reach for instead.
+fn refuse_a_key_no_filesystem_would_keep(key: &str) {
+    let refused =
+        |ch: char| matches!(ch, '<' | '>' | ':' | '"' | '\\' | '|' | '?' | '*') || ch.is_control();
+    if let Some(ch) = key.chars().find(|&ch| refused(ch)) {
+        panic!(
+            "`{key}` holds `{ch}`, which some filesystem this suite runs on \
+             reserves — seeding writes a key straight to disk, so this service \
+             would hold a different object and every assertion after it would \
+             measure the wrong one. `ADR-0004`'s scheme is proven by \
+             `transfer`'s own tests; a flow test wanting an encoded name \
+             should seed one every host keeps, such as `%`"
+        );
+    }
+    for segment in key.split('/') {
+        if segment.ends_with('.') || segment.ends_with(' ') {
+            panic!(
+                "`{key}` has a segment ending in a dot or a space, which \
+                 Windows drops silently — see the note above `{}`",
+                "refuse_a_key_no_filesystem_would_keep"
+            );
+        }
     }
 }
 

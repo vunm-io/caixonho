@@ -296,8 +296,22 @@
       **filesystem refusing a name the scheme thought acceptable** —
       case-insensitive volumes (two keys differing only in case become one
       file) and network mounts (SMB and NFS reject characters the scheme
-      encodes past, and impose their own length limits). The flow tests run on
-      the CI runners' own disks, which are the permissive case.
+      encodes past, and impose their own length limits).
+    - **CI then found the near half of this, at the other end.** The flow test
+      seeded a key holding `:` and the Windows runner failed: `s3s-fs` is a
+      filesystem, seeding writes a key straight to disk, and NTFS reads `:` as
+      the separator before an alternate data stream — so the object was stored
+      as `daily\12` with a stream named `30.log`, the listing returned
+      `daily/12`, and the application downloaded that key **correctly**.
+      Nothing was wrong with the change; the harness was proving something
+      else while passing on macOS. `Service` now refuses such a key on every
+      platform rather than on the ones that reserve it, the exclusion is
+      written into its module docs beside the four already there with a test
+      named for it, and the flow test seeds `%` instead — legal on both hosts,
+      and the character the scheme's injectivity actually rests on. Ablated:
+      stop encoding `%` and the flow test fails on the path it expects.
+    - What is still unverified is the *far* half: a filesystem refusing a name
+      the scheme produces. Both CI runners' disks are the permissive case.
     - **Windows path length.** A deep prefix plus a long destination can pass
       260 characters. Nothing in this change measures it, and the failure would
       arrive as a per-file error rather than as a refusal that explains itself.

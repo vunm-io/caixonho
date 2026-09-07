@@ -10484,7 +10484,7 @@ mod tests {
                 ("daily/tuesday.csv", b"tue\n"),
                 ("daily/deep/wednesday.csv", b"wed\n"),
                 ("daily/deep/deeper/thursday.csv", "năm\n".as_bytes()),
-                ("daily/12:30.log", b"colon\n"),
+                ("daily/50%.log", b"percent\n"),
             ];
             let (app, cx, live) = browsing(cx, "reports", |service| {
                 service.with_bucket("reports");
@@ -10529,10 +10529,22 @@ mod tests {
             // Standing inside `daily/` and fetching a subfolder of it is the
             // other case, and `local_path`'s own tests pin that one.
             //
-            // `12:30.log` arrives percent-encoded: `ADR-0004`'s scheme
-            // reaching a file inside a subtree, which is `ADR-0005`.
+            // `50%.log` arrives percent-encoded as `50%25.log`: `ADR-0004`'s
+            // scheme reaching a file inside a subtree, which is `ADR-0005`.
+            //
+            // `%` rather than a character Windows reserves, and the reason is
+            // the harness rather than the scheme. Seeding writes a key
+            // straight to disk, so this service can only hold keys the host
+            // keeps — and NTFS reads `:` as an alternate data stream, so
+            // seeding `daily/12:30.log` there stored `daily\12` and this test
+            // proved something else while passing on macOS (CI run
+            // 34109206677). `Service` now refuses such a key on every
+            // platform. `%` is legal on both hosts and is the character the
+            // scheme's injectivity actually rests on, so the encoding is
+            // still proven end to end here; the reserved characters are
+            // proven where no filesystem is involved, in `transfer`'s tests.
             for (key, bytes) in tree {
-                let expected = key.replace("12:30.log", "12%3A30.log");
+                let expected = key.replace("50%.log", "50%25.log");
                 let on_disk = into.path().join(&expected);
                 assert!(
                     on_disk.is_file(),
