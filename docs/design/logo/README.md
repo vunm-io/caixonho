@@ -9,36 +9,39 @@ extending it, and the design system's owner has not passed on it.
 
 ## What it is, and what was rejected
 
-A **small clay bucket**: a tapered body in amber, a chunky aqua rim, and a
-handle over it — one silhouette, tilted −5°, everything drawn thick enough to
-survive being 16 pixels wide.
+A **small clay bucket**, seen slightly from above: an amber body tapering to a
+rounded base, a rolled rim, an aqua opening, and a handle arcing over it.
+Tilted −4°, and every part drawn thick enough to survive being 16 pixels wide.
 
 A bucket because that is what the application is about. S3 calls its containers
-buckets, and `caixonho` is a small box; a mark that shows one says what the app
+buckets and `caixonho` is a small box; a mark that shows one says what the app
 does before any word does.
 
-Two rounds, both settled by rendering at 16, 32, 64 and 256 px rather than by
+Three rounds, each settled by rendering at 16, 32, 64 and 256 px rather than by
 taste — size is the only honest judge of a mark this small.
 
-**Round one** asked what shape survives. A box with a separate lid became two
+**Round one — what shape survives.** A box with a separate lid became two
 smudges at 16 px, which is the finding
-`vunm-site/docs/design/logo/README.md` already recorded about three clay balls
-— rediscovered here instead of remembered. A box with an inset slot kept one
-silhouette but read as a card, and the slot closed below 32 px. A clay **c**
-won that round on legibility alone.
+`vunm-site/docs/design/logo/README.md` already recorded about three clay balls,
+rediscovered here instead of remembered. A box with an inset slot kept one
+silhouette but read as a card. A clay **c** won on legibility alone.
 
-**Round two** replaced the c with the bucket, and the question moved to the
-handle — the one part thin enough to disappear:
+**Round two — the bucket, and its handle.** The owner asked for a bucket, and
+the handle is the one part thin enough to vanish. A thick handle alone merged
+into the body and read as a bag; a thin one nearly disappeared and broke a
+language where everything else is chunky; a rim with no handle was safest and
+read as a cup. Thick handle plus chunky rim kept both at every size.
 
-| Variant | Result at 16 px |
-|---|---|
-| Thick handle, no rim | Survives, but at full size the handle merges into the body and reads as a bag |
-| **Thin** handle | Nearly gone, and a thin line breaks a language where everything else is chunky |
-| Rim only, no handle | Safest, and reads as a cup rather than a bucket |
-| **Thick handle + rim** | Both survive; the silhouette stays a bucket at every size — chosen |
+**Round three — what the reference images showed.** The owner supplied two: a
+flat bucket on a circular plate, and an outlined one. Set beside them, round
+two's mark was missing the thing that makes a bucket a bucket — **the
+opening**. It had a flat rim band, so it read as a box with a lid. Both
+references also carried a taller handle and a deeper taper.
 
-The body was then given a deeper taper and the handle more height, because the
-first bucket was square enough to read as a basket.
+So the opening was added as an aqua ellipse inside a rolled rim, the handle
+raised, and the base narrowed. The references' outlines were **not** taken:
+Đất Nặn is clay — soft edges and gradient depth — and a hard outline would be a
+different system wearing this one's colours.
 
 ## Colours
 
