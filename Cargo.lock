@@ -1407,7 +1407,7 @@ dependencies = [
 
 [[package]]
 name = "caixonho-core"
-version = "0.0.0"
+version = "0.1.0-beta.3"
 dependencies = [
  "async-trait",
  "aws-config",
@@ -1418,6 +1418,7 @@ dependencies = [
  "aws-smithy-json",
  "aws-smithy-runtime-api",
  "aws-smithy-types",
+ "caixonho-core",
  "directories",
  "hex",
  "hyper-util",
@@ -1434,7 +1435,7 @@ dependencies = [
 
 [[package]]
 name = "caixonho-gui"
-version = "0.0.0"
+version = "0.1.0-beta.3"
 dependencies = [
  "anyhow",
  "caixonho-core",
@@ -1444,6 +1445,7 @@ dependencies = [
  "gpui-component-assets",
  "gpui_platform",
  "image",
+ "tempfile",
  "tokio",
 ]
 

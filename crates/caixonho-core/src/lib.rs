@@ -74,6 +74,8 @@ pub mod session;
 pub mod sso;
 pub mod sso_adapter;
 pub mod store;
+#[cfg(feature = "test-service")]
+pub mod test_service;
 pub(crate) mod tls;
 pub mod transfer;
 pub mod types;

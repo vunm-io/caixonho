@@ -3,7 +3,18 @@ resolver = "2"
 members = ["crates/caixonho-core", "crates/caixonho-gui"]
 
 [workspace.package]
-version = "0.0.0"
+# The single source of every version this project states (`XONHO-0033`): the
+# window's status bar, the macOS bundle's `Info.plist`, and the names CI gives
+# the files it builds all derive from here. Nothing else declares a version.
+#
+# It holds the version *being developed*, which after a release is the version
+# just released — so a build from `main` between releases says the last one and
+# is told apart by the commit beside it. The release process bumps this in the
+# same commit as the release notes; that is the one place it moves.
+#
+# It was `0.0.0` until 2026-09-07, while `Info.plist` hardcoded `0.1.0` and the
+# newest tag said something else again. Three numbers, no source.
+version = "0.1.0-beta.3"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/vunm-io/caixonho"

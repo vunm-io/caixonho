@@ -26,6 +26,20 @@ the brief; and both mechanisms deferred out of `XONHO-0016` still unstarted —
 `Scope` is still `{bucket, prefix}`, and `shown_kind` is a badging rule rather
 than the narrowing-by-kind that section describes.
 
+*Audited 2026-09-05 against `XONHO-0020` through `XONHO-0031`, and against the
+code.* Corrected: the R2 `max-buckets` section under *Testing against something
+that is not AWS*, which still read as a live blocker four weeks after
+`XONHO-0006` fixed it. Of the 2026-08-22 "still true" list, re-checked:
+`StoredCredential` is still `{name, region, access_key_id}` with nowhere for an
+endpoint — true; no sort — true, nothing under `views/` sorts; `Scope` is still
+`{bucket, prefix}` — true. **No longer true: "no filter by access".**
+`XONHO-0025` narrows the account listing by accessibility
+(`Narrowing::accessible_only`), and by kind, region and name; `shown_kind`
+survives as the badging helper it was, beside the narrowing-by-kind that now
+exists. The buried-openable-buckets problem that sentence stood for is
+addressed by the narrowing rather than by a sort, so what argues for it below
+is history.
+
 ## Why these four, separately
 
 Each owns a subsystem with its own interface, and each is testable on its own.
@@ -704,7 +718,7 @@ assumed AWS rather than S3, and R2's free tier (10 GB, 1M class A operations
 and 10M class B per month, no egress charge) covers this project's testing
 without a bill.
 
-### The first AWS assumption it found, before a single connection was made
+### The first AWS assumption it found — and the fix `XONHO-0006` landed
 
 `adapter.rs` sends `ListBuckets` with `max_buckets(1000)`, and the constant's
 comment explains why: AWS reports each bucket's `BucketRegion` only when the
@@ -719,22 +733,21 @@ maximum of 1000. There is no `max-buckets`. So the parameter the application
 sends is one R2 does not define, and the trick it was sent for buys nothing
 there.
 
-**This is not a harmless difference. It is a defect, and it blocks R2
+**It was not a harmless difference. It was a defect, and it blocked R2
 entirely.** Two earlier drafts of this note guessed that R2 would ignore an
-unknown parameter, as services usually do. Measured on 2026-08-20, it does not:
+unknown parameter, as services usually do. Measured on 2026-08-20, it did not:
 
     aws s3api list-buckets --max-buckets 1000    (against R2)
     NotImplemented: ListBuckets search parameter max-buckets not implemented
 
 The same call against AWS returns `BucketRegion` for every bucket, which is
 exactly what `XONHO-0005` established and why the parameter is sent. So the
-first call this application makes on opening any R2 connection fails, and it
-fails in the worst available way: `NotImplemented` is a cause `classify.rs`
-does not know, so it lands in `FailureKind::Other` and reaches the user as
-`Error::Unexpected` — the app saying it has no idea, about a condition that has
-a precise cause and a precise fix. That is the same failure shape that was
-already fixed once, for a rejected SSO session, and it is the thing §4.3 exists
-to prevent.
+first call this application made on opening any R2 connection failed, and it
+failed in the worst available way: `NotImplemented` was a cause `classify.rs`
+did not know, so it landed in `FailureKind::Other` and reached the user as
+`Error::Unexpected` — the app saying it had no idea, about a condition with a
+precise cause and a precise fix. The same failure shape had already been fixed
+once, for a rejected SSO session, and it is the thing §4.3 exists to prevent.
 
 Without the parameter R2 lists buckets fine, and reports **no region at all** —
 only a name and a creation date. `HeadBucket` does answer `BucketRegion: APAC`,
@@ -743,15 +756,21 @@ knowable per bucket but not from the listing. `RegionChoice::Unstated`
 therefore gets its first exercise by a real service, which is the branch
 working as designed.
 
-**The fix should observe rather than declare.** Send the parameter, and on
-`NotImplemented` retry without it — one extra round trip, only against services
-that reject it, and the regions keep arriving from the ones that do not. The
-alternative, branching on the provider chosen in the connection form, is the
-anti-pattern described below under connection types: `ADR-0002`'s reasoning
-about capability applies to API features word for word, because what an
-endpoint implements is found out by asking it, not by knowing whose it is.
-`NotImplemented` also needs a cause of its own in the classifier either way —
-"this service does not implement that" is not "something unexpected happened".
+**Fixed the way this section asked — observing rather than declaring.**
+`XONHO-0006` (commit `90069d8`) sends the parameter and, on `NotImplemented`,
+retries the listing without it (`adapter.rs`, `buckets_with_page_size(false)`);
+`classify.rs` gained `NotImplemented` as a cause of its own, so "this service
+does not implement that" is no longer "something unexpected happened". One
+extra round trip, only against services that reject the parameter, and the
+regions keep arriving from the ones that do not. The alternative — branching on
+the provider chosen in the connection form — is the anti-pattern described
+below under connection types, and was not taken.
+
+The finding is kept because it is why the code looks the way it does. It read
+here as a live blocker for four weeks after the fix, which is exactly the
+staleness this file's own header warns about. What is still true and still
+owed is the other half: a connection *typed into the app* has nowhere to name
+an endpoint, so R2 stays reachable on the profile path only.
 
 ### R2 tokens hand out exactly the shape this project is about
 
