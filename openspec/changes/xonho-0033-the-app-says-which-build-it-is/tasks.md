@@ -160,19 +160,55 @@
 
 ## 6. Close-out
 
-- [ ] 6.1 `cargo fmt --all`, `cargo clippy --workspace --all-targets --
+- [x] 6.1 `cargo fmt --all`, `cargo clippy --workspace --all-targets --
       -D warnings`, `cargo test --workspace` green [dispatch: main]
   - **And the platform-gated walk**: `build.rs` and the status bar are not
     gated, but local clippy compiles one target only — `XONHO-0032` learned
     that from a red Windows build after a clean local run.
   - Verification: the commands
+  - **Done 2026-09-07.** fmt clean; `clippy --workspace --all-targets -D
+    warnings` clean; 540 tests pass. Gate walk: this change added nothing
+    platform-gated — `build.rs`, the status bar element and its test compile on
+    both targets, and CI confirms it. The one platform-specific piece,
+    `mac-app.sh`, is guarded by `runner.os == 'macOS'` as it already was.
 
-- [ ] 6.2 CI green on both targets, run id recorded here [dispatch: main]
+- [x] 6.2 CI green on both targets, run id recorded here [dispatch: main]
   - Verification: `gh run list --limit 1 --repo vunm-io/caixonho`
+  - **Run 34092006851** — `build (windows-latest)` and `build (macos-latest)`
+    both `success`, `rustfmt` and `dependency audit` too. Artifacts checked
+    rather than assumed: `caixonho-0.1.0-beta.3-windows-x86_64.exe` and
+    `caixonho-0.1.0-beta.3-macos-arm64.zip`, and inside the zip
+    `CFBundleShortVersionString => "0.1.0"`, `CFBundleVersion =>
+    "0.1.0-beta.3"`, `codesign --verify --deep --strict` valid, bundle still
+    `Caixonho.app` / `io.vunm.caixonho`.
 
-- [ ] 6.3 Close-out review per `AGENTS.md` [dispatch: main]
+- [x] 6.3 Close-out review per `AGENTS.md` [dispatch: main]
   - Question 2 has a known shape here: this change alters what the window
     shows and what a downloaded file is called, so `README.md` and
     `docs/releases/` are both in scope, and the roadmap row for this change
     has to exist before it can go stale.
   - Verification: the recorded findings
+  - **1. Asked or convenient?** Asked, with one departure recorded where it
+    happened: 5.1 was routed to `agy` and taken back before dispatch, because
+    reading the job showed two shells rather than one changed line.
+  - **2. Reader-facing documents.** `docs/releases/README.md` is new and is the
+    first written record of the release process. `docs/roadmap.md` gains this
+    change's row. `README.md` unchanged: it describes what the app does for a
+    user, and this adds a line to a status bar rather than a capability. The
+    three release notes already carry their corrections from 2026-09-05 and
+    09-06 and are not touched again.
+  - **3. Rubbish.** No dead code. `build_identity_text` exists apart from
+    `build_identity` because a string is assertable without a renderer and an
+    `AnyElement` is not — one caller each, the test being the second. The
+    hardcoded `0.1.0` is gone rather than left beside its replacement.
+  - **4. Asserted but not verified.** The status bar element is asserted
+    through its text, not a rendered frame: a change that rendered it invisibly
+    would pass. `build.rs`'s `unknown` path is exercised with a stub `git` that
+    exits 127, which is the same code path but a simulated environment. And the
+    Windows artifact's *name* is verified while nothing here can run the
+    executable inside it.
+  - **5. Left, and where.** Whether the version bump belongs before or after
+    the tag stays open in `design.md` until the second release under this
+    scheme. Embedding a `VERSIONINFO` resource so the Windows executable states
+    its version in Explorer, as the macOS bundle does, is a named non-goal
+    there and is the obvious follow-up.

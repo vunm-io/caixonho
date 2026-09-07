@@ -33,6 +33,7 @@ that each own a subsystem and land on their own:
 | `XONHO-0004` | Entering credentials in the app, storing them in the OS keychain, and connecting only when asked | landed |
 | `XONHO-0012` | A log on disk that says what the app decided and why, and never holds a secret | landed |
 | `XONHO-0031` | A real S3 service the tests start themselves — the adapter over real HTTP, and six whole flows from the window's own controls, on both CI targets (run 33960176049) | landed |
+| `XONHO-0033` | The window saying which build it is — version and revision in the status bar, one declared source flowing to the macOS bundle and to the names CI gives its artifacts (run 34092006851) | landed |
 | `XONHO-0009` | The app shell, the palette, and loading, empty and error states that were improvised before | in progress |
 | `XONHO-0006` | Opening a bucket and browsing objects by prefix, including reaching a bucket by name when the account listing is denied |built; browsing and pagination proven from the window against a real service (`XONHO-0031`, run 33960176049); reaching a bucket by name when the listing is denied still awaiting live acceptance — nothing local refuses |
 | `XONHO-0011` | Signing in to IAM Identity Center from the app, via the OIDC device flow | after browsing |
