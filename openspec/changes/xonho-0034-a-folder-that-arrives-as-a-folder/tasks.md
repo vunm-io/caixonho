@@ -224,14 +224,21 @@
 
 ## 5. Close-out
 
-- [ ] 5.1 `cargo fmt --all`, `cargo clippy --workspace --all-targets --
+- [x] 5.1 `cargo fmt --all`, `cargo clippy --workspace --all-targets --
       -D warnings`, `cargo test --workspace` green [dispatch: main]
   - Verification: the commands
+  - **Done.** `cargo fmt --all` clean, `cargo clippy --workspace --all-targets
+    -- -D warnings` clean, and the workspace green: 409 + 7 + 11 + 134 = 561
+    passing, 9 ignored (the live-service ones that need an account).
+  - Worth recording *why* clippy needed a second look: it compiles the host
+    target only, so a `#[cfg(not(target_os = "macos"))]` item's lints never run
+    here. Checking it meant temporarily swapping the gate and **running** the
+    lint, not reading the code and deciding it was fine.
 
 - [ ] 5.2 CI green on both targets, run id recorded here [dispatch: main]
   - Verification: `gh run list --limit 1 --repo vunm-io/caixonho`
 
-- [ ] 5.3 Say what it still does not do [dispatch: main]
+- [x] 5.3 Say what it still does not do [dispatch: main]
   - Paths: `docs/requirements-status.md`, `docs/roadmap.md`
   - Done criteria: §4.4's row stays **partial** and names the half that landed
     and the half that did not. The collision row moves and says what "remembered"
@@ -239,9 +246,69 @@
   - **Overstating here is the failure mode.** The row has read "not started"
     since 2026-08-24; "done" would be worse than that.
   - Verification: the rows, read against what exists
+  - **Done, and the row stayed partial.** §4.4's first row now names both
+    halves: download rebuilds a tree, **upload does not** — sending a directory
+    up is still one file at a time, and prefix structure on the way up is not
+    preserved because nothing walks a local tree. Multipart is still absent, so
+    the 5 GiB cap stands. The §4.4 tally is unchanged at 1 done, 3 partial, 3
+    not started, because no row changed state.
+  - The collision row says what "remembered" now means and that it is
+    **narrower than the row asks**: for the act, not for the session — a second
+    download of the same folder asks again, on purpose.
+  - Two more rows were touched rather than left to drift: key↔filesystem safety
+    (still **done** — ADR-0005 extends the scheme to paths and the property
+    test covers them) and the queue row (this is the first change to hand it a
+    whole gesture's work at once).
+  - `docs/roadmap.md`: the M2 line and a row of its own in *M2 so far*, both
+    saying **download only**.
 
-- [ ] 5.4 Close-out review per `AGENTS.md` [dispatch: main]
+- [x] 5.4 Close-out review per `AGENTS.md` [dispatch: main]
   - Question 4 has a known shape here: the property test covers the mapping,
     and what it cannot cover is a filesystem refusing a name the scheme thought
     acceptable — case-insensitive volumes and network mounts especially.
   - Verification: the recorded findings
+  - **1. What was asked, or what was convenient?** What was asked. The owner
+    asked for a folder download or many files at once, and chose option A — the
+    quick one, enhanced later — explicitly. The one departure from the proposal
+    is written down rather than silent: `spawn_walk_under`'s cap moved from the
+    callee to the caller, so delete keeps `MOST_KEYS_GATHERED` and download
+    passes `None`. That is in the design, because a download refusing at 5000
+    objects would have been a limit invented by a function that delete needed.
+  - **2. Do the reader-facing documents still tell the truth?** They did not,
+    and the second reading is what caught it. `README.md`'s "Not there yet"
+    list still promised **bulk and folder deletion** and **the transfer
+    queue** — delivered by `XONHO-0030` and `XONHO-0028`, neither of them this
+    change. Exactly the failure this question exists for: a cell belonging to
+    another change, with nobody scheduled to look at it. Corrected, along with
+    the download bullet. `docs/architecture.md` says nothing about transfers
+    and needs nothing. `docs/design-language.md` is untouched by this change.
+    `docs/planned-changes.md`: no section here is answered by `XONHO-0034`, and
+    the folder-delete section is properly closed with its issue note.
+  - **3. Did we leave rubbish?** No. Every new symbol has a caller — checked by
+    name, and `-D warnings` would fail on a dead one regardless. No `TODO`,
+    `dbg!` or commented-out block in the diff. One thing was nearly left: an
+    over-broad `str.replace` deleted half of `transfer.rs` mid-change; the
+    compiler caught it, the file was restored from git and the edit redone with
+    tight anchors. Nothing of that survives in the tree.
+  - **4. What is asserted but not verified?** The known shape, as the task
+    predicted, plus two more:
+    - The property test covers the **mapping**. What no test here covers is a
+      **filesystem refusing a name the scheme thought acceptable** —
+      case-insensitive volumes (two keys differing only in case become one
+      file) and network mounts (SMB and NFS reject characters the scheme
+      encodes past, and impose their own length limits). The flow tests run on
+      the CI runners' own disks, which are the permissive case.
+    - **Windows path length.** A deep prefix plus a long destination can pass
+      260 characters. Nothing in this change measures it, and the failure would
+      arrive as a per-file error rather than as a refusal that explains itself.
+    - **Scale.** The largest tree any test fetches is five objects. A folder of
+      ten thousand is walked with no bound (deliberately — `None`), and nothing
+      exercises what the window does while that walk is running.
+  - **5. What is left, and where is it written?** Folder **upload** — named in
+    `docs/requirements-status.md` §4.4 and in the roadmap row, both saying
+    download only. The collision wording — per session written, per act built —
+    is in the §4.4 collision row. The three unverified items above are here.
+    And the sidebar defect the owner reported while this change was open is now
+    a section of its own in `docs/planned-changes.md` ("Two different buckets,
+    one name in the rail"), because it was approved in conversation and a
+    finding that lives in a transcript is a finding that is lost.

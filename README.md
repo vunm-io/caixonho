@@ -129,9 +129,19 @@ Working today:
   plainly that there is no preview for its kind and points you at Open.
   Binary content wearing a text name is called binary instead of rendered as
   noise, and nothing on the preview path ever touches the disk.
-- Downloads an object to a folder you choose, and **opens** one with whatever
-  your machine already opens that kind of file with — the app renders no
-  format itself; it downloads to a cache it owns
+- **Downloads a folder as a folder.** Ask for a folder row — or tick any set
+  of rows and ask once — and what lands on disk is the shape that was in the
+  bucket: `daily/deep/deeper/thursday.csv` arrives three directories down,
+  not as a filename with slashes beaten out of it. Each file is its own item
+  in the queue with its own progress and its own end, so one refusal does not
+  take the rest down with it. When names are already taken at the destination
+  the question carries a tick — *apply to the rest of this download* — so two
+  hundred files meeting two hundred taken names is one question. That answer
+  is remembered for **that download**, not forever: ask again tomorrow and it
+  asks you again, on purpose.
+- Downloads a single object to a folder you choose, and **opens** one with
+  whatever your machine already opens that kind of file with — the app renders
+  no format itself; it downloads to a cache it owns
   (`~/Library/Caches/caixonho/open` on macOS,
   `%LOCALAPPDATA%\caixonho\cache\open` on Windows, swept on startup) and
   hands the file to the system. A download in flight shows its progress and
@@ -144,9 +154,9 @@ Working today:
   instead of a description. The file is bounded and rolls daily; `CAIXONHO_LOG`
   turns the detail up for an investigation. No secret is ever written to it.
 
-Not there yet: bulk and folder deletion, uploading folders, multipart for
-large files, the transfer queue, rendered markdown preview, sorting or
-searching a listing,
+Not there yet: uploading a folder — download rebuilds a tree, upload still
+takes files one at a time — multipart for large files and the pause and resume
+that wait on it, rendered markdown preview, sorting or searching a listing,
 and signing in to IAM Identity Center from the app rather than through the AWS
 CLI. Those are the next changes — see [`docs/planned-changes.md`](docs/planned-changes.md),
 and [`docs/requirements-status.md`](docs/requirements-status.md) for every
