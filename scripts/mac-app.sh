@@ -21,9 +21,12 @@ export PATH
 
 cargo build --release
 
+version="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json, sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "caixonho-gui"))')"
+short_version="${version%%-*}"
+
 APP=target/Caixonho.app
 mkdir -p "$APP/Contents/MacOS"
-cat > "$APP/Contents/Info.plist" <<'PLIST'
+cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -33,11 +36,17 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleIdentifier</key><string>io.vunm.caixonho</string>
     <key>CFBundleExecutable</key><string>caixonho-gui</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.1.0</string>
+    <key>CFBundleShortVersionString</key><string>$short_version</string>
+    <key>CFBundleVersion</key><string>$version</string>
     <key>NSHighResolutionCapable</key><true/>
 </dict>
 </plist>
 PLIST
+plist_version="$(plutil -extract CFBundleVersion raw "$APP/Contents/Info.plist" 2>/dev/null || true)"
+if [ "$plist_version" != "$version" ]; then
+    echo "CFBundleVersion ($plist_version) does not match declared version ($version)" >&2
+    exit 1
+fi
 cp target/release/caixonho-gui "$APP/Contents/MacOS/"
 
 # Sign with this machine's own identity when it has one. Without it the bundle

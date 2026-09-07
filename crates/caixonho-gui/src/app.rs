@@ -2592,6 +2592,47 @@ impl CaixonhoApp {
         }
     }
 
+    /// Which build this is, said as quietly and as always as the log's location
+    /// beside it (`XONHO-0033`).
+    ///
+    /// Two facts and one line, because they answer the same person at the same
+    /// moment: *what is this, and where is its log.* The version comes from the
+    /// workspace manifest, the revision from `build.rs`; neither is written
+    /// down twice.
+    ///
+    /// **The revision is not decoration.** Between releases `main` carries the
+    /// version last released, so the version alone says `0.1.0-beta.3` for
+    /// every build made after that tag — which is the confusion this exists to
+    /// end. What tells two such builds apart is the commit.
+    fn build_identity_text() -> String {
+        // `unknown` when there was no repository to read — see `build.rs`. It
+        // is shown rather than hidden: a field that disappears reads as one
+        // nobody thought about.
+        format!(
+            "{} ({})",
+            env!("CARGO_PKG_VERSION"),
+            env!("CAIXONHO_COMMIT")
+        )
+    }
+
+    fn build_identity() -> AnyElement {
+        let version = env!("CARGO_PKG_VERSION");
+        let commit = env!("CAIXONHO_COMMIT");
+        div()
+            .id("build-identity")
+            .child(Self::build_identity_text())
+            .tooltip(move |window, cx| {
+                Tooltip::new(format!(
+                    "caixonho {version}, built from commit {commit}. Quote both \
+                     when reporting a problem: between releases the version is \
+                     the last one tagged, and only the commit tells two such \
+                     builds apart."
+                ))
+                .build(window, cx)
+            })
+            .into_any_element()
+    }
+
     /// The name of the connection at `index`, when it is one this application
     /// holds rather than a profile read from `~/.aws`.
     fn stored_name(&self, index: usize) -> Option<String> {
@@ -5142,7 +5183,12 @@ impl Render for CaixonhoApp {
                                         .text_xs()
                                         .text_color(cx.theme().muted_foreground)
                                         .child(status)
-                                        .child(self.log_location(cx)),
+                                        .child(
+                                            h_flex()
+                                                .gap(space::INLINE)
+                                                .child(Self::build_identity())
+                                                .child(self.log_location(cx)),
+                                        ),
                                 ),
                             ),
                     ),
@@ -5278,6 +5324,28 @@ mod tests {
             region_of(&app, cx, 1),
             Region::Unknown,
             "a page for a screen nobody is on changes nothing"
+        );
+    }
+
+    #[test]
+    fn the_window_states_the_version_and_the_revision_it_was_built_from() {
+        // Against `CARGO_PKG_VERSION` rather than the literal "0.1.0-beta.3":
+        // a hardcoded expectation passes for ever after the version moves on,
+        // which is the failure this whole change is about.
+        let shown = CaixonhoApp::build_identity_text();
+        assert!(
+            shown.contains(env!("CARGO_PKG_VERSION")),
+            "the window must state the declared version; it showed {shown:?}"
+        );
+        assert!(
+            !shown.contains("()"),
+            "an empty revision renders as a missing field rather than an \
+             unknown one — `build.rs` must say `unknown` instead. Showed {shown:?}"
+        );
+        assert!(
+            shown.ends_with(')') && shown.contains('('),
+            "the revision belongs beside the version, in parentheses; it \
+             showed {shown:?}"
         );
     }
 

@@ -77,16 +77,58 @@ jobs:
       # self-signed identity would mean nothing to anyone else. Gatekeeper
       # still asks — but "Open Anyway" is an answer to that question, where a
       # window full of object code is not.
+      # What this build states about itself, read from the one place that
+      # declares it (`XONHO-0033`). `cargo pkgid` rather than `cargo metadata`
+      # here: metadata is JSON and needs a parser, and which parser a runner
+      # has differs by image — `pkgid` needs none. `[#@]` because cargo writes
+      # `#<version>` when the directory and the package share a name and
+      # `#<name>@<version>` when they do not, and this should not care which.
+      #
+      # `shell: bash` on both, including Windows, where the runner's default is
+      # PowerShell. One shell is one thing to get right.
+      - name: The version this build states
+        id: version
+        shell: bash
+        run: echo "value=$(cargo pkgid -p caixonho-gui | sed -e 's/.*[#@]//')" >> "$GITHUB_OUTPUT"
+      # A bare Mach-O is not something macOS knows how to open. A browser
+      # download strips the executable bit, Finder finds a file it cannot
+      # identify, and a double-click opens it in TextEdit showing the raw
+      # object code — which is what the first person to try the v0.1.0-beta.1
+      # asset got. `ditto` is the macOS-correct zip: it keeps the bundle
+      # structure and the executable bit through the round trip, so what
+      # arrives is an app you drag to Applications.
+      #
+      # Not signed by an identity: this runner has no Developer ID. The bundle
+      # is ad-hoc signed as a bundle by `mac-app.sh`, which is what stops
+      # Gatekeeper calling it damaged — see that script for what that does and
+      # does not buy.
       - name: Wrap in an .app (macOS)
         if: runner.os == 'macOS'
         run: |
           scripts/mac-app.sh --no-open
-          ditto -c -k --keepParent target/Caixonho.app target/Caixonho.zip
+          ditto -c -k --keepParent target/Caixonho.app \
+            "target/caixonho-${{ steps.version.outputs.value }}-macos-arm64.zip"
+      # The Windows build ships the executable itself, so the executable is
+      # what has to carry the version — there is no bundle to hold it. Three
+      # files called `caixonho-macos-arm64.zip`, `(1)` and `(2)` sat in the
+      # owner's Downloads folder on 2026-09-05 and only a checksum said which
+      # release was which; this is that, prevented, on the platform where the
+      # downloaded file *is* the product.
+      - name: Name the executable for what it is (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cp target/release/caixonho-gui.exe \
+            "target/caixonho-${{ steps.version.outputs.value }}-windows-x86_64.exe"
+      # Globs rather than the names spelled out again: the names are made
+      # above, and a second place stating them is a second place to be wrong.
+      # One pattern matching nothing is normal — each runner produces one of
+      # these — and `if-no-files-found` fires only when *neither* does.
       - name: Upload app (on-device checks)
         uses: actions/upload-artifact@v7
         with:
           name: caixonho-app-${{ matrix.os }}
           path: |
-            target/Caixonho.zip
-            target/release/caixonho-gui.exe
+            target/caixonho-*-macos-arm64.zip
+            target/caixonho-*-windows-x86_64.exe
           if-no-files-found: error

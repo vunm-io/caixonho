@@ -1407,7 +1407,7 @@ dependencies = [
 
 [[package]]
 name = "caixonho-core"
-version = "0.0.0"
+version = "0.1.0-beta.3"
 dependencies = [
  "async-trait",
  "aws-config",
@@ -1435,7 +1435,7 @@ dependencies = [
 
 [[package]]
 name = "caixonho-gui"
-version = "0.0.0"
+version = "0.1.0-beta.3"
 dependencies = [
  "anyhow",
  "caixonho-core",

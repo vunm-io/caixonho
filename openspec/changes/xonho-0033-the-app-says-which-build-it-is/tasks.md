@@ -23,7 +23,7 @@
 
 ## 1. The source
 
-- [ ] 1.1 Make the workspace version mean something [dispatch: main]
+- [x] 1.1 Make the workspace version mean something [dispatch: main]
   - Paths: `Cargo.toml`
   - Done criteria: `[workspace.package] version = "0.1.0-beta.3"` — the version
     last released, since nothing newer has been. A comment states that this is
@@ -32,10 +32,14 @@
   - Both crates already inherit with `version.workspace = true`; check rather
     than assume.
   - Verification: `cargo metadata --format-version 1 --no-deps | python3 -c "import sys,json;print({p['name']:p['version'] for p in json.load(sys.stdin)['packages']})"`
+  - **Done.** `cargo metadata` reports `0.1.0-beta.3` for both crates.
+    `Cargo.lock` had to be regenerated too — it still said `0.0.0`, and
+    `cargo pkgid` reads the lock rather than the manifest, so CI would have
+    named its artifacts after the old version.
 
 ## 2. The commit
 
-- [ ] 2.1 A build script that reads the revision, and admits when it cannot
+- [x] 2.1 A build script that reads the revision, and admits when it cannot
       [dispatch: main]
   - Paths: `crates/caixonho-gui/build.rs` (new), `crates/caixonho-gui/Cargo.toml`
   - Done criteria: emits `cargo:rustc-env=CAIXONHO_COMMIT=<short sha>`;
@@ -48,15 +52,23 @@
   - Verification: `cargo build -p caixonho-gui` in the repository, then again
     with `git` removed from `PATH` — both succeed, and the second yields
     `unknown`
+  - **Done.** With `git`: `CAIXONHO_COMMIT=3d2afc0`. With `git` replaced by
+    a stub that exits 127: `CAIXONHO_COMMIT=unknown`, and the build succeeds.
+    Both read off `cargo build -vv`, not inferred.
 
-- [ ] 2.2 Say what it costs [dispatch: main]
+- [x] 2.2 Say what it costs [dispatch: main]
   - Done criteria: the added time on a warm rebuild of `caixonho-gui`,
     measured and written here. If it is not free, the number is what says so.
   - Verification: `cargo build -p caixonho-gui` timed before and after
+  - **Measured 2026-09-07.** The three `git` calls cost **28 ms**. A rebuild
+    that reruns the script is 1786 ms against 345 ms for one that does not —
+    the 1.4 s is `caixonho-gui` recompiling because an embedded value may have
+    changed, not the script. So: free while `HEAD` stands still, and about a
+    second and a half on the first build after a commit or a checkout.
 
 ## 3. The window
 
-- [ ] 3.1 The status bar states the build [dispatch: main]
+- [x] 3.1 The status bar states the build [dispatch: main]
   - Paths: `crates/caixonho-gui/src/app.rs`
   - Done criteria: a `build_identity` element beside `log_location`, in the
     same muted type, reading `<version> (<commit>)`; a tooltip spelling it out
@@ -66,17 +78,22 @@
     moment: *what is this, and where is its log.*
   - Verification: `cargo test -p caixonho-gui build_identity`, and the frame
     opened
+  - **Done.** `build_identity` beside `log_location`, `space::INLINE`
+    between them, reading `0.1.0-beta.3 (3d2afc0)`.
 
-- [ ] 3.2 A test that fails when the window stops saying it [dispatch: main]
+- [x] 3.2 A test that fails when the window stops saying it [dispatch: main]
   - Paths: `crates/caixonho-gui/src/app.rs`
   - Done criteria: a test asserting the rendered identity contains
     `CARGO_PKG_VERSION` — not a hardcoded `"0.1.0-beta.3"`, which would pass
     for ever after the version moved on.
   - Verification: `cargo test -p caixonho-gui`
+  - **Done.** `the_window_states_the_version_and_the_revision_it_was_built_from`
+    asserts against `CARGO_PKG_VERSION` rather than a literal, and separately
+    that the revision never renders as an empty `()`.
 
 ## 4. The macOS bundle
 
-- [ ] 4.1 `Info.plist` derives, and the numeric field stays numeric
+- [x] 4.1 `Info.plist` derives, and the numeric field stays numeric
       [dispatch: external-ok]
   - Paths: `scripts/mac-app.sh`
   - Done criteria: version read with `cargo metadata` (not a `grep` of
@@ -87,8 +104,13 @@
     survives.
   - Verification: `scripts/mac-app.sh --no-open` then
     `plutil -p target/Caixonho.app/Contents/Info.plist | grep -i version`
+  - Dispatched: agy (2026-09-07) — done as specified; verified: `sh -n` clean,
+    script run, `plutil -p` shows `CFBundleShortVersionString => "0.1.0"` and
+    `CFBundleVersion => "0.1.0-beta.3"`. Read `cargo metadata` via `python3`,
+    numeric core by `${version%%-*}`, heredoc unquoted so both substitute. No
+    comments added, as instructed.
 
-- [ ] 4.2 A gate for the drift this change exists to end [dispatch: external-ok]
+- [x] 4.2 A gate for the drift this change exists to end [dispatch: external-ok]
   - Paths: `scripts/mac-app.sh`
   - Done criteria: the script fails if `CFBundleVersion` and the declared
     version disagree. The hardcoded `0.1.0` was wrong from the first release
@@ -96,18 +118,34 @@
     while something checks it.
   - Verification: the script run normally passes; run with the version
     tampered, it fails
+  - Dispatched: agy (2026-09-07) — done as specified; verified by causing the
+    regression it guards: re-quoting the heredoc as `<<'PLIST'` makes the
+    script exit 1 with `CFBundleVersion ($version) does not match declared
+    version (0.1.0-beta.3)`. Reviewed for a hole where both values are empty
+    and the comparison passes — `set -e` aborts the assignment first, checked
+    with `sh -eu -c 'v="$(false)"; echo LỌT'`, so no extra guard is needed.
 
 ## 5. What is downloaded says what it is
 
-- [ ] 5.1 CI names the artifacts with the version [dispatch: external-ok]
+- [x] 5.1 CI names the artifacts with the version [dispatch: main]
+  - **Routed to `agy` and taken back before dispatch (2026-09-07)**, after
+    reading the job rather than the task: the macOS side is one changed
+    `ditto` line, but Windows has no rename step at all and its runner shell is
+    `pwsh`, so this is a new step in a second shell plus a version read on both.
+    Two shells is not the "fully specified and mechanical" this delegation
+    covers.
   - Paths: `.github/workflows/ci.yml`
   - Done criteria: the macOS zip and the Windows exe are produced as
     `caixonho-<version>-macos-arm64.zip` and
     `caixonho-<version>-windows-x86_64.exe`, with the version read on the
     runner from `cargo metadata` rather than written into the workflow.
   - Verification: a CI run, and the artifact contents listed
+  - **Done, in `main` after all.** One `shell: bash` step reads the version
+    with `cargo pkgid | sed 's/.*[#@]//'` — no JSON parser, because which one a
+    runner has differs by image — and the macOS and Windows steps name their
+    own file. The upload matches by glob so the names are stated once.
 
-- [ ] 5.2 The release process loses a step and gains a step [dispatch: main]
+- [x] 5.2 The release process loses a step and gains a step [dispatch: main]
   - Paths: `docs/releases/README.md` (new, if absent) or the process note
     wherever it lives
   - Done criteria: written down that the version bump is part of the release
@@ -115,6 +153,10 @@
     than renamed by hand. The rename is where a mislabelled asset comes from,
     and `v0.1.0-beta.1` shipped two assets from two different commits.
   - Verification: the file, read against the last release's actual steps
+  - **Done**, `docs/releases/README.md`. Carries the bump step, the
+    no-rename rule, the `codesign --verify` check that two releases needed and
+    did not have, and the instruction to open a browser-downloaded copy and
+    read `syspolicyd` before describing a dialog.
 
 ## 6. Close-out
 
