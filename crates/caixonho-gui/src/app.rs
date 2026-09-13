@@ -3952,37 +3952,54 @@ impl CaixonhoApp {
                         .items_center()
                         .gap(space::TIGHT)
                         .children((ticked > 0).then(|| {
-                            // Apart from the benign verbs and in the danger
-                            // colour: this is the one that destroys. It only
-                            // opens the confirmation — nothing deletes here.
-                            div()
-                                .debug_selector(|| "delete-ticked-action".into())
+                            // `h_flex`, not a bare `div`. A `div` in gpui is
+                            // `Display::Block` (`gpui/src/style.rs:774`), and a
+                            // block stacks its children — invisible for as long
+                            // as this wrapper held one button, and the day
+                            // `XONHO-0034` added a second it put one verb above
+                            // the breadcrumb and one below it. Same family as
+                            // the `v_flex` note in `contents` and the one
+                            // `design-language.md` records: in this toolkit a
+                            // container not told it is a row is not one.
+                            h_flex()
+                                .gap(space::TIGHT)
                                 .child(
                                     // Fetching is not destructive, so this one
                                     // is plain rather than danger — and it sits
                                     // before the delete, because a strip whose
                                     // first verb destroys is a strip that gets
                                     // misclicked.
-                                    Button::new("download-ticked-action")
-                                        .label(format!("Download {ticked}…"))
-                                        .ghost()
-                                        .on_click(cx.listener(|app, _, window, cx| {
-                                            app.download_ticked(window, cx)
-                                        })),
+                                    div()
+                                        .debug_selector(|| "download-ticked-action".into())
+                                        .child(
+                                            Button::new("download-ticked-action")
+                                                .label(format!("Download {ticked}…"))
+                                                .ghost()
+                                                .on_click(cx.listener(|app, _, window, cx| {
+                                                    app.download_ticked(window, cx)
+                                                })),
+                                        ),
                                 )
                                 .child(
-                                    // Ghost, so **flat** — and deliberately:
-                                    // this one opens the question, and the
-                                    // `Delete` inside the confirmation is the
-                                    // one that does the deed and is moulded.
-                                    // Two filled danger buttons a strip apart
-                                    // would make neither of them mean much.
-                                    Button::new("delete-ticked-action")
-                                        .label(format!("Delete {ticked}…"))
-                                        .ghost()
-                                        .danger()
-                                        .on_click(
-                                            cx.listener(|app, _, _, cx| app.delete_ticked(cx)),
+                                    // Apart from the benign verbs and in the
+                                    // danger colour: this is the one that
+                                    // destroys. It only opens the confirmation
+                                    // — nothing deletes here. Ghost, so
+                                    // **flat**, and deliberately: the `Delete`
+                                    // inside the confirmation is the one that
+                                    // does the deed and is moulded. Two filled
+                                    // danger buttons a strip apart would make
+                                    // neither of them mean much.
+                                    div()
+                                        .debug_selector(|| "delete-ticked-action".into())
+                                        .child(
+                                            Button::new("delete-ticked-action")
+                                                .label(format!("Delete {ticked}…"))
+                                                .ghost()
+                                                .danger()
+                                                .on_click(cx.listener(|app, _, _, cx| {
+                                                    app.delete_ticked(cx)
+                                                })),
                                         ),
                                 )
                         }))
@@ -6770,6 +6787,95 @@ mod tests {
         assert_eq!(
             confirmation_sentence(&Asked::Folder("daily".into()), 1),
             "Delete `daily/` and everything under it — 1 object — from this bucket?"
+        );
+    }
+
+    /// The two ticked-row verbs stand side by side, not stacked.
+    ///
+    /// `XONHO-0034` added `Download {n}…` beside `Delete {n}…`, and the wrapper
+    /// they went into was a bare `div()` — which in gpui is `Display::Block`
+    /// (`gpui/src/style.rs:774`), not a row. One child had hidden that for as
+    /// long as there was one child. Two children stacked, and the strip's
+    /// parent centring a box two buttons tall against a one-line trail put one
+    /// verb above the breadcrumb and one below it. Reported from a live account.
+    ///
+    /// Asserted on bounds rather than on an image: `debug_bounds` needs no
+    /// renderer, so this says the same thing on Windows, where nothing can be
+    /// photographed.
+    #[gpui::test]
+    fn the_ticked_row_verbs_stand_side_by_side(cx: &mut TestAppContext) {
+        // Its own setup rather than `looking_through`'s, and the difference is
+        // the reason no existing test could have caught this: `World::scripted`
+        // discovers no connection, and `render` answers
+        // `connections().is_empty()` with "No connections yet." before it ever
+        // consults `outcome`. Every test on that helper asserts state that is
+        // never drawn.
+        cx.update(gpui_component::init);
+        cx.update(crate::theme::install);
+        let store: Arc<dyn caixonho_core::ObjectStore> = Arc::new(StoreDouble::allows_listing());
+        let mut world = World::scripted(store);
+        world.profiles = vec![caixonho_core::Profile {
+            name: "example".to_owned(),
+            is_default: true,
+        }];
+        let (app, cx) = cx.add_window_view(|window, cx| {
+            CaixonhoApp::new(Diagnostics::without_a_log(), world, window, cx)
+        });
+        cx.run_until_parked();
+
+        app.update(cx, |app, cx| {
+            // Both, and the second is the one easy to forget: with no active
+            // profile `render` returns "Choose a connection." and never reaches
+            // the listing, so a position alone stages a screen nobody draws.
+            app.active_profile = Some(0);
+            app.position = Some(Position {
+                connection: app.outcome.active(),
+                at: Location::at("reports".to_owned(), CorePrefix::root()),
+            });
+            app.objects.update(cx, |state, _| {
+                let delegate = state.delegate_mut();
+                delegate.show(
+                    CorePrefix::root(),
+                    Vec::new(),
+                    vec![an_object("one.txt", 1), an_object("two.txt", 2)],
+                );
+                delegate.toggle(0);
+                delegate.toggle(1);
+            });
+            cx.notify();
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let download = cx
+            .debug_bounds("download-ticked-action")
+            .expect("the download verb was laid out");
+        let delete = cx
+            .debug_bounds("delete-ticked-action")
+            .expect("the delete verb was laid out");
+
+        // Same line, written as an overlap rather than as equal tops so that a
+        // future difference in height — an icon on one of them — is not a
+        // failure.
+        let middle = delete.top() + delete.size.height / 2.0;
+        assert!(
+            middle > download.top() && middle < download.bottom(),
+            "the verbs are stacked, not side by side: Download occupies \
+             {:?}..{:?} vertically and Delete {:?}..{:?}",
+            download.top(),
+            download.bottom(),
+            delete.top(),
+            delete.bottom()
+        );
+
+        // And in the order the strip was designed in: the one that destroys is
+        // not the one nearest the cursor's path.
+        assert!(
+            download.right() <= delete.left(),
+            "Download should sit before Delete: Download ends at {:?}, \
+             Delete begins at {:?}",
+            download.right(),
+            delete.left()
         );
     }
 
