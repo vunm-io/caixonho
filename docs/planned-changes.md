@@ -89,6 +89,45 @@ asking for the first N KB instead of the whole object.
 > here because this section reads as a future plan, and the two-directions
 > lesson in the header is about exactly this sentence going stale.
 
+### `object-transfer` has no main spec, and six changes' deltas say so (2026-09-14)
+
+Surfaced by archiving `XONHO-0034`: the archive step compares a change's delta
+spec against the capability's main spec, and there is no
+`openspec/specs/object-transfer/spec.md` to compare against.
+
+Six changes carry an `object-transfer` delta — `XONHO-0007`, `0020`, `0026`,
+`0028`, `0029`, `0034` — and **not one has been synced**. The capability that
+holds every transfer requirement in the brief exists only as six separate
+deltas, in six change directories, five of which are still open.
+
+**Syncing one of them alone would be worse than the gap.** `XONHO-0034`'s delta
+modifies two requirements — *Keys map to filenames deterministically and
+losslessly in effect*, and *A collision is answered per transfer* — whose base
+text lives in `XONHO-0007`'s and `XONHO-0020`'s deltas. A main spec written
+from `0034` alone would carry its three added requirements plus two modified
+ones with nothing to modify, and would read as a complete statement that
+transfers are only what `0034` built. A spec that is wrong gets acted on; a
+spec that is absent gets noticed.
+
+So `XONHO-0034` was archived **without syncing**, which is what happened to the
+other five by default rather than by decision. That is the honest state, and it
+is recorded here rather than left as an absence nobody scheduled to look at.
+
+The fix is a change of its own: fold the six deltas into one
+`openspec/specs/object-transfer/spec.md` **in order**, so that each MODIFIED
+requirement is applied to the text it was written against. Worth doing with the
+other capabilities checked at the same time — `bucket-listing`,
+`capability-awareness`, `connections`, `diagnostics`, `stored-credentials`,
+`supply-chain` and `verification` have main specs, so `object-transfer` may be
+the only one adrift, but that is an assumption until someone counts.
+
+Related and larger: **22 changes are open**, several of them shipped weeks ago
+(`XONHO-0007` landed 2026-08-24). Archiving is where spec sync happens, so a
+backlog of un-archived changes is also a backlog of un-synced specs. The two
+problems are the same problem.
+
+**Not issued.** Needs a change number of its own.
+
 ### Two different buckets, one name in the rail (2026-09-07)
 
 Reported by the owner from a live account, with a screenshot: the sidebar's
